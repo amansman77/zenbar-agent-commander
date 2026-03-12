@@ -34,6 +34,16 @@ def init_repo(tmpdir: str) -> Path:
     return repo
 
 
+def init_repo_with_remote(tmpdir: str) -> Path:
+    bare = Path(tmpdir) / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
+    repo = init_repo(tmpdir)
+    subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "push", "-u", "origin", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "remote", "set-head", "origin", "main"], cwd=repo, check=True, capture_output=True)
+    return repo
+
+
 def test_create_project_and_task_flow():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
@@ -94,3 +104,61 @@ def test_invalid_retry_transition():
 
         response = client.post(f"/tasks/{task['id']}/retry", json={"actor": "pytest"})
         assert response.status_code == 409
+
+
+def test_discover_project_uses_remote_default_branch():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo_with_remote(tmpdir)
+
+        response = client.post("/projects/discover", json={"path": str(repo)})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["name"] == repo.name
+        assert body["repo_path"] == str(repo.resolve())
+        assert body["default_branch"] == "main"
+        assert body["current_branch"] == "main"
+        assert body["is_git_repo"] is True
+
+
+def test_discover_project_rejects_non_git_directory():
+    with TemporaryDirectory() as tmpdir:
+        response = client.post("/projects/discover", json={"path": tmpdir})
+        assert response.status_code == 400
+        assert "git repository" in response.json()["detail"]
+
+
+def test_discover_project_falls_back_to_current_branch_without_origin_head():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+
+        subprocess.run(["git", "checkout", "-b", "feature/picker"], cwd=repo, check=True, capture_output=True)
+        response = client.post("/projects/discover", json={"path": str(repo)})
+
+        assert response.status_code == 200
+        assert response.json()["default_branch"] == "feature/picker"
+
+
+def test_discover_project_falls_back_to_main_on_detached_head():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+
+        subprocess.run(["git", "checkout", "--detach", "HEAD"], cwd=repo, check=True, capture_output=True)
+        response = client.post("/projects/discover", json={"path": str(repo)})
+
+        assert response.status_code == 200
+        assert response.json()["default_branch"] == "main"
+
+
+def test_discover_project_cancelled(monkeypatch):
+    from app import main
+    from app.repo_discovery import FolderSelectionCancelled
+
+    def cancel(_: str | None = None):
+        raise FolderSelectionCancelled("Folder selection was cancelled")
+
+    monkeypatch.setattr(main, "discover_repository", cancel)
+
+    response = client.post("/projects/discover", json={})
+    assert response.status_code == 409
+    assert "cancelled" in response.json()["detail"].lower()

@@ -29,6 +29,18 @@ export interface ProjectSummary {
   created_at: string;
 }
 
+export interface DiscoverProjectRequest {
+  path?: string;
+}
+
+export interface DiscoverProjectResponse {
+  name: string;
+  repo_path: string;
+  default_branch: string;
+  current_branch: string | null;
+  is_git_repo: boolean;
+}
+
 export interface TaskSummary {
   id: string;
   project_id: string;

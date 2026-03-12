@@ -1,6 +1,8 @@
 import type {
   ApproveTaskRequest,
   CreateProjectRequest,
+  DiscoverProjectRequest,
+  DiscoverProjectResponse,
   CreateTaskRequest,
   ProjectSummary,
   TaskDetail,
@@ -34,6 +36,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listProjects: () => request<ProjectSummary[]>("/projects"),
+  discoverProject: (payload: DiscoverProjectRequest = {}) =>
+    request<DiscoverProjectResponse>("/projects/discover", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
   createProject: (payload: CreateProjectRequest) =>
     request<ProjectSummary>("/projects", {
       method: "POST",

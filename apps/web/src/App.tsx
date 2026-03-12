@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   CreateProjectRequest,
   CreateTaskRequest,
+  DiscoverProjectResponse,
   ProjectSummary,
   TaskDetail,
   TaskDiff,
@@ -61,9 +62,37 @@ function StatusBadge({ status }: { status: TaskStatus }) {
 }
 
 function ProjectForm({ onCreate }: { onCreate: (payload: CreateProjectRequest) => void }) {
-  const [name, setName] = useState("Demo Project");
-  const [repoPath, setRepoPath] = useState("/srv/repos/demo");
+  const [name, setName] = useState("");
+  const [repoPath, setRepoPath] = useState("");
   const [defaultBranch, setDefaultBranch] = useState("main");
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [lastDiscovered, setLastDiscovered] = useState<DiscoverProjectResponse | null>(null);
+  const [fieldOrigin, setFieldOrigin] = useState({
+    name: "manual",
+    repoPath: "manual",
+    defaultBranch: "manual"
+  });
+
+  const discoverProjectMutation = useMutation({
+    mutationFn: api.discoverProject,
+    onSuccess: (project) => {
+      setLastDiscovered(project);
+      setDiscoveryError(null);
+      setName(project.name);
+      setRepoPath(project.repo_path);
+      setDefaultBranch(project.default_branch);
+      setFieldOrigin({
+        name: "discovered",
+        repoPath: "discovered",
+        defaultBranch: "discovered"
+      });
+    },
+    onError: (error: Error) => {
+      setDiscoveryError(error.message);
+    }
+  });
+
+  const canSubmit = Boolean(name.trim() && repoPath.trim() && defaultBranch.trim());
 
   return (
     <form
@@ -77,19 +106,52 @@ function ProjectForm({ onCreate }: { onCreate: (payload: CreateProjectRequest) =
         <h2>Web Commander</h2>
         <p>Create a project record for the Orchestration API.</p>
       </div>
+      <button
+        type="button"
+        onClick={() => discoverProjectMutation.mutate({})}
+        disabled={discoverProjectMutation.isPending}
+      >
+        {discoverProjectMutation.isPending ? "Choosing folder..." : "Choose folder"}
+      </button>
+      {discoveryError ? <p role="alert">{discoveryError}</p> : null}
+      {lastDiscovered ? <p>Selected Task Workspace source: {lastDiscovered.repo_path}</p> : null}
       <label>
         Project name
-        <input value={name} onChange={(event) => setName(event.target.value)} />
+        <input
+          value={name}
+          onChange={(event) => {
+            setName(event.target.value);
+            setFieldOrigin((previous) => ({ ...previous, name: "edited" }));
+          }}
+        />
       </label>
       <label>
         Repository path
-        <input value={repoPath} onChange={(event) => setRepoPath(event.target.value)} />
+        <input
+          value={repoPath}
+          onChange={(event) => {
+            setRepoPath(event.target.value);
+            setFieldOrigin((previous) => ({ ...previous, repoPath: "edited" }));
+          }}
+        />
       </label>
       <label>
         Default branch
-        <input value={defaultBranch} onChange={(event) => setDefaultBranch(event.target.value)} />
+        <input
+          value={defaultBranch}
+          onChange={(event) => {
+            setDefaultBranch(event.target.value);
+            setFieldOrigin((previous) => ({ ...previous, defaultBranch: "edited" }));
+          }}
+        />
       </label>
-      <button type="submit">Create project</button>
+      <button type="submit" disabled={!canSubmit}>
+        Create project
+      </button>
+      <p>
+        Form state: {lastDiscovered ? "discovered" : "manual"} / name {fieldOrigin.name} / path {fieldOrigin.repoPath}
+        / branch {fieldOrigin.defaultBranch}
+      </p>
     </form>
   );
 }

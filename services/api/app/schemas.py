@@ -36,6 +36,18 @@ class CreateProjectRequest(BaseModel):
     default_branch: str = "main"
 
 
+class DiscoverProjectRequest(BaseModel):
+    path: str | None = None
+
+
+class DiscoverProjectResponse(BaseModel):
+    name: str
+    repo_path: str
+    default_branch: str
+    current_branch: str | None = None
+    is_git_repo: bool
+
+
 class ProjectSummary(BaseModel):
     id: str
     name: str

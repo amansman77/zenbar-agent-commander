@@ -28,10 +28,17 @@ from .repository import (
     serialize_task_summary,
     set_task_status,
 )
+from .repo_discovery import (
+    FolderSelectionCancelled,
+    RepositoryDiscoveryError,
+    discover_repository,
+)
 from .runtime import create_runtime_adapter
 from .schemas import (
     CreateProjectRequest,
     CreateTaskRequest,
+    DiscoverProjectRequest,
+    DiscoverProjectResponse,
     ProjectSummary,
     TaskApprovalRequest,
     TaskDetail,
@@ -74,6 +81,16 @@ def get_projects(db: Session = Depends(get_db)):
 @app.post("/projects", response_model=ProjectSummary)
 def post_project(payload: CreateProjectRequest, db: Session = Depends(get_db)):
     return serialize_project(create_project(db, payload))
+
+
+@app.post("/projects/discover", response_model=DiscoverProjectResponse)
+def post_project_discovery(payload: DiscoverProjectRequest | None = None):
+    try:
+        return discover_repository(payload.path if payload else None)
+    except FolderSelectionCancelled as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RepositoryDiscoveryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/projects/{project_id}/tasks", response_model=list[TaskSummary])
