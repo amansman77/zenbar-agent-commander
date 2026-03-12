@@ -124,35 +124,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         thread_id = thread["thread"]["id"]
         state = SessionState(thread_id=thread_id, start_request=request)
         self._sessions[thread_id] = state
-        turn = await self._rpc(
-            "turn/start",
-            {
-                "threadId": thread_id,
-                "input": [{"type": "text", "text": _prompt_with_workspace(request), "text_elements": []}],
-                "collaborationMode": (
-                    {
-                        "mode": "plan",
-                        "settings": {
-                            "model": thread.get("model"),
-                            "developer_instructions": None,
-                            "reasoning_effort": "medium",
-                        },
-                    }
-                    if request.execution_mode == "plan"
-                    else None
-                ),
-                "sandboxPolicy": {
-                    "type": "workspaceWrite",
-                    "writableRoots": [request.working_directory],
-                    "readOnlyAccess": {"type": "fullAccess"},
-                    "networkAccess": False,
-                    "excludeTmpdirEnvVar": False,
-                    "excludeSlashTmp": False,
-                },
-                "approvalPolicy": "on-request",
-                "personality": "pragmatic",
-            },
-        )
+        turn = await self._rpc("turn/start", self._build_turn_start_params(thread_id, request, thread.get("model")))
         state.current_turn_id = turn["turn"]["id"]
         await state.queue.put(RuntimeEvent(type="agent_status", message="Codex App Server turn started"))
         return RuntimeSession(session_id=thread_id)
@@ -194,28 +166,45 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         state = self._require_session(session_id)
         if state.start_request is None:
             raise RuntimeError("Retry unavailable because original task request is missing")
-        turn = await self._rpc(
-            "turn/start",
-            {
-                "threadId": session_id,
-                "input": [{"type": "text", "text": _prompt_with_workspace(state.start_request), "text_elements": []}],
-                "sandboxPolicy": {
-                    "type": "workspaceWrite",
-                    "writableRoots": [state.start_request.working_directory],
-                    "readOnlyAccess": {"type": "fullAccess"},
-                    "networkAccess": False,
-                    "excludeTmpdirEnvVar": False,
-                    "excludeSlashTmp": False,
-                },
-                "approvalPolicy": "on-request",
-                "personality": "pragmatic",
-            },
-        )
+        turn = await self._rpc("turn/start", self._build_turn_start_params(session_id, state.start_request))
         state.current_turn_id = turn["turn"]["id"]
         state.pending_approvals.clear()
         state.latest_diff = TaskDiff()
         await state.queue.put(RuntimeEvent(type="agent_status", message="Retry turn started in Codex App Server"))
         return RuntimeSession(session_id=session_id)
+
+    def _build_turn_start_params(
+        self,
+        thread_id: str,
+        request: RuntimeStartRequest,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "threadId": thread_id,
+            "input": [{"type": "text", "text": _prompt_with_workspace(request), "text_elements": []}],
+            "collaborationMode": (
+                {
+                    "mode": "plan",
+                    "settings": {
+                        "model": model,
+                        "developer_instructions": None,
+                        "reasoning_effort": "medium",
+                    },
+                }
+                if request.execution_mode == "plan"
+                else None
+            ),
+            "sandboxPolicy": {
+                "type": "workspaceWrite",
+                "writableRoots": [request.working_directory],
+                "readOnlyAccess": {"type": "fullAccess"},
+                "networkAccess": False,
+                "excludeTmpdirEnvVar": False,
+                "excludeSlashTmp": False,
+            },
+            "approvalPolicy": "on-request",
+            "personality": "pragmatic",
+        }
 
     async def get_diff(self, session_id: str) -> TaskDiff:
         return self._require_session(session_id).latest_diff

@@ -35,9 +35,12 @@ class TaskOrchestrator:
             append_event(db, task, RuntimeEvent(type="agent_status", message="Checking Codex runtime plan capability"))
             supported_modes = await self.adapter.list_collaboration_modes()
             if supported_modes is None:
-                append_event(db, task, RuntimeEvent(type="failed", message="Codex runtime does not expose collaborationMode/list"))
-                raise RuntimeError("Codex runtime does not expose collaborationMode/list")
-            if "plan" not in supported_modes:
+                append_event(
+                    db,
+                    task,
+                    RuntimeEvent(type="agent_status", message="Codex runtime does not expose collaborationMode/list; attempting direct plan mode start"),
+                )
+            elif "plan" not in supported_modes:
                 append_event(
                     db,
                     task,
@@ -48,7 +51,8 @@ class TaskOrchestrator:
                     ),
                 )
                 raise RuntimeError("Plan mode is not supported by this Codex App Server")
-            append_event(db, task, RuntimeEvent(type="agent_status", message="Codex runtime supports plan mode"))
+            else:
+                append_event(db, task, RuntimeEvent(type="agent_status", message="Codex runtime supports plan mode"))
         prepared = await asyncio.to_thread(
             prepare_workspace,
             project.repo_path,

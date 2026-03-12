@@ -135,7 +135,7 @@ def test_invalid_retry_transition():
         assert response.status_code == 409
 
 
-def test_plan_task_fails_without_collaboration_mode_list(monkeypatch):
+def test_plan_task_starts_without_collaboration_mode_list(monkeypatch):
     from app.main import orchestrator
 
     async def no_modes():
@@ -155,8 +155,12 @@ def test_plan_task_fails_without_collaboration_mode_list(monkeypatch):
             json={"project_id": project["id"], "title": "Plan task", "prompt": "Create a plan", "execution_mode": "plan"},
         )
 
-        assert response.status_code == 502
-        assert "collaborationMode/list" in response.json()["detail"]
+        assert response.status_code == 200
+        body = response.json()
+        asyncio.run(asyncio.sleep(0.08))
+        events = client.get(f"/tasks/{body['id']}/events")
+        messages = [item["message"] for item in events.json()]
+        assert any("attempting direct plan mode start" in message for message in messages)
 
 
 def test_discover_project_uses_remote_default_branch():
