@@ -1,0 +1,16 @@
+node_modules
+dist
+.DS_Store
+.venv
+__pycache__
+.pytest_cache
+*.pyc
+*.pyo
+*.pyd
+*.db
+coverage
+htmlcov
+apps/web/.vite
+services/api/.mypy_cache
+services/api/.ruff_cache
+tmp

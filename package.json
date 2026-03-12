@@ -1,0 +1,15 @@
+{
+  "name": "zenbar-agent-commander",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.7.0",
+  "scripts": {
+    "build": "pnpm --filter @zenbar/shared build && pnpm --filter web build",
+    "dev": "./scripts/dev-all.sh",
+    "dev:api": "./scripts/dev-api.sh",
+    "dev:web": "./scripts/dev-web.sh",
+    "lint": "pnpm --filter @zenbar/shared lint && pnpm --filter web lint",
+    "test": "pnpm --filter @zenbar/shared test && pnpm --filter web test",
+    "test:api": ".venv/bin/pytest services/api/tests -q"
+  }
+}

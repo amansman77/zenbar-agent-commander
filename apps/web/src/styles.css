@@ -1,0 +1,278 @@
+:root {
+  color-scheme: light;
+  font-family: "IBM Plex Sans", "Helvetica Neue", sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #112031;
+  background:
+    radial-gradient(circle at top left, rgba(240, 197, 74, 0.35), transparent 32%),
+    linear-gradient(180deg, #f4efe5 0%, #f7f9fc 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.75rem 1.2rem;
+  background: #112031;
+  color: #fff;
+}
+
+button.secondary {
+  background: #d9e2ef;
+  color: #112031;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+input,
+textarea {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid #c6d2e1;
+  padding: 0.8rem 0.9rem;
+  background: #fff;
+}
+
+textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: 2rem;
+}
+
+.hero {
+  margin-bottom: 1.5rem;
+  padding: 2rem;
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(17, 32, 49, 0.08);
+}
+
+.eyebrow {
+  margin: 0;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #6c7a89;
+  font-size: 0.78rem;
+}
+
+.hero h1 {
+  margin: 0.25rem 0 0.5rem;
+  font-size: clamp(2rem, 4vw, 3.5rem);
+}
+
+.hero-copy {
+  max-width: 62ch;
+  margin: 0;
+  color: #405166;
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 1.25rem;
+}
+
+.content-grid {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 1.25rem;
+}
+
+.sidebar,
+.content-grid {
+  align-items: start;
+}
+
+.panel {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(17, 32, 49, 0.08);
+  border-radius: 24px;
+  padding: 1.2rem;
+}
+
+.panel-header {
+  margin-bottom: 1rem;
+}
+
+.panel-header h2,
+.panel-header h3 {
+  margin: 0;
+}
+
+.panel-header p {
+  margin: 0.35rem 0 0;
+  color: #506073;
+}
+
+.form-panel,
+.list-panel {
+  margin-bottom: 1.25rem;
+}
+
+.form-panel label {
+  display: block;
+  margin-bottom: 0.9rem;
+  color: #405166;
+}
+
+.list-item {
+  width: 100%;
+  text-align: left;
+  margin-bottom: 0.75rem;
+  border-radius: 18px;
+  background: #f6f8fb;
+  color: #112031;
+}
+
+.list-item.active {
+  background: #112031;
+  color: #fff;
+}
+
+.list-item span {
+  display: block;
+  opacity: 0.8;
+  font-size: 0.9rem;
+}
+
+.list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.detail-panel {
+  min-height: 720px;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.status-blue {
+  background: #d7e8ff;
+  color: #235ea9;
+}
+
+.status-amber {
+  background: #ffebb8;
+  color: #8d5f00;
+}
+
+.status-green {
+  background: #d7f5df;
+  color: #1b7a37;
+}
+
+.status-red {
+  background: #ffdfe0;
+  color: #a62833;
+}
+
+.status-slate {
+  background: #e8edf4;
+  color: #526273;
+}
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.meta-label {
+  display: block;
+  font-size: 0.8rem;
+  color: #6b7786;
+}
+
+.action-row {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.2rem;
+}
+
+.event-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.event-list li {
+  padding: 0.85rem;
+  border-radius: 16px;
+  background: #f6f8fb;
+}
+
+.event-list span {
+  display: block;
+  color: #6b7786;
+  font-size: 0.82rem;
+  margin-bottom: 0.15rem;
+}
+
+.diff-panel {
+  border-radius: 18px;
+  padding: 1rem;
+  background: #f6f8fb;
+}
+
+.diff-panel pre {
+  overflow: auto;
+  padding: 0.8rem;
+  border-radius: 14px;
+  background: #112031;
+  color: #f3f7ff;
+}
+
+.empty-state {
+  color: #506073;
+}
+
+@media (max-width: 1100px) {
+  .workspace-grid,
+  .content-grid,
+  .detail-grid,
+  .meta-grid {
+    grid-template-columns: 1fr;
+  }
+}
