@@ -33,6 +33,7 @@ class Task(Base):
     title: Mapped[str] = mapped_column(String(255))
     prompt: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(64), default="queued")
+    execution_mode: Mapped[str] = mapped_column(String(32), default="execute")
     workspace_type: Mapped[str] = mapped_column(String(32), default="branch")
     workspace_ref: Mapped[str] = mapped_column(String(255))
     workspace_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)

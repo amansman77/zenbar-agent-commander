@@ -31,6 +31,24 @@ class TaskOrchestrator:
 
     async def start_task(self, db: Session, task: Task, project: Project) -> Task:
         set_task_status(db, task, "starting")
+        if task.execution_mode == "plan":
+            append_event(db, task, RuntimeEvent(type="agent_status", message="Checking Codex runtime plan capability"))
+            supported_modes = await self.adapter.list_collaboration_modes()
+            if supported_modes is None:
+                append_event(db, task, RuntimeEvent(type="failed", message="Codex runtime does not expose collaborationMode/list"))
+                raise RuntimeError("Codex runtime does not expose collaborationMode/list")
+            if "plan" not in supported_modes:
+                append_event(
+                    db,
+                    task,
+                    RuntimeEvent(
+                        type="failed",
+                        message="Plan mode is not supported by this Codex App Server",
+                        payload={"modes": supported_modes},
+                    ),
+                )
+                raise RuntimeError("Plan mode is not supported by this Codex App Server")
+            append_event(db, task, RuntimeEvent(type="agent_status", message="Codex runtime supports plan mode"))
         prepared = await asyncio.to_thread(
             prepare_workspace,
             project.repo_path,
@@ -48,6 +66,7 @@ class TaskOrchestrator:
             repo_path=project.repo_path,
             working_directory=prepared.workspace_path,
             default_branch=project.default_branch,
+            execution_mode=refreshed.execution_mode,  # type: ignore[arg-type]
             workspace_type=refreshed.workspace_type,  # type: ignore[arg-type]
             workspace_ref=refreshed.workspace_ref,
         )

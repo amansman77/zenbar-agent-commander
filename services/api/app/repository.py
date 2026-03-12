@@ -55,6 +55,7 @@ def create_task(db: Session, payload: CreateTaskRequest) -> Task:
         project_id=payload.project_id,
         title=payload.title,
         prompt=payload.prompt,
+        execution_mode=payload.execution_mode,
         workspace_type=payload.workspace_type,
         workspace_ref=build_workspace_ref(payload.title),
         workspace_path=None,
@@ -153,6 +154,8 @@ def normalize_event_type(event_type: str) -> str:
         "diff_generated",
         "waiting_approval",
         "test_result",
+        "plan_updated",
+        "plan_delta",
         "completed",
         "failed",
         "stopped",
@@ -166,7 +169,12 @@ def map_status_from_event(event_type: str) -> str | None:
         "completed": "completed",
         "failed": "failed",
         "stopped": "stopped",
-    }.get(event_type, "running" if event_type in {"agent_status", "file_changed", "command_executed", "diff_generated", "test_result"} else None)
+    }.get(
+        event_type,
+        "running"
+        if event_type in {"agent_status", "file_changed", "command_executed", "diff_generated", "test_result", "plan_updated", "plan_delta"}
+        else None,
+    )
 
 
 def can_approve(status: str) -> bool:

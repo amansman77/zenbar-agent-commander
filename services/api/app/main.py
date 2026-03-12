@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from .db import Base, engine, get_db
+from .db import Base, engine, ensure_schema, get_db
 from .app_server_manager import ManagedAppServer
 from .repository import (
     add_approval,
@@ -56,6 +56,7 @@ managed_app_server = ManagedAppServer()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
+    ensure_schema()
     await managed_app_server.start()
     try:
         yield

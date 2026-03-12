@@ -4,6 +4,7 @@ import type {
   CreateProjectRequest,
   CreateTaskRequest,
   DiscoverProjectResponse,
+  ExecutionMode,
   ProjectSummary,
   TaskDetail,
   TaskDiff,
@@ -165,6 +166,7 @@ function TaskForm({
 }) {
   const [title, setTitle] = useState("Fix sitemap canonical");
   const [prompt, setPrompt] = useState("Analyze the repository and fix canonical tag generation.");
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>("execute");
 
   return (
     <form
@@ -174,7 +176,7 @@ function TaskForm({
         if (!project) {
           return;
         }
-        onCreate({ project_id: project.id, title, prompt, workspace_type: "branch" });
+        onCreate({ project_id: project.id, title, prompt, execution_mode: executionMode, workspace_type: "branch" });
       }}
     >
       <div className="panel-header">
@@ -189,6 +191,21 @@ function TaskForm({
         Prompt
         <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} disabled={!project} />
       </label>
+      <label>
+        Execution mode
+        <select
+          aria-label="Execution mode"
+          value={executionMode}
+          onChange={(event) => setExecutionMode(event.target.value as ExecutionMode)}
+          disabled={!project}
+        >
+          <option value="execute">Execute</option>
+          <option value="plan">Plan</option>
+        </select>
+      </label>
+      {executionMode === "plan" ? (
+        <p>Plan mode checks Codex runtime collaboration capability and streams planning steps into the event log.</p>
+      ) : null}
       <button type="submit" disabled={!project}>
         Create task
       </button>
@@ -240,6 +257,13 @@ export function App() {
   const createProjectMutation = useMutation({
     mutationFn: api.createProject,
     onSuccess: (project) => {
+      queryClient.setQueryData(["projects"], (previous: ProjectSummary[] | undefined) => {
+        const next = previous ?? [];
+        if (next.some((item) => item.id === project.id)) {
+          return next;
+        }
+        return [project, ...next];
+      });
       queryClient.invalidateQueries({ queryKey: ["projects"] });
       setSelectedProjectId(project.id);
     }
@@ -326,6 +350,7 @@ export function App() {
                   <strong>{item.title}</strong>
                   <StatusBadge status={item.status} />
                 </div>
+                <span>{item.execution_mode}</span>
                 <span>{item.workspace_ref}</span>
                 <span>{item.workspace_path}</span>
               </button>
@@ -348,6 +373,10 @@ export function App() {
                     <strong>{task.project.name}</strong>
                   </div>
                   <div>
+                    <span className="meta-label">Execution mode</span>
+                    <strong>{task.execution_mode}</strong>
+                  </div>
+                  <div>
                     <span className="meta-label">Task Workspace</span>
                     <strong>{task.workspace_ref}</strong>
                     <span>{task.workspace_path}</span>
@@ -361,7 +390,7 @@ export function App() {
                 <div className="action-row">
                   <button
                     onClick={() => taskActionMutation.mutate({ action: "approveTask", taskId: task.id })}
-                    disabled={!["waiting_approval", "running"].includes(task.status)}
+                    disabled={task.execution_mode === "plan" || !["waiting_approval", "running"].includes(task.status)}
                   >
                     Approve
                   </button>

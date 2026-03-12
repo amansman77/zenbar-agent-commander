@@ -73,6 +73,35 @@ def test_create_project_and_task_flow():
         assert "waiting_approval" in event_types
 
 
+def test_create_plan_task_flow():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+
+        project = client.post(
+            "/projects",
+            json={"name": "Planner", "repo_path": str(repo), "default_branch": "main"},
+        )
+        assert project.status_code == 200
+        project_id = project.json()["id"]
+
+        task = client.post(
+            "/tasks",
+            json={"project_id": project_id, "title": "Plan Canonical", "prompt": "Create an implementation plan", "execution_mode": "plan"},
+        )
+        assert task.status_code == 200
+        body = task.json()
+        assert body["execution_mode"] == "plan"
+
+        asyncio.run(asyncio.sleep(0.08))
+
+        events = client.get(f"/tasks/{body['id']}/events")
+        assert events.status_code == 200
+        event_types = [item["type"] for item in events.json()]
+        assert "plan_updated" in event_types
+        assert "plan_delta" in event_types
+        assert "completed" in event_types
+
+
 def test_approve_task():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
@@ -104,6 +133,30 @@ def test_invalid_retry_transition():
 
         response = client.post(f"/tasks/{task['id']}/retry", json={"actor": "pytest"})
         assert response.status_code == 409
+
+
+def test_plan_task_fails_without_collaboration_mode_list(monkeypatch):
+    from app.main import orchestrator
+
+    async def no_modes():
+        return None
+
+    monkeypatch.setattr(orchestrator.adapter, "list_collaboration_modes", no_modes)
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "No Mode Support", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+
+        response = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Plan task", "prompt": "Create a plan", "execution_mode": "plan"},
+        )
+
+        assert response.status_code == 502
+        assert "collaborationMode/list" in response.json()["detail"]
 
 
 def test_discover_project_uses_remote_default_branch():

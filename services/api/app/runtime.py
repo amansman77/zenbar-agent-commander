@@ -34,13 +34,18 @@ def _build_diff_payload(diff: str) -> TaskDiff:
 
 
 def _prompt_with_workspace(request: RuntimeStartRequest) -> str:
+    operation = (
+        "Produce an implementation plan without modifying files or accepting final code changes."
+        if request.execution_mode == "plan"
+        else "Operate inside the current repository working directory."
+    )
     return (
         f"Task title: {request.title}\n"
         f"Task workspace: {request.workspace_ref}\n"
         f"Task working directory: {request.working_directory}\n"
         f"Default branch: {request.default_branch}\n\n"
         f"{request.prompt}\n\n"
-        "Operate inside the current repository working directory. "
+        f"{operation} "
         "Human approval is required before the task result is accepted as final."
     )
 
@@ -64,6 +69,10 @@ class SessionState:
 
 class RuntimeAdapter(ABC):
     stream_in_background = True
+
+    @abstractmethod
+    async def list_collaboration_modes(self) -> list[str] | None:
+        raise NotImplementedError
 
     @abstractmethod
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
@@ -120,6 +129,18 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             {
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": _prompt_with_workspace(request), "text_elements": []}],
+                "collaborationMode": (
+                    {
+                        "mode": "plan",
+                        "settings": {
+                            "model": thread.get("model"),
+                            "developer_instructions": None,
+                            "reasoning_effort": "medium",
+                        },
+                    }
+                    if request.execution_mode == "plan"
+                    else None
+                ),
                 "sandboxPolicy": {
                     "type": "workspaceWrite",
                     "writableRoots": [request.working_directory],
@@ -135,6 +156,23 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         state.current_turn_id = turn["turn"]["id"]
         await state.queue.put(RuntimeEvent(type="agent_status", message="Codex App Server turn started"))
         return RuntimeSession(session_id=thread_id)
+
+    async def list_collaboration_modes(self) -> list[str] | None:
+        try:
+            result = await self._rpc("collaborationMode/list", {})
+        except RuntimeError as exc:
+            message = str(exc).lower()
+            if "method not found" in message or "unknown method" in message or "not supported" in message:
+                return None
+            raise
+        modes = result.get("modes")
+        if not isinstance(modes, list):
+            return None
+        supported: list[str] = []
+        for item in modes:
+            if isinstance(item, dict) and isinstance(item.get("mode"), str):
+                supported.append(item["mode"])
+        return supported or None
 
     async def stop_task(self, session_id: str) -> None:
         state = self._require_session(session_id)
@@ -299,6 +337,15 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                 await state.queue.put(RuntimeEvent(type="completed", message="Turn completed"))
             return
 
+        if method == "turn/plan/updated":
+            explanation = params.get("explanation")
+            plan = params.get("plan", [])
+            message = explanation or f"Plan updated with {len(plan)} step(s)"
+            await state.queue.put(
+                RuntimeEvent(type="plan_updated", message=message, payload={"plan": plan, "explanation": explanation})
+            )
+            return
+
         if method == "turn/diff/updated":
             diff = params.get("diff", "")
             state.latest_diff = _build_diff_payload(diff)
@@ -327,6 +374,18 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                 await state.queue.put(RuntimeEvent(type="command_executed", message=delta[:200], payload={"source": "outputDelta"}))
             return
 
+        if method == "item/plan/delta":
+            delta = params.get("delta", "")
+            if delta:
+                await state.queue.put(
+                    RuntimeEvent(
+                        type="plan_delta",
+                        message=delta[:200],
+                        payload={"delta": delta, "item_id": params.get("itemId"), "turn_id": params.get("turnId")},
+                    )
+                )
+            return
+
         if method.startswith("codex/event/"):
             await self._handle_legacy_event(state, method, params)
 
@@ -343,7 +402,17 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             else:
                 await state.queue.put(RuntimeEvent(type="command_executed", message=str(message)[:200]))
         elif event_type == "task_started":
-            await state.queue.put(RuntimeEvent(type="agent_status", message="Task started"))
+            collaboration_mode = event.get("collaboration_mode_kind")
+            if state.start_request and state.start_request.execution_mode == "plan" and collaboration_mode not in {None, "plan"}:
+                await state.queue.put(
+                    RuntimeEvent(
+                        type="failed",
+                        message=f"Codex runtime started in '{collaboration_mode}' mode instead of 'plan'",
+                        payload={"reported_mode": collaboration_mode},
+                    )
+                )
+            else:
+                await state.queue.put(RuntimeEvent(type="agent_status", message="Task started"))
         elif event_type == "turn_diff":
             diff = event.get("unified_diff", "")
             if diff:
@@ -384,20 +453,44 @@ class MockRuntimeAdapter(RuntimeAdapter):
     def __init__(self) -> None:
         self._events: dict[str, list[RuntimeEvent]] = {}
         self._diffs: dict[str, TaskDiff] = {}
+        self._requests: dict[str, RuntimeStartRequest] = {}
+
+    async def list_collaboration_modes(self) -> list[str] | None:
+        return ["default", "plan"]
 
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
         session_id = f"mock-{request.task_id}"
-        self._events[session_id] = [
-            RuntimeEvent(type="agent_status", message="Analyzing repository"),
-            RuntimeEvent(type="file_changed", message="app/sitemap.ts", payload={"file": "app/sitemap.ts"}),
-            RuntimeEvent(type="diff_generated", message="Patch ready", payload={"files_changed": ["app/sitemap.ts"]}),
-            RuntimeEvent(type="waiting_approval", message="Waiting for human approval"),
-        ]
-        self._diffs[session_id] = TaskDiff(
-            files_changed=["app/sitemap.ts"],
-            summary="Added canonical tag fallback",
-            raw_diff="diff --git a/app/sitemap.ts b/app/sitemap.ts\n+ canonical fallback"
-        )
+        self._requests[session_id] = request
+        if request.execution_mode == "plan":
+            self._events[session_id] = [
+                RuntimeEvent(type="agent_status", message="Analyzing repository in plan mode"),
+                RuntimeEvent(
+                    type="plan_updated",
+                    message="Plan updated with 2 step(s)",
+                    payload={
+                        "explanation": "Produce a safe implementation sequence.",
+                        "plan": [
+                            {"step": "Inspect sitemap generation", "status": "in_progress"},
+                            {"step": "Add regression test coverage", "status": "pending"},
+                        ],
+                    },
+                ),
+                RuntimeEvent(type="plan_delta", message="Inspect sitemap generation"),
+                RuntimeEvent(type="completed", message="Plan completed"),
+            ]
+            self._diffs[session_id] = TaskDiff()
+        else:
+            self._events[session_id] = [
+                RuntimeEvent(type="agent_status", message="Analyzing repository"),
+                RuntimeEvent(type="file_changed", message="app/sitemap.ts", payload={"file": "app/sitemap.ts"}),
+                RuntimeEvent(type="diff_generated", message="Patch ready", payload={"files_changed": ["app/sitemap.ts"]}),
+                RuntimeEvent(type="waiting_approval", message="Waiting for human approval"),
+            ]
+            self._diffs[session_id] = TaskDiff(
+                files_changed=["app/sitemap.ts"],
+                summary="Added canonical tag fallback",
+                raw_diff="diff --git a/app/sitemap.ts b/app/sitemap.ts\n+ canonical fallback"
+            )
         return RuntimeSession(session_id=session_id)
 
     async def stop_task(self, session_id: str) -> None:
@@ -413,19 +506,21 @@ class MockRuntimeAdapter(RuntimeAdapter):
         )
 
     async def retry_task(self, session_id: str) -> RuntimeSession:
-        task_id = session_id.replace("mock-", "")
-        return await self.start_task(
-            RuntimeStartRequest(
+        request = self._requests.get(session_id)
+        if request is None:
+            task_id = session_id.replace("mock-", "")
+            request = RuntimeStartRequest(
                 task_id=task_id,
                 title="retry",
                 prompt="retry",
                 repo_path="/srv/repos/demo",
                 working_directory="/srv/repos/demo",
                 default_branch="main",
+                execution_mode="execute",
                 workspace_type="branch",
                 workspace_ref=f"task/retry-{task_id[:4]}",
             )
-        )
+        return await self.start_task(request)
 
     async def get_diff(self, session_id: str) -> TaskDiff:
         return self._diffs.get(session_id, TaskDiff())

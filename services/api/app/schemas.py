@@ -17,6 +17,7 @@ TaskStatus = Literal[
     "completed",
 ]
 WorkspaceType = Literal["branch", "worktree"]
+ExecutionMode = Literal["execute", "plan"]
 EventType = Literal[
     "agent_status",
     "file_changed",
@@ -24,6 +25,8 @@ EventType = Literal[
     "diff_generated",
     "waiting_approval",
     "test_result",
+    "plan_updated",
+    "plan_delta",
     "completed",
     "failed",
     "stopped",
@@ -60,6 +63,7 @@ class CreateTaskRequest(BaseModel):
     project_id: str
     title: str
     prompt: str
+    execution_mode: ExecutionMode = "execute"
     workspace_type: WorkspaceType = "branch"
 
 
@@ -94,6 +98,7 @@ class TaskSummary(BaseModel):
     project_id: str
     title: str
     status: TaskStatus
+    execution_mode: ExecutionMode
     workspace_type: WorkspaceType
     workspace_ref: str
     workspace_path: str | None
@@ -120,6 +125,7 @@ class RuntimeStartRequest(BaseModel):
     repo_path: str
     working_directory: str
     default_branch: str
+    execution_mode: ExecutionMode = "execute"
     workspace_type: WorkspaceType
     workspace_ref: str
 

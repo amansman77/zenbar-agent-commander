@@ -9,6 +9,7 @@ export type TaskStatus =
   | "completed";
 
 export type WorkspaceType = "branch" | "worktree";
+export type ExecutionMode = "execute" | "plan";
 
 export type EventType =
   | "agent_status"
@@ -17,6 +18,8 @@ export type EventType =
   | "diff_generated"
   | "waiting_approval"
   | "test_result"
+  | "plan_updated"
+  | "plan_delta"
   | "completed"
   | "failed"
   | "stopped";
@@ -46,6 +49,7 @@ export interface TaskSummary {
   project_id: string;
   title: string;
   status: TaskStatus;
+  execution_mode: ExecutionMode;
   workspace_type: WorkspaceType;
   workspace_ref: string;
   workspace_path: string | null;
@@ -93,6 +97,7 @@ export interface CreateTaskRequest {
   project_id: string;
   title: string;
   prompt: string;
+  execution_mode?: ExecutionMode;
   workspace_type?: WorkspaceType;
 }
 
