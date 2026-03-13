@@ -238,6 +238,38 @@ function MarkdownRenderer({ markdown }: { markdown: string }) {
   return <div className="markdown-view">{blocks}</div>;
 }
 
+function diffLineClass(line: string): string {
+  if (line.startsWith("diff --git") || line.startsWith("index ") || line.startsWith("--- ") || line.startsWith("+++ ")) {
+    return "diff-line-meta";
+  }
+  if (line.startsWith("@@")) {
+    return "diff-line-hunk";
+  }
+  if (line.startsWith("+")) {
+    return "diff-line-add";
+  }
+  if (line.startsWith("-")) {
+    return "diff-line-remove";
+  }
+  return "diff-line-neutral";
+}
+
+function ColoredDiff({ rawDiff }: { rawDiff: string }) {
+  const lines = rawDiff.split("\n");
+  return (
+    <pre className="output-pre diff-pre">
+      <code>
+        {lines.map((line, index) => (
+          <span key={`diff-${index}`} className={`diff-line ${diffLineClass(line)}`}>
+            {line || " "}
+            {index < lines.length - 1 ? "\n" : ""}
+          </span>
+        ))}
+      </code>
+    </pre>
+  );
+}
+
 function StatusBadge({ status }: { status: TaskStatus }) {
   return <span className={`status status-${statusTone[status]}`}>{status}</span>;
 }
@@ -920,7 +952,7 @@ export function App() {
                   <li key={file}>{file}</li>
                 ))}
               </ul>
-              {diff?.raw_diff ? <pre className="output-pre">{diff.raw_diff}</pre> : null}
+              {diff?.raw_diff ? <ColoredDiff rawDiff={diff.raw_diff} /> : null}
             </div>
           </section>
         </div>

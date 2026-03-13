@@ -350,6 +350,44 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.diff-pre {
+  background: #111f2f;
+}
+
+.diff-pre code {
+  display: block;
+  white-space: pre;
+}
+
+.diff-line {
+  display: block;
+  padding: 0 0.3rem;
+  border-radius: 4px;
+}
+
+.diff-line-meta {
+  color: #9ac2f0;
+}
+
+.diff-line-hunk {
+  background: rgba(255, 221, 120, 0.15);
+  color: #ffd77b;
+}
+
+.diff-line-add {
+  background: rgba(57, 171, 93, 0.22);
+  color: #bff2ce;
+}
+
+.diff-line-remove {
+  background: rgba(184, 74, 74, 0.25);
+  color: #ffd0d0;
+}
+
+.diff-line-neutral {
+  color: #f1f7ff;
+}
+
 .plan-output code {
   white-space: pre-wrap;
   word-break: break-word;

@@ -400,6 +400,40 @@ def test_get_task_diff_uses_persisted_diff_when_runtime_session_is_stale():
         assert response.json()["files_changed"] == ["README.md"]
 
 
+def test_get_task_diff_falls_back_to_workspace_git_diff_when_runtime_diff_is_unavailable():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Workspace Diff Fallback", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Workspace diff", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        workspace_path = task["workspace_path"]
+        assert workspace_path
+        readme = Path(workspace_path) / "README.md"
+        readme.write_text("hello\nworkspace diff change\n")
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            current.runtime_session_id = "missing-session"
+            current.latest_diff_summary = ""
+            current.latest_diff_files_json = "[]"
+            current.latest_diff_raw = None
+            db.add(current)
+            db.commit()
+
+        response = client.get(f"/tasks/{task['id']}/diff")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["summary"].startswith("Updated")
+        assert "README.md" in body["files_changed"]
+
+
 def test_respond_marks_task_failed_when_runtime_session_is_stale():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)

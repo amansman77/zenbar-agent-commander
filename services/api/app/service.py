@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 from collections.abc import AsyncIterator
 
 from sqlalchemy.orm import Session
@@ -21,7 +22,7 @@ from .repository import (
     set_task_status,
 )
 from .runtime import RuntimeAdapter
-from .schemas import RespondTaskRequest, RuntimeEvent, RuntimeStartRequest
+from .schemas import RespondTaskRequest, RuntimeEvent, RuntimeStartRequest, TaskDiff
 from .streaming import broker
 from .workspace import prepare_workspace
 
@@ -218,15 +219,22 @@ class TaskOrchestrator:
         return refreshed
 
     async def refresh_diff(self, db: Session, task: Task) -> Task:
-        if not task.runtime_session_id:
+        runtime_diff: TaskDiff | None = None
+        if task.runtime_session_id:
+            try:
+                runtime_diff = await self.adapter.get_diff(task.runtime_session_id)
+            except RuntimeError as exc:
+                if "Unknown Codex App Server session" not in str(exc):
+                    raise
+
+        fallback_diff = await asyncio.to_thread(self._compute_workspace_diff, task)
+        chosen = runtime_diff
+        if not self._has_diff_content(chosen) and self._has_diff_content(fallback_diff):
+            chosen = fallback_diff
+        if chosen is None:
             return task
-        try:
-            diff = await self.adapter.get_diff(task.runtime_session_id)
-        except RuntimeError as exc:
-            if "Unknown Codex App Server session" not in str(exc):
-                raise
-            return task
-        updated = replace_diff(db, task, diff)
+
+        updated = replace_diff(db, task, chosen)
         db.expire_all()
         assert updated is not None
         return updated
@@ -311,6 +319,73 @@ class TaskOrchestrator:
                 "diff": serialize_diff(task).model_dump(mode="json"),
             }
         await broker.publish(task_id, payload)
+
+    def _has_diff_content(self, diff: TaskDiff | None) -> bool:
+        if diff is None:
+            return False
+        if diff.raw_diff and diff.raw_diff.strip():
+            return True
+        if diff.files_changed:
+            return True
+        return False
+
+    def _run_git(self, cwd: str, args: list[str]) -> str:
+        completed = subprocess.run(
+            ["git", "-C", cwd, *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return completed.stdout.strip()
+
+    def _compute_workspace_diff(self, task: Task) -> TaskDiff | None:
+        workspace = task.workspace_path
+        if not workspace:
+            return None
+
+        try:
+            self._run_git(workspace, ["rev-parse", "--is-inside-work-tree"])
+        except Exception:
+            return None
+
+        files: list[str] = []
+        raw_candidates: list[str] = []
+        default_branch = task.project.default_branch if task.project else "main"
+
+        def add_files(lines: str) -> None:
+            for line in lines.splitlines():
+                value = line.strip()
+                if value:
+                    files.append(value)
+
+        commands: list[tuple[list[str], bool]] = [
+            (["diff", "--name-only"], False),
+            (["diff", "--cached", "--name-only"], False),
+            (["ls-files", "--others", "--exclude-standard"], False),
+            (["diff", default_branch, "--name-only"], False),
+            (["diff"], True),
+            (["diff", "--cached"], True),
+            (["diff", default_branch], True),
+        ]
+
+        for args, is_raw in commands:
+            try:
+                output = self._run_git(workspace, args)
+            except Exception:
+                continue
+            if not output:
+                continue
+            if is_raw:
+                raw_candidates.append(output)
+            else:
+                add_files(output)
+
+        deduped_files = list(dict.fromkeys(files))
+        raw_diff = next((item for item in raw_candidates if item.strip()), None)
+        if not deduped_files and not raw_diff:
+            return None
+        summary = f"Updated {len(deduped_files)} file(s) in the Task Workspace."
+        return TaskDiff(files_changed=deduped_files, summary=summary, raw_diff=raw_diff)
 
 
 async def stream_task_events(task_id: str) -> AsyncIterator[str]:
