@@ -543,6 +543,8 @@ export function App() {
   const [planCopyState, setPlanCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [promptCopyState, setPromptCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [retryModel, setRetryModel] = useState("");
+  const [commitMessage, setCommitMessage] = useState("Apply Task Workspace updates");
+  const [gitActionMessage, setGitActionMessage] = useState<string | null>(null);
   const isMobile = useIsMobileBreakpoint();
 
   const projectsQuery = useQuery({
@@ -653,6 +655,25 @@ export function App() {
     }
   });
 
+  const workspaceCommitMutation = useMutation({
+    mutationFn: (input: { taskId: string; message: string }) =>
+      api.commitTaskWorkspace(input.taskId, { actor, message: input.message }),
+    onSuccess: (result, input) => {
+      setGitActionMessage(`Commit succeeded on ${result.branch ?? "branch"}`);
+      queryClient.invalidateQueries({ queryKey: ["task-events", input.taskId] });
+      queryClient.invalidateQueries({ queryKey: ["task-diff", input.taskId] });
+    }
+  });
+
+  const workspacePushMutation = useMutation({
+    mutationFn: (input: { taskId: string }) =>
+      api.pushTaskWorkspace(input.taskId, { actor, remote: "origin", set_upstream: true }),
+    onSuccess: (result, input) => {
+      setGitActionMessage(`Push succeeded: ${result.remote ?? "origin"}/${result.branch ?? ""}`);
+      queryClient.invalidateQueries({ queryKey: ["task-events", input.taskId] });
+    }
+  });
+
   const task = taskDetailQuery.data ?? null;
   const events = taskEventsQuery.data ?? [];
   const diff = taskDiffQuery.data ?? task?.latest_diff;
@@ -712,13 +733,17 @@ export function App() {
   useEffect(() => {
     if (!task) {
       setRetryModel("");
+      setCommitMessage("Apply Task Workspace updates");
+      setGitActionMessage(null);
       return;
     }
     if (task.model && retryModelOptions.includes(task.model)) {
       setRetryModel(task.model);
-      return;
+    } else {
+      setRetryModel(retryModelOptions[0] ?? "");
     }
-    setRetryModel(retryModelOptions[0] ?? "");
+    setCommitMessage(`Apply updates for ${task.title}`);
+    setGitActionMessage(null);
   }, [task, retryModelOptions]);
 
   useEffect(() => {
@@ -817,6 +842,15 @@ export function App() {
 
         <div className="action-row">
           <label className="retry-model-control">
+            Commit message
+            <input
+              aria-label="Commit message"
+              value={commitMessage}
+              onChange={(event) => setCommitMessage(event.target.value)}
+              placeholder="Apply Task Workspace updates"
+            />
+          </label>
+          <label className="retry-model-control">
             Retry model
             <select
               aria-label="Retry model"
@@ -851,7 +885,24 @@ export function App() {
           >
             Retry
           </button>
+          <button
+            className="secondary"
+            onClick={() => workspaceCommitMutation.mutate({ taskId: task.id, message: commitMessage.trim() })}
+            disabled={!task.workspace_path || !commitMessage.trim() || workspaceCommitMutation.isPending}
+          >
+            Commit
+          </button>
+          <button
+            className="secondary"
+            onClick={() => workspacePushMutation.mutate({ taskId: task.id })}
+            disabled={!task.workspace_path || workspacePushMutation.isPending}
+          >
+            Push
+          </button>
         </div>
+        {workspaceCommitMutation.error instanceof Error ? <p role="alert">{workspaceCommitMutation.error.message}</p> : null}
+        {workspacePushMutation.error instanceof Error ? <p role="alert">{workspacePushMutation.error.message}</p> : null}
+        {gitActionMessage ? <p className="copy-status">{gitActionMessage}</p> : null}
 
         {task.status === "waiting_user_input" ? (
           <section className="panel form-panel">
@@ -1005,8 +1056,20 @@ export function App() {
           {mobileScreen === "projects" ? (
             <section className="panel mobile-screen">
               <div className="panel-header">
-                <h2>Projects</h2>
-                <p>Tap a project to open tasks</p>
+                <div className="row-header">
+                  <div>
+                    <h2>Projects</h2>
+                    <p>Tap a project to open tasks</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={handleDeleteProject}
+                    disabled={!selectedProject || deleteProjectMutation.isPending}
+                  >
+                    {deleteProjectMutation.isPending ? "Deleting..." : "Delete Project"}
+                  </button>
+                </div>
               </div>
               <div className="panel-scroll">
                 {projectsQuery.data?.length ? (
@@ -1042,14 +1105,6 @@ export function App() {
                   <h2>Tasks</h2>
                   <p>{selectedProject?.name ?? "Select project"}</p>
                 </div>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={handleDeleteProject}
-                  disabled={!selectedProject || deleteProjectMutation.isPending}
-                >
-                  {deleteProjectMutation.isPending ? "Deleting..." : "Delete"}
-                </button>
               </div>
               <div className="panel-scroll">
                 {selectedProject ? (
@@ -1104,8 +1159,20 @@ export function App() {
         <main className="workspace-grid">
           <section className="panel sidebar">
             <div className="panel-header">
-              <h2>Projects</h2>
-              <p>Connected repositories</p>
+              <div className="row-header">
+                <div>
+                  <h2>Projects</h2>
+                  <p>Connected repositories</p>
+                </div>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={handleDeleteProject}
+                  disabled={!selectedProject || deleteProjectMutation.isPending}
+                >
+                  {deleteProjectMutation.isPending ? "Deleting..." : "Delete Project"}
+                </button>
+              </div>
             </div>
             <div className="panel-scroll">
               {projectsQuery.data?.length ? (
@@ -1136,19 +1203,9 @@ export function App() {
                   <h2>Tasks</h2>
                   <p>{selectedProject ? selectedProject.name : "Select a project first"}</p>
                 </div>
-                <div className="action-row">
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={handleDeleteProject}
-                    disabled={!selectedProject || deleteProjectMutation.isPending}
-                  >
-                    {deleteProjectMutation.isPending ? "Deleting..." : "Delete Project"}
-                  </button>
-                  <button type="button" onClick={() => setTaskModalOpen(true)} disabled={!selectedProject}>
-                    + New Task
-                  </button>
-                </div>
+                <button type="button" onClick={() => setTaskModalOpen(true)} disabled={!selectedProject}>
+                  + New Task
+                </button>
               </div>
             </div>
             <div className="panel-scroll">
