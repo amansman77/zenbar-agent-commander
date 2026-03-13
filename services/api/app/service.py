@@ -9,6 +9,7 @@ from .db import SessionLocal
 from .models import Project, Task
 from .repository import (
     append_event,
+    clear_runtime_session,
     get_task,
     replace_diff,
     list_events,
@@ -19,7 +20,7 @@ from .repository import (
     set_task_status,
 )
 from .runtime import RuntimeAdapter
-from .schemas import RuntimeEvent, RuntimeStartRequest
+from .schemas import RespondTaskRequest, RuntimeEvent, RuntimeStartRequest
 from .streaming import broker
 from .workspace import prepare_workspace
 
@@ -89,7 +90,57 @@ class TaskOrchestrator:
     async def approve_task(self, db: Session, task: Task) -> Task:
         if not task.runtime_session_id:
             raise RuntimeError("Task has no runtime session")
-        await self.adapter.approve_task(task.runtime_session_id)
+        try:
+            await self.adapter.approve_task(task.runtime_session_id)
+        except RuntimeError as exc:
+            if "Unknown Codex App Server session" not in str(exc):
+                raise
+            append_event(
+                db,
+                task,
+                RuntimeEvent(
+                    type="failed",
+                    message="Codex App Server session is no longer available. Retry the task to continue.",
+                    payload={"reason": "stale_runtime_session"},
+                ),
+            )
+            refreshed = get_task(db, task.id)
+            assert refreshed is not None
+            refreshed = clear_runtime_session(db, refreshed)
+            raise RuntimeError("Task runtime session is no longer available. Retry the task to continue.") from exc
+        if not self.adapter.stream_in_background:
+            await self._consume_events(task.id, task.runtime_session_id)
+        db.expire_all()
+        refreshed = get_task(db, task.id)
+        assert refreshed is not None
+        return refreshed
+
+    async def respond_task(self, db: Session, task: Task, payload: RespondTaskRequest) -> Task:
+        if not task.runtime_session_id:
+            raise RuntimeError("Task has no runtime session")
+        if task.pending_interaction_type != "user_input" or not task.pending_request_id:
+            raise RuntimeError("Task is not waiting for user input")
+        try:
+            await self.adapter.respond_task(task.runtime_session_id, task.pending_request_id, payload.answers)
+        except RuntimeError as exc:
+            if "Unknown Codex App Server session" not in str(exc):
+                raise
+            append_event(
+                db,
+                task,
+                RuntimeEvent(
+                    type="failed",
+                    message="Codex App Server session is no longer available. Retry the task to continue.",
+                    payload={"reason": "stale_runtime_session"},
+                ),
+            )
+            refreshed = get_task(db, task.id)
+            assert refreshed is not None
+            refreshed = clear_runtime_session(db, refreshed)
+            raise RuntimeError("Task runtime session is no longer available. Retry the task to continue.") from exc
+        if not self.adapter.stream_in_background:
+            await self._consume_events(task.id, task.runtime_session_id)
+        db.expire_all()
         refreshed = get_task(db, task.id)
         assert refreshed is not None
         return refreshed
@@ -98,14 +149,26 @@ class TaskOrchestrator:
         if not task.runtime_session_id:
             raise RuntimeError("Task has no runtime session")
         await self.adapter.stop_task(task.runtime_session_id)
+        if not self.adapter.stream_in_background:
+            await self._consume_events(task.id, task.runtime_session_id)
+        db.expire_all()
         refreshed = get_task(db, task.id)
         assert refreshed is not None
         return refreshed
 
     async def retry_task(self, db: Session, task: Task) -> Task:
         if not task.runtime_session_id:
-            raise RuntimeError("Task has no runtime session")
-        session = await self.adapter.retry_task(task.runtime_session_id)
+            return await self._restart_with_fresh_session(db, task)
+        try:
+            session = await self.adapter.retry_task(task.runtime_session_id)
+        except RuntimeError as exc:
+            if "Unknown Codex App Server session" not in str(exc):
+                raise
+            refreshed = get_task(db, task.id)
+            assert refreshed is not None
+            refreshed = clear_runtime_session(db, refreshed)
+            return await self._restart_with_fresh_session(db, refreshed)
+        db.expire_all()
         refreshed = get_task(db, task.id)
         assert refreshed is not None
         refreshed = set_task_status(db, refreshed, "starting", runtime_session_id=session.session_id)
@@ -120,10 +183,33 @@ class TaskOrchestrator:
     async def refresh_diff(self, db: Session, task: Task) -> Task:
         if not task.runtime_session_id:
             return task
-        diff = await self.adapter.get_diff(task.runtime_session_id)
+        try:
+            diff = await self.adapter.get_diff(task.runtime_session_id)
+        except RuntimeError as exc:
+            if "Unknown Codex App Server session" not in str(exc):
+                raise
+            return task
         updated = replace_diff(db, task, diff)
+        db.expire_all()
         assert updated is not None
         return updated
+
+    async def _restart_with_fresh_session(self, db: Session, task: Task) -> Task:
+        project = task.project
+        if project is None:
+            raise RuntimeError("Task project is missing")
+        append_event(
+            db,
+            task,
+            RuntimeEvent(
+                type="agent_status",
+                message="Starting a fresh Codex App Server session for retry",
+                payload={"reason": "fresh_retry_session"},
+            ),
+        )
+        refreshed = get_task(db, task.id)
+        assert refreshed is not None
+        return await self.start_task(db, refreshed, project)
 
     async def _consume_events(self, task_id: str, session_id: str) -> None:
         attempts = 0
@@ -150,7 +236,7 @@ class TaskOrchestrator:
             append_event(db, task, event)
             task = get_task(db, task_id)
             assert task is not None
-            if task.runtime_session_id and event.type in {"diff_generated", "waiting_approval", "completed"}:
+            if task.runtime_session_id and event.type in {"diff_generated", "completed"}:
                 task = await self.refresh_diff(db, task)
             records = list_events(db, task_id)
             latest_event = serialize_event(records[-1])

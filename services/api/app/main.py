@@ -40,6 +40,7 @@ from .schemas import (
     DiscoverProjectRequest,
     DiscoverProjectResponse,
     ProjectSummary,
+    RespondTaskRequest,
     TaskApprovalRequest,
     TaskDetail,
     TaskDiff,
@@ -168,6 +169,22 @@ async def approve_task(task_id: str, payload: TaskApprovalRequest, db: Session =
     return serialize_task_detail(task)
 
 
+@app.post("/tasks/{task_id}/respond", response_model=TaskDetail)
+async def respond_task(task_id: str, payload: RespondTaskRequest, db: Session = Depends(get_db)):
+    task = get_task(db, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _assert_actionable(task)
+    _assert_transition(task.status == "waiting_user_input", f"Task cannot accept user input from status '{task.status}'")
+    try:
+        await orchestrator.respond_task(db, task, payload)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"Response failed: {exc}") from exc
+    task = get_task(db, task_id)
+    assert task is not None
+    return serialize_task_detail(task)
+
+
 @app.post("/tasks/{task_id}/stop", response_model=TaskDetail)
 async def stop_task(task_id: str, payload: TaskApprovalRequest, db: Session = Depends(get_db)):
     task = get_task(db, task_id)
@@ -190,7 +207,6 @@ async def retry_task(task_id: str, payload: TaskApprovalRequest, db: Session = D
     task = get_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    _assert_actionable(task)
     _assert_transition(can_retry(task.status), f"Task cannot be retried from status '{task.status}'")
     add_approval(db, task, "retry", payload.actor)
     try:

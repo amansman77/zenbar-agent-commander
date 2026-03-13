@@ -5,6 +5,7 @@ import type {
   DiscoverProjectResponse,
   CreateTaskRequest,
   ProjectSummary,
+  RespondTaskRequest,
   TaskDetail,
   TaskDiff,
   TaskEvent,
@@ -58,6 +59,11 @@ export const api = {
   getDiff: (taskId: string) => request<TaskDiff>(`/tasks/${taskId}/diff`),
   approveTask: (taskId: string, payload: ApproveTaskRequest) =>
     request<TaskDetail>(`/tasks/${taskId}/approve`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  respondTask: (taskId: string, payload: RespondTaskRequest) =>
+    request<TaskDetail>(`/tasks/${taskId}/respond`, {
       method: "POST",
       body: JSON.stringify(payload)
     }),

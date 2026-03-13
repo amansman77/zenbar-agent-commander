@@ -51,10 +51,11 @@ def _prompt_with_workspace(request: RuntimeStartRequest) -> str:
 
 
 @dataclass
-class PendingApproval:
+class PendingRequest:
     request_id: int | str
     method: str
     params: dict[str, Any]
+    interaction_type: str
 
 
 @dataclass
@@ -63,7 +64,7 @@ class SessionState:
     queue: asyncio.Queue[RuntimeEvent] = field(default_factory=asyncio.Queue)
     current_turn_id: str | None = None
     latest_diff: TaskDiff = field(default_factory=TaskDiff)
-    pending_approvals: dict[int | str, PendingApproval] = field(default_factory=dict)
+    pending_requests: dict[int | str, PendingRequest] = field(default_factory=dict)
     start_request: RuntimeStartRequest | None = None
 
 
@@ -84,6 +85,10 @@ class RuntimeAdapter(ABC):
 
     @abstractmethod
     async def approve_task(self, session_id: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def respond_task(self, session_id: str, request_id: int | str, answers: dict[str, list[str]]) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -154,13 +159,41 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
 
     async def approve_task(self, session_id: str) -> None:
         state = self._require_session(session_id)
-        if not state.pending_approvals:
-            return
-        for request_id, pending in list(state.pending_approvals.items()):
+        pending_items = [item for item in state.pending_requests.values() if item.interaction_type == "result_approval"]
+        if not pending_items:
+            raise RuntimeError("No pending result approval request")
+        for pending in pending_items:
             result = self._approval_result_for(pending)
-            await self._send_json({"jsonrpc": "2.0", "id": request_id, "result": result})
-            state.pending_approvals.pop(request_id, None)
-        await state.queue.put(RuntimeEvent(type="agent_status", message="Approval forwarded to Codex App Server"))
+            await self._send_json({"jsonrpc": "2.0", "id": pending.request_id, "result": result})
+            state.pending_requests.pop(pending.request_id, None)
+            await state.queue.put(
+                RuntimeEvent(
+                    type="result_approval_granted",
+                    message="Result approval granted",
+                    payload={"request_id": pending.request_id, "method": pending.method},
+                )
+            )
+
+    async def respond_task(self, session_id: str, request_id: int | str, answers: dict[str, list[str]]) -> None:
+        state = self._require_session(session_id)
+        pending = self._find_pending_request(state, request_id)
+        if pending is None or pending.interaction_type != "user_input":
+            raise RuntimeError("No pending user input request")
+        await self._send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": pending.request_id,
+                "result": {"answers": {question_id: {"answers": value} for question_id, value in answers.items()}},
+            }
+        )
+        state.pending_requests.pop(pending.request_id, None)
+        await state.queue.put(
+            RuntimeEvent(
+                type="user_input_submitted",
+                message="User input submitted",
+                payload={"request_id": pending.request_id, "answers": answers},
+            )
+        )
 
     async def retry_task(self, session_id: str) -> RuntimeSession:
         state = self._require_session(session_id)
@@ -168,7 +201,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             raise RuntimeError("Retry unavailable because original task request is missing")
         turn = await self._rpc("turn/start", self._build_turn_start_params(session_id, state.start_request))
         state.current_turn_id = turn["turn"]["id"]
-        state.pending_approvals.clear()
+        state.pending_requests.clear()
         state.latest_diff = TaskDiff()
         await state.queue.put(RuntimeEvent(type="agent_status", message="Retry turn started in Codex App Server"))
         return RuntimeSession(session_id=session_id)
@@ -279,13 +312,41 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         if thread_id is None or thread_id not in self._sessions:
             return
         state = self._sessions[thread_id]
-        state.pending_approvals[payload["id"]] = PendingApproval(
-            request_id=payload["id"],
-            method=method,
-            params=params,
+        request_id = payload["id"]
+        if method == "item/tool/requestUserInput":
+            state.pending_requests[request_id] = PendingRequest(
+                request_id=request_id,
+                method=method,
+                params=params,
+                interaction_type="user_input",
+            )
+            await state.queue.put(
+                RuntimeEvent(
+                    type="user_input_requested",
+                    message=f"User input requested: {len(params.get('questions', []))} question(s)",
+                    payload={"request_id": request_id, "method": method, **params},
+                )
+            )
+            return
+        if method in {"item/fileChange/requestApproval", "item/commandExecution/requestApproval"}:
+            state.pending_requests[request_id] = PendingRequest(
+                request_id=request_id,
+                method=method,
+                params=params,
+                interaction_type="result_approval",
+            )
+            message = params.get("reason") or params.get("command") or f"Result approval requested: {method}"
+            await state.queue.put(
+                RuntimeEvent(
+                    type="result_approval_requested",
+                    message=message,
+                    payload={"request_id": request_id, "method": method, **params},
+                )
+            )
+            return
+        await state.queue.put(
+            RuntimeEvent(type="agent_status", message=f"Unhandled server request: {method}", payload={"method": method, **params})
         )
-        message = params.get("reason") or params.get("command") or f"Approval requested: {method}"
-        await state.queue.put(RuntimeEvent(type="waiting_approval", message=message, payload={"method": method, "request_id": payload["id"]}))
 
     async def _handle_notification(self, payload: dict[str, Any]) -> None:
         method = payload["method"]
@@ -305,8 +366,10 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         if method == "thread/status/changed":
             status = params.get("status", {})
             active_flags = status.get("activeFlags", [])
+            if "waitingOnApproval" in active_flags and state.pending_requests:
+                return
             if "waitingOnApproval" in active_flags:
-                await state.queue.put(RuntimeEvent(type="waiting_approval", message="Codex App Server is waiting on approval"))
+                await state.queue.put(RuntimeEvent(type="agent_status", message="Codex App Server is waiting on user interaction"))
             else:
                 await state.queue.put(RuntimeEvent(type="agent_status", message=f"Thread status: {status.get('type', 'unknown')}"))
             return
@@ -354,7 +417,15 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             return
 
         if method == "serverRequest/resolved":
-            state.pending_approvals.pop(params.get("requestId"), None)
+            request_id = params.get("requestId")
+            state.pending_requests.pop(request_id, None)
+            await state.queue.put(
+                RuntimeEvent(
+                    type="agent_status",
+                    message="Pending interaction resolved",
+                    payload={"request_id": request_id, "cleanup_pending_snapshot": True},
+                )
+            )
             return
 
         if method == "item/commandExecution/outputDelta":
@@ -418,16 +489,22 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             if message:
                 await state.queue.put(RuntimeEvent(type="agent_status", message=str(message)[:200]))
 
-    def _approval_result_for(self, pending: PendingApproval) -> dict[str, Any]:
+    def _approval_result_for(self, pending: PendingRequest) -> dict[str, Any]:
         if pending.method == "item/commandExecution/requestApproval":
             return {"decision": "accept"}
         if pending.method == "item/fileChange/requestApproval":
             return {"decision": "accept"}
-        if pending.method == "item/permissions/requestApproval":
-            return {"permissions": pending.params.get("permissions", {}), "scope": "turn"}
-        if pending.method in {"execCommandApproval", "applyPatchApproval"}:
-            return {"decision": "approved"}
         raise RuntimeError(f"Unsupported approval request: {pending.method}")
+
+    def _find_pending_request(self, state: SessionState, request_id: int | str) -> PendingRequest | None:
+        pending = state.pending_requests.get(request_id)
+        if pending is not None:
+            return pending
+        request_id_str = str(request_id)
+        for candidate in state.pending_requests.values():
+            if str(candidate.request_id) == request_id_str:
+                return candidate
+        return None
 
     def _require_session(self, session_id: str) -> SessionState:
         state = self._sessions.get(session_id)
@@ -473,24 +550,51 @@ class MockRuntimeAdapter(RuntimeAdapter):
                 RuntimeEvent(type="agent_status", message="Analyzing repository"),
                 RuntimeEvent(type="file_changed", message="app/sitemap.ts", payload={"file": "app/sitemap.ts"}),
                 RuntimeEvent(type="diff_generated", message="Patch ready", payload={"files_changed": ["app/sitemap.ts"]}),
-                RuntimeEvent(type="waiting_approval", message="Waiting for human approval"),
+                RuntimeEvent(
+                    type="result_approval_requested",
+                    message="Waiting for result approval",
+                    payload={"request_id": "mock-approval", "method": "item/fileChange/requestApproval"},
+                ),
             ]
             self._diffs[session_id] = TaskDiff(
                 files_changed=["app/sitemap.ts"],
                 summary="Added canonical tag fallback",
-                raw_diff="diff --git a/app/sitemap.ts b/app/sitemap.ts\n+ canonical fallback"
+                raw_diff="diff --git a/app/sitemap.ts b/app/sitemap.ts\n+ canonical fallback",
             )
         return RuntimeSession(session_id=session_id)
 
     async def stop_task(self, session_id: str) -> None:
+        if session_id not in self._events:
+            raise RuntimeError("Unknown Codex App Server session")
         self._events.setdefault(session_id, []).append(RuntimeEvent(type="stopped", message="Task stopped"))
 
     async def approve_task(self, session_id: str) -> None:
+        if session_id not in self._events:
+            raise RuntimeError("Unknown Codex App Server session")
         self._events.setdefault(session_id, []).extend(
             [
+                RuntimeEvent(
+                    type="result_approval_granted",
+                    message="Result approval granted",
+                    payload={"request_id": "mock-approval"},
+                ),
                 RuntimeEvent(type="agent_status", message="Running tests"),
                 RuntimeEvent(type="test_result", message="All tests passed"),
                 RuntimeEvent(type="completed", message="Accepted result completed"),
+            ]
+        )
+
+    async def respond_task(self, session_id: str, request_id: int | str, answers: dict[str, list[str]]) -> None:
+        if session_id not in self._events:
+            raise RuntimeError("Unknown Codex App Server session")
+        self._events.setdefault(session_id, []).extend(
+            [
+                RuntimeEvent(
+                    type="user_input_submitted",
+                    message="User input submitted",
+                    payload={"request_id": request_id, "answers": answers},
+                ),
+                RuntimeEvent(type="agent_status", message="Continuing after user input"),
             ]
         )
 
@@ -512,10 +616,14 @@ class MockRuntimeAdapter(RuntimeAdapter):
         return await self.start_task(request)
 
     async def get_diff(self, session_id: str) -> TaskDiff:
-        return self._diffs.get(session_id, TaskDiff())
+        if session_id not in self._diffs:
+            raise RuntimeError("Unknown Codex App Server session")
+        return self._diffs[session_id]
 
     async def subscribe_events(self, session_id: str) -> AsyncIterator[RuntimeEvent]:
-        for event in self._events.get(session_id, []):
+        events = self._events.get(session_id, [])
+        while events:
+            event = events.pop(0)
             await asyncio.sleep(0.01)
             yield event
 

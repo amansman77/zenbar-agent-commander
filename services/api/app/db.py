@@ -24,9 +24,31 @@ def ensure_schema() -> None:
         return
     with engine.begin() as connection:
         columns = {row[1] for row in connection.execute(text("PRAGMA table_info(tasks)"))}
+        statuses = [row[0] for row in connection.execute(text("SELECT DISTINCT status FROM tasks"))]
+        event_types = [row[0] for row in connection.execute(text("SELECT DISTINCT type FROM task_events"))]
         if "execution_mode" not in columns:
             connection.execute(
                 text("ALTER TABLE tasks ADD COLUMN execution_mode VARCHAR(32) NOT NULL DEFAULT 'execute'")
+            )
+        if "pending_interaction_type" not in columns:
+            connection.execute(text("ALTER TABLE tasks ADD COLUMN pending_interaction_type VARCHAR(64)"))
+        if "pending_request_id" not in columns:
+            connection.execute(text("ALTER TABLE tasks ADD COLUMN pending_request_id VARCHAR(255)"))
+        if "pending_request_payload_json" not in columns:
+            connection.execute(text("ALTER TABLE tasks ADD COLUMN pending_request_payload_json TEXT"))
+        if "waiting_approval" in statuses:
+            connection.execute(
+                text("UPDATE tasks SET status = 'waiting_result_approval' WHERE status = 'waiting_approval'")
+            )
+        if "approved" in statuses:
+            connection.execute(text("UPDATE tasks SET status = 'running' WHERE status = 'approved'"))
+        if "waiting_approval" in event_types:
+            connection.execute(
+                text("UPDATE task_events SET type = 'result_approval_requested' WHERE type = 'waiting_approval'")
+            )
+        if "approved" in event_types:
+            connection.execute(
+                text("UPDATE task_events SET type = 'result_approval_granted' WHERE type = 'approved'")
             )
 
 

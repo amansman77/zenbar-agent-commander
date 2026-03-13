@@ -10,21 +10,25 @@ TaskStatus = Literal[
     "queued",
     "starting",
     "running",
-    "waiting_approval",
-    "approved",
+    "waiting_user_input",
+    "waiting_result_approval",
     "stopped",
     "failed",
     "completed",
 ]
 WorkspaceType = Literal["branch", "worktree"]
 ExecutionMode = Literal["execute", "plan"]
+PendingInteractionType = Literal["user_input", "result_approval"]
 EventType = Literal[
     "agent_status",
     "file_changed",
     "command_executed",
     "diff_generated",
-    "waiting_approval",
     "test_result",
+    "user_input_requested",
+    "user_input_submitted",
+    "result_approval_requested",
+    "result_approval_granted",
     "plan_updated",
     "plan_delta",
     "completed",
@@ -77,6 +81,25 @@ class TaskApprovalResponse(BaseModel):
     created_at: datetime
 
 
+class TaskQuestionOption(BaseModel):
+    label: str
+    description: str
+
+
+class TaskQuestion(BaseModel):
+    id: str
+    header: str
+    question: str
+    is_other: bool = False
+    is_secret: bool = False
+    options: list[TaskQuestionOption] | None = None
+
+
+class RespondTaskRequest(BaseModel):
+    actor: str = "system"
+    answers: dict[str, list[str]]
+
+
 class TaskDiff(BaseModel):
     files_changed: list[str] = Field(default_factory=list)
     summary: str = ""
@@ -112,6 +135,10 @@ class TaskDetail(TaskSummary):
     project: ProjectSummary
     approvals: list[TaskApprovalResponse]
     latest_diff: TaskDiff
+    pending_interaction_type: PendingInteractionType | None = None
+    pending_request_id: str | None = None
+    pending_request_payload_json: dict[str, Any] | None = None
+    pending_questions: list[TaskQuestion] = Field(default_factory=list)
 
 
 class RuntimeSession(BaseModel):

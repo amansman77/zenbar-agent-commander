@@ -11,6 +11,7 @@ from .models import Project, Task, TaskApproval, TaskEvent
 from .schemas import (
     CreateProjectRequest,
     CreateTaskRequest,
+    PendingInteractionType,
     ProjectSummary,
     RuntimeEvent,
     TaskApprovalResponse,
@@ -88,6 +89,17 @@ def set_task_status(db: Session, task: Task, status: str, runtime_session_id: st
     return get_task(db, task.id)
 
 
+def clear_runtime_session(db: Session, task: Task, status: str = "failed") -> Task:
+    task.status = status
+    task.runtime_session_id = None
+    task.pending_interaction_type = None
+    task.pending_request_id = None
+    task.pending_request_payload_json = None
+    db.add(task)
+    db.commit()
+    return get_task(db, task.id)
+
+
 def set_task_workspace(db: Session, task: Task, workspace_path: str) -> Task:
     task.workspace_path = workspace_path
     db.add(task)
@@ -108,6 +120,19 @@ def append_event(db: Session, task: Task, event: RuntimeEvent) -> TaskEvent:
     status = map_status_from_event(record.type)
     if status:
         task.status = status
+    if record.type in {"user_input_requested", "result_approval_requested"}:
+        payload = event.payload or {}
+        task.pending_interaction_type = (
+            "user_input" if record.type == "user_input_requested" else "result_approval"
+        )
+        task.pending_request_id = str(payload.get("request_id")) if payload.get("request_id") is not None else None
+        task.pending_request_payload_json = json.dumps(payload)
+    elif record.type in {"user_input_submitted", "result_approval_granted"} or (
+        record.type == "agent_status" and (event.payload or {}).get("cleanup_pending_snapshot")
+    ):
+        task.pending_interaction_type = None
+        task.pending_request_id = None
+        task.pending_request_payload_json = None
     if record.type == "diff_generated" and event.payload is not None:
         task.latest_diff_summary = str(event.payload.get("summary") or task.latest_diff_summary or event.message)
         files = event.payload.get("files_changed", [])
@@ -136,9 +161,7 @@ def list_events(db: Session, task_id: str) -> list[TaskEvent]:
 def add_approval(db: Session, task: Task, action: str, actor: str) -> TaskApproval:
     approval = TaskApproval(task_id=task.id, action=action, actor=actor)
     db.add(approval)
-    if action == "approve":
-        task.status = "approved"
-    elif action == "stop":
+    if action == "stop":
         task.status = "stopped"
     db.add(task)
     db.commit()
@@ -152,8 +175,11 @@ def normalize_event_type(event_type: str) -> str:
         "file_changed",
         "command_executed",
         "diff_generated",
-        "waiting_approval",
         "test_result",
+        "user_input_requested",
+        "user_input_submitted",
+        "result_approval_requested",
+        "result_approval_granted",
         "plan_updated",
         "plan_delta",
         "completed",
@@ -164,21 +190,33 @@ def normalize_event_type(event_type: str) -> str:
 
 
 def map_status_from_event(event_type: str) -> str | None:
-    return {
-        "waiting_approval": "waiting_approval",
-        "completed": "completed",
-        "failed": "failed",
-        "stopped": "stopped",
-    }.get(
-        event_type,
-        "running"
-        if event_type in {"agent_status", "file_changed", "command_executed", "diff_generated", "test_result", "plan_updated", "plan_delta"}
-        else None,
-    )
+    if event_type == "user_input_requested":
+        return "waiting_user_input"
+    if event_type == "result_approval_requested":
+        return "waiting_result_approval"
+    if event_type == "completed":
+        return "completed"
+    if event_type == "failed":
+        return "failed"
+    if event_type == "stopped":
+        return "stopped"
+    if event_type in {
+        "agent_status",
+        "file_changed",
+        "command_executed",
+        "diff_generated",
+        "test_result",
+        "user_input_submitted",
+        "result_approval_granted",
+        "plan_updated",
+        "plan_delta",
+    }:
+        return "running"
+    return None
 
 
 def can_approve(status: str) -> bool:
-    return status in {"running", "waiting_approval"}
+    return status == "waiting_result_approval"
 
 
 def can_stop(status: str) -> bool:
@@ -199,11 +237,12 @@ def serialize_task_summary(task: Task) -> TaskSummary:
 
 def serialize_event(record: TaskEvent) -> TaskEventResponse:
     payload = json.loads(record.payload_json) if record.payload_json else None
+    event_type = canonicalize_legacy_event_type(record.type)
     return TaskEventResponse(
         id=record.id,
         task_id=record.task_id,
         seq=record.seq,
-        type=record.type,  # type: ignore[arg-type]
+        type=event_type,  # type: ignore[arg-type]
         message=record.message,
         payload_json=payload,
         created_at=record.created_at,
@@ -219,6 +258,7 @@ def serialize_diff(task: Task) -> TaskDiff:
 
 
 def serialize_task_detail(task: Task) -> TaskDetail:
+    pending_payload = json.loads(task.pending_request_payload_json) if task.pending_request_payload_json else None
     return TaskDetail(
         **serialize_task_summary(task).model_dump(),
         prompt=task.prompt,
@@ -228,4 +268,53 @@ def serialize_task_detail(task: Task) -> TaskDetail:
             for item in task.approvals
         ],
         latest_diff=serialize_diff(task),
+        pending_interaction_type=_normalize_pending_interaction_type(task.pending_interaction_type),
+        pending_request_id=task.pending_request_id,
+        pending_request_payload_json=pending_payload,
+        pending_questions=_serialize_pending_questions(pending_payload),
     )
+
+
+def _normalize_pending_interaction_type(value: str | None) -> PendingInteractionType | None:
+    if value in {"user_input", "result_approval"}:
+        return value
+    return None
+
+
+def _serialize_pending_questions(payload: dict | None) -> list[dict]:
+    if not payload:
+        return []
+    raw_questions = payload.get("questions")
+    if not isinstance(raw_questions, list):
+        return []
+    questions: list[dict] = []
+    for item in raw_questions:
+        if not isinstance(item, dict):
+            continue
+        options = item.get("options")
+        normalized_options = None
+        if isinstance(options, list):
+            normalized_options = [
+                {"label": option.get("label", ""), "description": option.get("description", "")}
+                for option in options
+                if isinstance(option, dict)
+            ]
+        questions.append(
+            {
+                "id": str(item.get("id", "")),
+                "header": str(item.get("header", "")),
+                "question": str(item.get("question", "")),
+                "is_other": bool(item.get("is_other", item.get("isOther", False))),
+                "is_secret": bool(item.get("is_secret", item.get("isSecret", False))),
+                "options": normalized_options,
+            }
+        )
+    return questions
+
+
+def canonicalize_legacy_event_type(event_type: str) -> str:
+    if event_type == "waiting_approval":
+        return "result_approval_requested"
+    if event_type == "approved":
+        return "result_approval_granted"
+    return normalize_event_type(event_type)

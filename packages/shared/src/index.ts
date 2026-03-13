@@ -2,8 +2,8 @@ export type TaskStatus =
   | "queued"
   | "starting"
   | "running"
-  | "waiting_approval"
-  | "approved"
+  | "waiting_user_input"
+  | "waiting_result_approval"
   | "stopped"
   | "failed"
   | "completed";
@@ -16,13 +16,18 @@ export type EventType =
   | "file_changed"
   | "command_executed"
   | "diff_generated"
-  | "waiting_approval"
   | "test_result"
+  | "user_input_requested"
+  | "user_input_submitted"
+  | "result_approval_requested"
+  | "result_approval_granted"
   | "plan_updated"
   | "plan_delta"
   | "completed"
   | "failed"
   | "stopped";
+
+export type PendingInteractionType = "user_input" | "result_approval";
 
 export interface ProjectSummary {
   id: string;
@@ -80,11 +85,29 @@ export interface TaskApproval {
   created_at: string;
 }
 
+export interface TaskQuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface TaskQuestion {
+  id: string;
+  header: string;
+  question: string;
+  is_other: boolean;
+  is_secret: boolean;
+  options: TaskQuestionOption[] | null;
+}
+
 export interface TaskDetail extends TaskSummary {
   prompt: string;
   project: ProjectSummary;
   approvals: TaskApproval[];
   latest_diff: TaskDiff;
+  pending_interaction_type: PendingInteractionType | null;
+  pending_request_id: string | null;
+  pending_request_payload_json: Record<string, unknown> | null;
+  pending_questions: TaskQuestion[];
 }
 
 export interface CreateProjectRequest {
@@ -103,4 +126,9 @@ export interface CreateTaskRequest {
 
 export interface ApproveTaskRequest {
   actor?: string;
+}
+
+export interface RespondTaskRequest {
+  actor?: string;
+  answers: Record<string, string[]>;
 }
