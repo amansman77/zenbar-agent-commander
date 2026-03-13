@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -17,6 +17,7 @@ from .repository import (
     can_stop,
     create_project,
     create_task,
+    get_project_any,
     get_project,
     get_task,
     list_events,
@@ -27,6 +28,7 @@ from .repository import (
     serialize_project,
     serialize_task_detail,
     serialize_task_summary,
+    soft_delete_project,
     set_task_status,
 )
 from .repo_discovery import (
@@ -89,6 +91,14 @@ def post_project(payload: CreateProjectRequest, db: Session = Depends(get_db)):
     return serialize_project(create_project(db, payload))
 
 
+@app.delete("/projects/{project_id}", status_code=204)
+def delete_project(project_id: str, db: Session = Depends(get_db)):
+    if get_project_any(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    soft_delete_project(db, project_id)
+    return Response(status_code=204)
+
+
 @app.post("/projects/discover", response_model=DiscoverProjectResponse)
 def post_project_discovery(payload: DiscoverProjectRequest | None = None):
     try:
@@ -101,6 +111,8 @@ def post_project_discovery(payload: DiscoverProjectRequest | None = None):
 
 @app.get("/projects/{project_id}/tasks", response_model=list[TaskSummary])
 def get_project_tasks(project_id: str, db: Session = Depends(get_db)):
+    if get_project(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
     return [serialize_task_summary(item) for item in list_tasks(db, project_id)]
 
 

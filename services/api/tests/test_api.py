@@ -434,6 +434,44 @@ def test_get_task_diff_falls_back_to_workspace_git_diff_when_runtime_diff_is_una
         assert "README.md" in body["files_changed"]
 
 
+def test_project_soft_delete_hides_project_and_blocks_project_task_endpoints():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Soft Delete", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Keep History", "prompt": "Preserve records", "model": "default"},
+        ).json()
+
+        first_delete = client.delete(f"/projects/{project['id']}")
+        assert first_delete.status_code == 204
+
+        second_delete = client.delete(f"/projects/{project['id']}")
+        assert second_delete.status_code == 204
+
+        projects = client.get("/projects")
+        assert projects.status_code == 200
+        assert all(item["id"] != project["id"] for item in projects.json())
+
+        list_tasks_after_delete = client.get(f"/projects/{project['id']}/tasks")
+        assert list_tasks_after_delete.status_code == 404
+        assert list_tasks_after_delete.json()["detail"] == "Project not found"
+
+        create_task_after_delete = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Blocked", "prompt": "Should fail", "model": "default"},
+        )
+        assert create_task_after_delete.status_code == 404
+        assert create_task_after_delete.json()["detail"] == "Project not found"
+
+        existing_task_detail = client.get(f"/tasks/{task['id']}")
+        assert existing_task_detail.status_code == 200
+        assert existing_task_detail.json()["id"] == task["id"]
+
+
 def test_respond_marks_task_failed_when_runtime_session_is_stale():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)

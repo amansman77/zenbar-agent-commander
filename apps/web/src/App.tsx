@@ -612,6 +612,18 @@ export function App() {
     }
   });
 
+  const deleteProjectMutation = useMutation({
+    mutationFn: api.deleteProject,
+    onSuccess: (_, projectId) => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      queryClient.removeQueries({ queryKey: ["tasks", projectId] });
+      if (selectedProjectId === projectId) {
+        setSelectedProjectId(null);
+        setSelectedTaskId(null);
+      }
+    }
+  });
+
   const taskActionMutation = useMutation({
     mutationFn: async (input: { action: "approveTask" | "stopTask" | "retryTask"; taskId: string; model?: string }) => {
       if (input.action === "approveTask") {
@@ -670,6 +682,16 @@ export function App() {
     }
     return sections.join("\n\n");
   }, [latestPlan]);
+
+  const handleDeleteProject = () => {
+    if (!selectedProject) {
+      return;
+    }
+    if (!window.confirm("Delete this project?")) {
+      return;
+    }
+    deleteProjectMutation.mutate(selectedProject.id);
+  };
 
   useEffect(() => {
     if (!task || task.status !== "waiting_user_input") {
@@ -1020,6 +1042,14 @@ export function App() {
                   <h2>Tasks</h2>
                   <p>{selectedProject?.name ?? "Select project"}</p>
                 </div>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={handleDeleteProject}
+                  disabled={!selectedProject || deleteProjectMutation.isPending}
+                >
+                  {deleteProjectMutation.isPending ? "Deleting..." : "Delete"}
+                </button>
               </div>
               <div className="panel-scroll">
                 {selectedProject ? (
@@ -1106,9 +1136,19 @@ export function App() {
                   <h2>Tasks</h2>
                   <p>{selectedProject ? selectedProject.name : "Select a project first"}</p>
                 </div>
-                <button type="button" onClick={() => setTaskModalOpen(true)} disabled={!selectedProject}>
-                  + New Task
-                </button>
+                <div className="action-row">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={handleDeleteProject}
+                    disabled={!selectedProject || deleteProjectMutation.isPending}
+                  >
+                    {deleteProjectMutation.isPending ? "Deleting..." : "Delete Project"}
+                  </button>
+                  <button type="button" onClick={() => setTaskModalOpen(true)} disabled={!selectedProject}>
+                    + New Task
+                  </button>
+                </div>
               </div>
             </div>
             <div className="panel-scroll">

@@ -48,6 +48,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload)
     }),
+  deleteProject: (projectId: string) =>
+    request<void>(`/projects/${projectId}`, {
+      method: "DELETE"
+    }),
   listTasks: (projectId: string) =>
     request<TaskSummary[]>(`/projects/${projectId}/tasks`),
   listRuntimeModels: () => request<ListRuntimeModelsResponse>("/runtime/models"),

@@ -4,7 +4,7 @@ import json
 import re
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from .models import Project, Task, TaskApproval, TaskEvent
@@ -44,11 +44,26 @@ def create_project(db: Session, payload: CreateProjectRequest) -> Project:
 
 
 def list_projects(db: Session) -> list[Project]:
-    return list(db.scalars(select(Project).order_by(Project.created_at.desc())))
+    stmt = select(Project).where(Project.deleted_at.is_(None)).order_by(Project.created_at.desc())
+    return list(db.scalars(stmt))
 
 
 def get_project(db: Session, project_id: str) -> Project | None:
+    stmt = select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
+    return db.scalars(stmt).first()
+
+
+def get_project_any(db: Session, project_id: str) -> Project | None:
     return db.get(Project, project_id)
+
+
+def soft_delete_project(db: Session, project_id: str) -> None:
+    db.execute(
+        update(Project)
+        .where(Project.id == project_id, Project.deleted_at.is_(None))
+        .values(deleted_at=func.current_timestamp())
+    )
+    db.commit()
 
 
 def create_task(db: Session, payload: CreateTaskRequest) -> Task:

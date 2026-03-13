@@ -24,8 +24,12 @@ def ensure_schema() -> None:
         return
     with engine.begin() as connection:
         columns = {row[1] for row in connection.execute(text("PRAGMA table_info(tasks)"))}
+        project_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(projects)"))}
         statuses = [row[0] for row in connection.execute(text("SELECT DISTINCT status FROM tasks"))]
         event_types = [row[0] for row in connection.execute(text("SELECT DISTINCT type FROM task_events"))]
+        if "deleted_at" not in project_columns:
+            connection.execute(text("ALTER TABLE projects ADD COLUMN deleted_at TIMESTAMP NULL"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_projects_deleted_at ON projects(deleted_at)"))
         if "execution_mode" not in columns:
             connection.execute(
                 text("ALTER TABLE tasks ADD COLUMN execution_mode VARCHAR(32) NOT NULL DEFAULT 'execute'")
