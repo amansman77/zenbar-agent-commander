@@ -299,6 +299,16 @@ textarea {
   gap: 0.5rem;
 }
 
+.retry-model-control {
+  min-width: 220px;
+  color: var(--text-soft);
+  font-size: 0.82rem;
+}
+
+.retry-model-control select {
+  margin-top: 0.25rem;
+}
+
 .form-panel label {
   display: block;
   margin-bottom: 0.7rem;
@@ -343,6 +353,38 @@ textarea {
 .plan-output code {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.markdown-view {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.markdown-view h3,
+.markdown-view h4,
+.markdown-view h5 {
+  margin: 0;
+}
+
+.markdown-paragraph {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.markdown-view ul,
+.markdown-view ol {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.inline-code {
+  border-radius: 6px;
+  background: #e8eef7;
+  padding: 0.05rem 0.35rem;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.84em;
 }
 
 .event-list {
@@ -405,6 +447,12 @@ textarea {
   margin: 0.4rem 0;
   color: var(--text-soft);
   font-size: 0.88rem;
+}
+
+.copy-status {
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-soft);
 }
 
 .modal-overlay {

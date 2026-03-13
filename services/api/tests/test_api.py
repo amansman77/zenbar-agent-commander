@@ -59,7 +59,7 @@ def test_create_project_and_task_flow():
 
         task = client.post(
             "/tasks",
-            json={"project_id": project_id, "title": "Fix Canonical", "prompt": "Fix canonical tags"},
+            json={"project_id": project_id, "title": "Fix Canonical", "prompt": "Fix canonical tags", "model": "default"},
         )
         assert task.status_code == 200
         body = task.json()
@@ -88,7 +88,13 @@ def test_create_plan_task_flow():
 
         task = client.post(
             "/tasks",
-            json={"project_id": project_id, "title": "Plan Canonical", "prompt": "Create an implementation plan", "execution_mode": "plan"},
+            json={
+                "project_id": project_id,
+                "title": "Plan Canonical",
+                "prompt": "Create an implementation plan",
+                "model": "default",
+                "execution_mode": "plan",
+            },
         )
         assert task.status_code == 200
         body = task.json()
@@ -113,7 +119,7 @@ def test_approve_task():
         ).json()
         task = client.post(
             "/tasks",
-            json={"project_id": project["id"], "title": "Add Dashboard", "prompt": "Add dashboard"},
+            json={"project_id": project["id"], "title": "Add Dashboard", "prompt": "Add dashboard", "model": "default"},
         ).json()
 
         response = client.post(f"/tasks/{task['id']}/approve", json={"actor": "pytest"})
@@ -130,7 +136,7 @@ def test_invalid_retry_transition():
         ).json()
         task = client.post(
             "/tasks",
-            json={"project_id": project["id"], "title": "Initial task", "prompt": "Do work"},
+            json={"project_id": project["id"], "title": "Initial task", "prompt": "Do work", "model": "default"},
         ).json()
 
         response = client.post(f"/tasks/{task['id']}/retry", json={"actor": "pytest"})
@@ -154,7 +160,13 @@ def test_plan_task_starts_without_collaboration_mode_list(monkeypatch):
 
         response = client.post(
             "/tasks",
-            json={"project_id": project["id"], "title": "Plan task", "prompt": "Create a plan", "execution_mode": "plan"},
+            json={
+                "project_id": project["id"],
+                "title": "Plan task",
+                "prompt": "Create a plan",
+                "model": "default",
+                "execution_mode": "plan",
+            },
         )
 
         assert response.status_code == 200
@@ -163,6 +175,76 @@ def test_plan_task_starts_without_collaboration_mode_list(monkeypatch):
         events = client.get(f"/tasks/{body['id']}/events")
         messages = [item["message"] for item in events.json()]
         assert any("attempting direct plan mode start" in message for message in messages)
+
+
+def test_runtime_models_endpoint_uses_cache(monkeypatch):
+    from app.main import model_catalog, orchestrator
+
+    calls = {"count": 0}
+
+    async def list_models():
+        calls["count"] += 1
+        return ["GPT-5.4", "GPT-5.3-Codex"]
+
+    monkeypatch.setattr(orchestrator.adapter, "list_models", list_models)
+    model_catalog.clear_cache()
+
+    first = client.get("/runtime/models")
+    second = client.get("/runtime/models")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["models"] == [{"id": "default"}, {"id": "GPT-5.4"}, {"id": "GPT-5.3-Codex"}]
+    assert second.json()["models"] == first.json()["models"]
+    assert calls["count"] == 1
+
+
+def test_runtime_models_endpoint_falls_back_when_runtime_unavailable(monkeypatch):
+    from app.main import model_catalog, orchestrator
+
+    async def list_models():
+        raise RuntimeError("runtime unavailable")
+
+    monkeypatch.setattr(orchestrator.adapter, "list_models", list_models)
+    model_catalog.clear_cache()
+
+    response = client.get("/runtime/models")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "fallback"
+    assert body["models"] == [{"id": "default"}]
+
+
+def test_create_task_rejects_invalid_model():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Invalid Model", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+
+        response = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Bad model", "prompt": "Do work", "model": "not-a-model"},
+        )
+        assert response.status_code == 400
+        assert "Invalid model" in response.json()["detail"]
+        assert "default" in response.json()["detail"]
+
+
+def test_create_task_requires_model_field():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Missing Model", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+
+        response = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "No model", "prompt": "Do work"},
+        )
+        assert response.status_code == 422
 
 
 def test_discover_project_uses_remote_default_branch():
@@ -232,7 +314,7 @@ def test_user_input_request_updates_status_and_responds():
         ).json()
         task = client.post(
             "/tasks",
-            json={"project_id": project["id"], "title": "Need Input", "prompt": "Ask a question"},
+            json={"project_id": project["id"], "title": "Need Input", "prompt": "Ask a question", "model": "default"},
         ).json()
 
         with SessionLocal() as db:
@@ -283,7 +365,7 @@ def test_approve_rejected_outside_waiting_result_approval():
         ).json()
         task = client.post(
             "/tasks",
-            json={"project_id": project["id"], "title": "Plan First", "prompt": "Do work", "execution_mode": "plan"},
+            json={"project_id": project["id"], "title": "Plan First", "prompt": "Do work", "model": "default", "execution_mode": "plan"},
         ).json()
 
         response = client.post(f"/tasks/{task['id']}/approve", json={"actor": "pytest"})
@@ -299,7 +381,7 @@ def test_get_task_diff_uses_persisted_diff_when_runtime_session_is_stale():
         ).json()
         task = client.post(
             "/tasks",
-            json={"project_id": project["id"], "title": "Stale diff", "prompt": "Do work"},
+            json={"project_id": project["id"], "title": "Stale diff", "prompt": "Do work", "model": "default"},
         ).json()
 
         with SessionLocal() as db:
@@ -327,7 +409,7 @@ def test_respond_marks_task_failed_when_runtime_session_is_stale():
         ).json()
         task = client.post(
             "/tasks",
-            json={"project_id": project["id"], "title": "Need input", "prompt": "Ask a question"},
+            json={"project_id": project["id"], "title": "Need input", "prompt": "Ask a question", "model": "default"},
         ).json()
 
         with SessionLocal() as db:
@@ -367,7 +449,7 @@ def test_retry_restarts_task_when_runtime_session_is_missing():
         ).json()
         task = client.post(
             "/tasks",
-            json={"project_id": project["id"], "title": "Retry task", "prompt": "Do work"},
+            json={"project_id": project["id"], "title": "Retry task", "prompt": "Do work", "model": "default"},
         ).json()
 
         with SessionLocal() as db:
@@ -388,6 +470,41 @@ def test_retry_restarts_task_when_runtime_session_is_missing():
         assert body["runtime_session_id"]
 
 
+def test_retry_defaults_model_for_legacy_task_and_records_event():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Legacy Model", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Legacy retry", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            current.status = "failed"
+            current.runtime_session_id = None
+            current.model = None
+            db.add(current)
+            db.commit()
+
+        response = client.post(f"/tasks/{task['id']}/retry", json={"actor": "pytest"})
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["model"] == "default"
+
+        events = client.get(f"/tasks/{task['id']}/events")
+        assert events.status_code == 200
+        fallback_event = next((item for item in events.json() if item["message"] == "Model defaulted for legacy task retry"), None)
+        assert fallback_event is not None
+        assert fallback_event["payload_json"]["type"] == "model_defaulted"
+        assert fallback_event["payload_json"]["reason"] == "legacy_task"
+        assert fallback_event["payload_json"]["model"] == "default"
+
+
 def test_retry_restarts_task_when_runtime_session_is_stale():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
@@ -397,7 +514,7 @@ def test_retry_restarts_task_when_runtime_session_is_stale():
         ).json()
         task = client.post(
             "/tasks",
-            json={"project_id": project["id"], "title": "Retry stale task", "prompt": "Do work"},
+            json={"project_id": project["id"], "title": "Retry stale task", "prompt": "Do work", "model": "default"},
         ).json()
 
         with SessionLocal() as db:
@@ -414,6 +531,68 @@ def test_retry_restarts_task_when_runtime_session_is_stale():
         assert body["status"] in {"starting", "running", "waiting_result_approval"}
         assert body["runtime_session_id"]
         assert body["runtime_session_id"] != "missing-session"
+
+
+def test_retry_accepts_model_override_and_restarts_with_new_model(monkeypatch):
+    from app.main import model_catalog, orchestrator
+
+    async def list_models():
+        return ["default", "gpt-5"]
+
+    model_catalog.clear_cache()
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Retry Model Override", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Retry override", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            current.status = "failed"
+            db.add(current)
+            db.commit()
+
+        # ensure override value is allowed under fallback/default-centric catalog
+        monkeypatch.setattr(orchestrator.adapter, "list_models", list_models)
+        model_catalog.clear_cache()
+        response = client.post(f"/tasks/{task['id']}/retry", json={"actor": "pytest", "model": "gpt-5"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["model"] == "gpt-5"
+        assert body["runtime_session_id"]
+
+        events = client.get(f"/tasks/{task['id']}/events").json()
+        assert any(item["message"] == "Retry requested with model override: gpt-5" for item in events)
+
+
+def test_retry_rejects_invalid_model_override():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Retry Invalid Model", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Retry invalid", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            current.status = "failed"
+            db.add(current)
+            db.commit()
+
+        response = client.post(f"/tasks/{task['id']}/retry", json={"actor": "pytest", "model": "not-a-model"})
+        assert response.status_code == 400
+        assert "Invalid model" in response.json()["detail"]
 
 
 def test_ensure_schema_migrates_waiting_approval_to_waiting_result_approval():

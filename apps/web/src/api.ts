@@ -3,6 +3,7 @@ import type {
   CreateProjectRequest,
   DiscoverProjectRequest,
   DiscoverProjectResponse,
+  ListRuntimeModelsResponse,
   CreateTaskRequest,
   ProjectSummary,
   RespondTaskRequest,
@@ -49,6 +50,7 @@ export const api = {
     }),
   listTasks: (projectId: string) =>
     request<TaskSummary[]>(`/projects/${projectId}/tasks`),
+  listRuntimeModels: () => request<ListRuntimeModelsResponse>("/runtime/models"),
   createTask: (payload: CreateTaskRequest) =>
     request<TaskDetail>("/tasks", {
       method: "POST",

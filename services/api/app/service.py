@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator
 
 from sqlalchemy.orm import Session
@@ -63,11 +64,17 @@ class TaskOrchestrator:
         )
         refreshed = get_task(db, task.id)
         assert refreshed is not None
+        resolved_model, was_defaulted = self._resolve_task_model(db, refreshed)
+        resolved_reasoning_effort = self._resolve_reasoning_effort(db, refreshed)
+        if was_defaulted:
+            refreshed = set_task_status(db, refreshed, "starting")
         refreshed = set_task_workspace(db, refreshed, prepared.workspace_path)
         request = RuntimeStartRequest(
             task_id=refreshed.id,
             title=refreshed.title,
             prompt=refreshed.prompt,
+            model=resolved_model,
+            reasoning_effort=resolved_reasoning_effort,  # type: ignore[arg-type]
             repo_path=project.repo_path,
             working_directory=prepared.workspace_path,
             default_branch=project.default_branch,
@@ -78,7 +85,13 @@ class TaskOrchestrator:
         session = await self.adapter.start_task(request)
         refreshed = get_task(db, refreshed.id)
         assert refreshed is not None
-        refreshed = set_task_status(db, refreshed, "running", runtime_session_id=session.session_id)
+        refreshed = set_task_status(
+            db,
+            refreshed,
+            "running",
+            runtime_session_id=session.session_id,
+            effective_model=session.effective_model or resolved_model,
+        )
         if self.adapter.stream_in_background:
             runner = asyncio.create_task(self._consume_events(task.id, session.session_id))
             self._background_tasks.add(runner)
@@ -156,7 +169,25 @@ class TaskOrchestrator:
         assert refreshed is not None
         return refreshed
 
-    async def retry_task(self, db: Session, task: Task) -> Task:
+    async def retry_task(self, db: Session, task: Task, model_override: str | None = None) -> Task:
+        if model_override and model_override != task.model:
+            task.model = model_override
+            db.add(task)
+            db.commit()
+            append_event(
+                db,
+                task,
+                RuntimeEvent(
+                    type="agent_status",
+                    message=f"Retry requested with model override: {model_override}",
+                    payload={"type": "retry_model_override", "model": model_override},
+                ),
+            )
+            refreshed = get_task(db, task.id)
+            assert refreshed is not None
+            if refreshed.runtime_session_id:
+                refreshed = clear_runtime_session(db, refreshed, status=refreshed.status)
+            return await self._restart_with_fresh_session(db, refreshed)
         if not task.runtime_session_id:
             return await self._restart_with_fresh_session(db, task)
         try:
@@ -171,7 +202,13 @@ class TaskOrchestrator:
         db.expire_all()
         refreshed = get_task(db, task.id)
         assert refreshed is not None
-        refreshed = set_task_status(db, refreshed, "starting", runtime_session_id=session.session_id)
+        refreshed = set_task_status(
+            db,
+            refreshed,
+            "starting",
+            runtime_session_id=session.session_id,
+            effective_model=session.effective_model or refreshed.model,
+        )
         if self.adapter.stream_in_background:
             runner = asyncio.create_task(self._consume_events(task.id, session.session_id))
             self._background_tasks.add(runner)
@@ -210,6 +247,34 @@ class TaskOrchestrator:
         refreshed = get_task(db, task.id)
         assert refreshed is not None
         return await self.start_task(db, refreshed, project)
+
+    def _resolve_task_model(self, db: Session, task: Task) -> tuple[str, bool]:
+        if task.model:
+            return task.model, False
+        default_model = os.getenv("ZENBAR_LEGACY_DEFAULT_MODEL", "default").strip() or "default"
+        task.model = default_model
+        db.add(task)
+        db.commit()
+        append_event(
+            db,
+            task,
+            RuntimeEvent(
+                type="agent_status",
+                message="Model defaulted for legacy task retry",
+                payload={"type": "model_defaulted", "reason": "legacy_task", "model": default_model},
+            ),
+        )
+        refreshed = get_task(db, task.id)
+        assert refreshed is not None
+        return default_model, True
+
+    def _resolve_reasoning_effort(self, db: Session, task: Task) -> str:
+        if task.reasoning_effort in {"low", "medium", "high"}:
+            return task.reasoning_effort
+        task.reasoning_effort = "medium"
+        db.add(task)
+        db.commit()
+        return "medium"
 
     async def _consume_events(self, task_id: str, session_id: str) -> None:
         attempts = 0

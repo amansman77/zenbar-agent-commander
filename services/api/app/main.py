@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from .db import Base, engine, ensure_schema, get_db
 from .app_server_manager import ManagedAppServer
+from .model_catalog import RuntimeModelCatalog
 from .repository import (
     add_approval,
     can_approve,
@@ -41,6 +42,8 @@ from .schemas import (
     DiscoverProjectResponse,
     ProjectSummary,
     RespondTaskRequest,
+    RuntimeModelOption,
+    RuntimeModelsResponse,
     TaskApprovalRequest,
     TaskDetail,
     TaskDiff,
@@ -51,6 +54,7 @@ from .service import TaskOrchestrator, stream_task_events
 
 
 orchestrator = TaskOrchestrator(create_runtime_adapter())
+model_catalog = RuntimeModelCatalog(orchestrator.adapter, ttl_seconds=60)
 managed_app_server = ManagedAppServer()
 
 
@@ -100,11 +104,21 @@ def get_project_tasks(project_id: str, db: Session = Depends(get_db)):
     return [serialize_task_summary(item) for item in list_tasks(db, project_id)]
 
 
+@app.get("/runtime/models", response_model=RuntimeModelsResponse)
+async def get_runtime_models():
+    models, source = await model_catalog.list_models()
+    return RuntimeModelsResponse(models=[RuntimeModelOption(id=item) for item in models], source=source)
+
+
 @app.post("/tasks", response_model=TaskDetail)
 async def post_task(payload: CreateTaskRequest, db: Session = Depends(get_db)):
     project = get_project(db, payload.project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    allowed_models, _ = await model_catalog.list_models()
+    if payload.model not in allowed_models:
+        allowed = ", ".join(allowed_models)
+        raise HTTPException(status_code=400, detail=f"Invalid model '{payload.model}'. Allowed models: {allowed}")
     task = create_task(db, payload)
     task = get_task(db, task.id)
     assert task is not None
@@ -208,9 +222,14 @@ async def retry_task(task_id: str, payload: TaskApprovalRequest, db: Session = D
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     _assert_transition(can_retry(task.status), f"Task cannot be retried from status '{task.status}'")
+    if payload.model:
+        allowed_models, _ = await model_catalog.list_models()
+        if payload.model not in allowed_models:
+            allowed = ", ".join(allowed_models)
+            raise HTTPException(status_code=400, detail=f"Invalid model '{payload.model}'. Allowed models: {allowed}")
     add_approval(db, task, "retry", payload.actor)
     try:
-        await orchestrator.retry_task(db, task)
+        await orchestrator.retry_task(db, task, model_override=payload.model)
     except Exception as exc:
         raise HTTPException(status_code=409, detail=f"Retry failed: {exc}") from exc
     task = get_task(db, task_id)

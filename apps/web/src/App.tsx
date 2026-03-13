@@ -5,6 +5,8 @@ import type {
   CreateTaskRequest,
   DiscoverProjectResponse,
   ExecutionMode,
+  ReasoningEffort,
+  RuntimeModelOption,
   ProjectSummary,
   TaskDetail,
   TaskDiff,
@@ -15,6 +17,7 @@ import type {
 import { api } from "./api";
 
 const actor = "web-commander";
+const LAST_TASK_MODEL_KEY = "zenbar:lastTaskModel";
 
 const statusTone: Record<TaskStatus, string> = {
   queued: "slate",
@@ -118,6 +121,121 @@ function useIsMobileBreakpoint() {
   }, []);
 
   return isMobile;
+}
+
+function renderInlineMarkdown(text: string): ReactNode[] {
+  const tokens = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
+  return tokens.map((token, index) => {
+    if (token.startsWith("**") && token.endsWith("**")) {
+      return <strong key={`bold-${index}`}>{token.slice(2, -2)}</strong>;
+    }
+    if (token.startsWith("`") && token.endsWith("`")) {
+      return (
+        <code key={`code-${index}`} className="inline-code">
+          {token.slice(1, -1)}
+        </code>
+      );
+    }
+    return <span key={`text-${index}`}>{token}</span>;
+  });
+}
+
+function MarkdownRenderer({ markdown }: { markdown: string }) {
+  const lines = markdown.split("\n");
+  const blocks: ReactNode[] = [];
+  let index = 0;
+  let key = 0;
+  let inCodeBlock = false;
+  let codeLines: string[] = [];
+  let listBuffer: string[] = [];
+  let orderedList = false;
+
+  const flushList = () => {
+    if (listBuffer.length === 0) {
+      return;
+    }
+    const items = listBuffer.map((item, itemIndex) => <li key={`item-${itemIndex}`}>{renderInlineMarkdown(item)}</li>);
+    blocks.push(orderedList ? <ol key={`ol-${key++}`}>{items}</ol> : <ul key={`ul-${key++}`}>{items}</ul>);
+    listBuffer = [];
+  };
+
+  const flushCode = () => {
+    if (!inCodeBlock) {
+      return;
+    }
+    blocks.push(
+      <pre key={`pre-${key++}`} className="output-pre">
+        <code>{codeLines.join("\n")}</code>
+      </pre>
+    );
+    codeLines = [];
+    inCodeBlock = false;
+  };
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      if (inCodeBlock) {
+        flushCode();
+      } else {
+        flushList();
+        inCodeBlock = true;
+      }
+      index += 1;
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeLines.push(line);
+      index += 1;
+      continue;
+    }
+
+    const listMatch = line.match(/^\s*([-*]|\d+\.)\s+(.*)$/);
+    if (listMatch) {
+      const isOrdered = /\d+\./.test(listMatch[1]);
+      if (listBuffer.length > 0 && orderedList !== isOrdered) {
+        flushList();
+      }
+      orderedList = isOrdered;
+      listBuffer.push(listMatch[2]);
+      index += 1;
+      continue;
+    }
+
+    flushList();
+
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,3})\s+(.*)$/);
+    if (headingMatch) {
+      const headingText = headingMatch[2];
+      if (headingMatch[1].length === 1) {
+        blocks.push(<h3 key={`h1-${key++}`}>{renderInlineMarkdown(headingText)}</h3>);
+      } else if (headingMatch[1].length === 2) {
+        blocks.push(<h4 key={`h2-${key++}`}>{renderInlineMarkdown(headingText)}</h4>);
+      } else {
+        blocks.push(<h5 key={`h3-${key++}`}>{renderInlineMarkdown(headingText)}</h5>);
+      }
+      index += 1;
+      continue;
+    }
+
+    blocks.push(
+      <p key={`p-${key++}`} className="markdown-paragraph">
+        {renderInlineMarkdown(line)}
+      </p>
+    );
+    index += 1;
+  }
+
+  flushList();
+  flushCode();
+  return <div className="markdown-view">{blocks}</div>;
 }
 
 function StatusBadge({ status }: { status: TaskStatus }) {
@@ -227,16 +345,44 @@ function ProjectForm({
 
 function TaskForm({
   project,
+  models,
+  modelsLoading,
+  modelsError,
   onCreate,
   onClose
 }: {
   project: ProjectSummary | null;
+  models: RuntimeModelOption[];
+  modelsLoading: boolean;
+  modelsError: string | null;
   onCreate: (payload: CreateTaskRequest) => void;
   onClose: () => void;
 }) {
   const [title, setTitle] = useState("Fix sitemap canonical");
   const [prompt, setPrompt] = useState("Analyze the repository and fix canonical tag generation.");
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("execute");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
+  const [model, setModel] = useState("");
+
+  useEffect(() => {
+    const available = models.map((item) => item.id);
+    if (available.length === 0) {
+      setModel("");
+      return;
+    }
+    const saved = typeof window !== "undefined" ? window.localStorage.getItem(LAST_TASK_MODEL_KEY) ?? "" : "";
+    setModel((previous) => {
+      if (previous && available.includes(previous)) {
+        return previous;
+      }
+      if (saved && available.includes(saved)) {
+        return saved;
+      }
+      return "";
+    });
+  }, [models]);
+
+  const canSubmit = Boolean(project && model && models.length > 0 && !modelsLoading);
 
   return (
     <form
@@ -246,7 +392,18 @@ function TaskForm({
         if (!project) {
           return;
         }
-        onCreate({ project_id: project.id, title, prompt, execution_mode: executionMode, workspace_type: "branch" });
+        if (typeof window !== "undefined" && model) {
+          window.localStorage.setItem(LAST_TASK_MODEL_KEY, model);
+        }
+        onCreate({
+          project_id: project.id,
+          title,
+          prompt,
+          model,
+          reasoning_effort: reasoningEffort,
+          execution_mode: executionMode,
+          workspace_type: "branch"
+        });
       }}
     >
       <div className="panel-header">
@@ -273,10 +430,36 @@ function TaskForm({
           <option value="plan">Plan</option>
         </select>
       </label>
+      <label>
+        Reasoning effort
+        <select
+          aria-label="Reasoning effort"
+          value={reasoningEffort}
+          onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}
+          disabled={!project}
+        >
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </label>
+      <label>
+        Model
+        <select aria-label="Model" value={model} onChange={(event) => setModel(event.target.value)} disabled={!project || modelsLoading}>
+          <option value="">Select model</option>
+          {models.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.id}
+            </option>
+          ))}
+        </select>
+      </label>
+      {modelsLoading ? <p>Loading runtime models...</p> : null}
+      {modelsError ? <p role="alert">{modelsError}</p> : null}
       {executionMode === "plan" ? (
         <p>Plan mode checks Codex runtime collaboration capability and streams planning steps into the event log.</p>
       ) : null}
-      <button type="submit" disabled={!project}>
+      <button type="submit" disabled={!canSubmit}>
         Create task
       </button>
       <button type="button" className="secondary" onClick={onClose}>
@@ -325,11 +508,20 @@ export function App() {
   const [mobileScreen, setMobileScreen] = useState<MobileScreen>("projects");
   const [fabOpen, setFabOpen] = useState(false);
   const [expandedEvents, setExpandedEvents] = useState<Record<string, boolean>>({});
+  const [planCopyState, setPlanCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const [promptCopyState, setPromptCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const [retryModel, setRetryModel] = useState("");
   const isMobile = useIsMobileBreakpoint();
 
   const projectsQuery = useQuery({
     queryKey: ["projects"],
     queryFn: api.listProjects
+  });
+
+  const runtimeModelsQuery = useQuery({
+    queryKey: ["runtime-models"],
+    queryFn: api.listRuntimeModels,
+    staleTime: 60_000
   });
 
   const selectedProject = useMemo(
@@ -389,14 +581,14 @@ export function App() {
   });
 
   const taskActionMutation = useMutation({
-    mutationFn: async (input: { action: "approveTask" | "stopTask" | "retryTask"; taskId: string }) => {
+    mutationFn: async (input: { action: "approveTask" | "stopTask" | "retryTask"; taskId: string; model?: string }) => {
       if (input.action === "approveTask") {
         return api.approveTask(input.taskId, { actor });
       }
       if (input.action === "stopTask") {
         return api.stopTask(input.taskId, { actor });
       }
-      return api.retryTask(input.taskId, { actor });
+      return api.retryTask(input.taskId, { actor, model: input.model });
     },
     onSuccess: (task) => {
       queryClient.setQueryData(["task", task.id], task);
@@ -420,7 +612,32 @@ export function App() {
   const task = taskDetailQuery.data ?? null;
   const events = taskEventsQuery.data ?? [];
   const diff = taskDiffQuery.data ?? task?.latest_diff;
+  const retryModelOptions = useMemo(() => {
+    const ids = runtimeModelsQuery.data?.models.map((item) => item.id) ?? [];
+    if (task?.model && !ids.includes(task.model)) {
+      return [task.model, ...ids];
+    }
+    return ids;
+  }, [runtimeModelsQuery.data?.models, task?.model]);
   const latestPlan = useMemo(() => extractLatestPlan(events), [events]);
+  const planMarkdown = useMemo(() => {
+    if (!latestPlan) {
+      return "";
+    }
+    const sections: string[] = [];
+    if (latestPlan.explanation) {
+      sections.push(latestPlan.explanation);
+    }
+    if (latestPlan.steps.length > 0) {
+      sections.push(
+        ["## Plan steps", ...latestPlan.steps.map((step, idx) => `${idx + 1}. **${step.step}** - ${step.status}`)].join("\n")
+      );
+    }
+    if (latestPlan.text) {
+      sections.push(latestPlan.text);
+    }
+    return sections.join("\n\n");
+  }, [latestPlan]);
 
   useEffect(() => {
     if (!task || task.status !== "waiting_user_input") {
@@ -439,11 +656,71 @@ export function App() {
   }, [task]);
 
   useEffect(() => {
+    if (!task) {
+      setRetryModel("");
+      return;
+    }
+    if (task.model && retryModelOptions.includes(task.model)) {
+      setRetryModel(task.model);
+      return;
+    }
+    setRetryModel(retryModelOptions[0] ?? "");
+  }, [task, retryModelOptions]);
+
+  useEffect(() => {
     if (!isMobile) {
       setMobileScreen("projects");
       setFabOpen(false);
     }
   }, [isMobile]);
+
+  const copyToClipboard = async (content: string): Promise<boolean> => {
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
+        return true;
+      }
+      if (typeof document !== "undefined") {
+        const textarea = document.createElement("textarea");
+        textarea.value = content;
+        textarea.setAttribute("readonly", "true");
+        textarea.style.position = "absolute";
+        textarea.style.left = "-9999px";
+        document.body.append(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        textarea.remove();
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
+
+  const copyPlanOutput = async () => {
+    const content = planMarkdown || "Latest implementation plan from Codex runtime.";
+    const copied = await copyToClipboard(content);
+    if (copied) {
+      setPlanCopyState("copied");
+    } else {
+      setPlanCopyState("error");
+    }
+    window.setTimeout(() => setPlanCopyState("idle"), 1500);
+  };
+
+  const copyPromptOutput = async () => {
+    if (!task) {
+      return;
+    }
+    const copied = await copyToClipboard(task.prompt);
+    if (copied) {
+      setPromptCopyState("copied");
+    } else {
+      setPromptCopyState("error");
+    }
+    window.setTimeout(() => setPromptCopyState("idle"), 1500);
+  };
 
   const renderTaskDetailContent = (mobile: boolean) => {
     if (!task) {
@@ -462,6 +739,18 @@ export function App() {
             <strong className="break-value">{task.execution_mode}</strong>
           </div>
           <div>
+            <span className="meta-label">Requested model</span>
+            <strong className="break-value mono">{task.model ?? "Unknown"}</strong>
+          </div>
+          <div>
+            <span className="meta-label">Effective model</span>
+            <strong className="break-value mono">{task.effective_model ?? "Unknown"}</strong>
+          </div>
+          <div>
+            <span className="meta-label">Reasoning effort</span>
+            <strong className="break-value">{task.reasoning_effort ?? "medium"}</strong>
+          </div>
+          <div>
             <span className="meta-label">Task Workspace</span>
             <strong className="break-value mono">{task.workspace_ref}</strong>
             <span className="break-value mono">{task.workspace_path}</span>
@@ -473,6 +762,21 @@ export function App() {
         </div>
 
         <div className="action-row">
+          <label className="retry-model-control">
+            Retry model
+            <select
+              aria-label="Retry model"
+              value={retryModel}
+              onChange={(event) => setRetryModel(event.target.value)}
+              disabled={retryModelOptions.length === 0}
+            >
+              {retryModelOptions.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+          </label>
           <button
             onClick={() => taskActionMutation.mutate({ action: "approveTask", taskId: task.id })}
             disabled={task.status !== "waiting_result_approval"}
@@ -488,8 +792,8 @@ export function App() {
           </button>
           <button
             className="secondary"
-            onClick={() => taskActionMutation.mutate({ action: "retryTask", taskId: task.id })}
-            disabled={!["failed", "stopped", "completed"].includes(task.status)}
+            onClick={() => taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: retryModel || undefined })}
+            disabled={!["failed", "stopped", "completed"].includes(task.status) || !retryModel}
           >
             Retry
           </button>
@@ -541,22 +845,32 @@ export function App() {
         ) : null}
 
         <div className="output-stack">
+          <section>
+            <div className="row-header">
+              <h3>Input prompt</h3>
+              <button type="button" className="secondary" onClick={copyPromptOutput}>
+                Copy prompt
+              </button>
+            </div>
+            {promptCopyState === "copied" ? <p className="copy-status">Prompt copied to clipboard.</p> : null}
+            {promptCopyState === "error" ? <p className="copy-status">Prompt copy failed.</p> : null}
+            <div className="output-panel prompt-output">
+              <MarkdownRenderer markdown={task.prompt} />
+            </div>
+          </section>
+
           {latestPlan ? (
             <section>
-              <h3>Plan output</h3>
+              <div className="row-header">
+                <h3>Plan output</h3>
+                <button type="button" className="secondary" onClick={copyPlanOutput}>
+                  Copy plan
+                </button>
+              </div>
+              {planCopyState === "copied" ? <p className="copy-status">Copied to clipboard.</p> : null}
+              {planCopyState === "error" ? <p className="copy-status">Copy failed.</p> : null}
               <div className="output-panel plan-output">
-                <p>{latestPlan.explanation ?? "Latest implementation plan from Codex runtime."}</p>
-                {latestPlan.steps.length > 0 ? (
-                  <ol>
-                    {latestPlan.steps.map((step, index) => (
-                      <li key={`${step.step}-${index}`}>
-                        <strong>{step.step}</strong>
-                        <span>{step.status}</span>
-                      </li>
-                    ))}
-                  </ol>
-                ) : null}
-                {latestPlan.text ? <pre className="output-pre">{latestPlan.text}</pre> : null}
+                <MarkdownRenderer markdown={planMarkdown || "Latest implementation plan from Codex runtime."} />
               </div>
             </section>
           ) : null}
@@ -600,7 +914,7 @@ export function App() {
           <section>
             <h3>Diff summary</h3>
             <div className="output-panel">
-              <p>{diff?.summary ?? "Waiting for runtime diff."}</p>
+              <p>{diff?.summary && diff.summary.trim().length > 0 ? diff.summary : "Waiting for runtime diff."}</p>
               <ul>
                 {diff?.files_changed.map((file: string) => (
                   <li key={file}>{file}</li>
@@ -846,6 +1160,9 @@ export function App() {
       <Modal title="New Task" open={taskModalOpen} onClose={() => setTaskModalOpen(false)}>
         <TaskForm
           project={selectedProject}
+          models={runtimeModelsQuery.data?.models ?? []}
+          modelsLoading={runtimeModelsQuery.isLoading}
+          modelsError={runtimeModelsQuery.error instanceof Error ? runtimeModelsQuery.error.message : null}
           onCreate={(payload) => createTaskMutation.mutate(payload)}
           onClose={() => setTaskModalOpen(false)}
         />

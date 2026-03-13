@@ -57,6 +57,8 @@ def create_task(db: Session, payload: CreateTaskRequest) -> Task:
         title=payload.title,
         prompt=payload.prompt,
         execution_mode=payload.execution_mode,
+        model=payload.model,
+        reasoning_effort=payload.reasoning_effort,
         workspace_type=payload.workspace_type,
         workspace_ref=build_workspace_ref(payload.title),
         workspace_path=None,
@@ -80,10 +82,18 @@ def get_task(db: Session, task_id: str) -> Task | None:
     return db.scalars(stmt).first()
 
 
-def set_task_status(db: Session, task: Task, status: str, runtime_session_id: str | None = None) -> Task:
+def set_task_status(
+    db: Session,
+    task: Task,
+    status: str,
+    runtime_session_id: str | None = None,
+    effective_model: str | None = None,
+) -> Task:
     task.status = status
     if runtime_session_id is not None:
         task.runtime_session_id = runtime_session_id
+    if effective_model is not None:
+        task.effective_model = effective_model
     db.add(task)
     db.commit()
     return get_task(db, task.id)

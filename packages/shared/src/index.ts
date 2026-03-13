@@ -10,6 +10,7 @@ export type TaskStatus =
 
 export type WorkspaceType = "branch" | "worktree";
 export type ExecutionMode = "execute" | "plan";
+export type ReasoningEffort = "low" | "medium" | "high";
 
 export type EventType =
   | "agent_status"
@@ -49,12 +50,24 @@ export interface DiscoverProjectResponse {
   is_git_repo: boolean;
 }
 
+export interface RuntimeModelOption {
+  id: string;
+}
+
+export interface ListRuntimeModelsResponse {
+  models: RuntimeModelOption[];
+  source: "runtime" | "fallback";
+}
+
 export interface TaskSummary {
   id: string;
   project_id: string;
   title: string;
   status: TaskStatus;
   execution_mode: ExecutionMode;
+  model: string | null;
+  effective_model: string | null;
+  reasoning_effort: ReasoningEffort | null;
   workspace_type: WorkspaceType;
   workspace_ref: string;
   workspace_path: string | null;
@@ -120,12 +133,15 @@ export interface CreateTaskRequest {
   project_id: string;
   title: string;
   prompt: string;
+  model: string;
+  reasoning_effort?: ReasoningEffort;
   execution_mode?: ExecutionMode;
   workspace_type?: WorkspaceType;
 }
 
 export interface ApproveTaskRequest {
   actor?: string;
+  model?: string;
 }
 
 export interface RespondTaskRequest {

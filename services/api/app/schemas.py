@@ -18,6 +18,7 @@ TaskStatus = Literal[
 ]
 WorkspaceType = Literal["branch", "worktree"]
 ExecutionMode = Literal["execute", "plan"]
+ReasoningEffort = Literal["low", "medium", "high"]
 PendingInteractionType = Literal["user_input", "result_approval"]
 EventType = Literal[
     "agent_status",
@@ -55,6 +56,15 @@ class DiscoverProjectResponse(BaseModel):
     is_git_repo: bool
 
 
+class RuntimeModelOption(BaseModel):
+    id: str
+
+
+class RuntimeModelsResponse(BaseModel):
+    models: list[RuntimeModelOption]
+    source: Literal["runtime", "fallback"]
+
+
 class ProjectSummary(BaseModel):
     id: str
     name: str
@@ -67,12 +77,15 @@ class CreateTaskRequest(BaseModel):
     project_id: str
     title: str
     prompt: str
+    model: str = Field(min_length=1)
+    reasoning_effort: ReasoningEffort = "medium"
     execution_mode: ExecutionMode = "execute"
     workspace_type: WorkspaceType = "branch"
 
 
 class TaskApprovalRequest(BaseModel):
     actor: str = "system"
+    model: str | None = Field(default=None, min_length=1)
 
 
 class TaskApprovalResponse(BaseModel):
@@ -122,6 +135,9 @@ class TaskSummary(BaseModel):
     title: str
     status: TaskStatus
     execution_mode: ExecutionMode
+    model: str | None
+    effective_model: str | None
+    reasoning_effort: ReasoningEffort | None
     workspace_type: WorkspaceType
     workspace_ref: str
     workspace_path: str | None
@@ -143,12 +159,15 @@ class TaskDetail(TaskSummary):
 
 class RuntimeSession(BaseModel):
     session_id: str
+    effective_model: str | None = None
 
 
 class RuntimeStartRequest(BaseModel):
     task_id: str
     title: str
     prompt: str
+    model: str
+    reasoning_effort: ReasoningEffort = "medium"
     repo_path: str
     working_directory: str
     default_branch: str

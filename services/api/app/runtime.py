@@ -33,6 +33,72 @@ def _build_diff_payload(diff: str) -> TaskDiff:
     return TaskDiff(files_changed=files, summary=summary, raw_diff=diff)
 
 
+def _coerce_diff_text(raw: Any) -> str:
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, dict):
+        for key in ("unifiedDiff", "unified_diff", "diff", "patch", "rawDiff", "raw_diff"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    return ""
+
+
+def _extract_changed_files(payload: dict[str, Any]) -> list[str]:
+    files: list[str] = []
+
+    def add_file(candidate: Any) -> None:
+        if isinstance(candidate, str) and candidate.strip():
+            files.append(candidate.strip())
+            return
+        if isinstance(candidate, dict):
+            for key in ("path", "file", "filePath", "filepath", "newPath", "oldPath"):
+                value = candidate.get(key)
+                if isinstance(value, str) and value.strip():
+                    files.append(value.strip())
+                    return
+
+    for key in ("files", "filePaths", "paths"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            for item in value:
+                add_file(item)
+
+    changes = payload.get("changes")
+    if isinstance(changes, list):
+        for item in changes:
+            add_file(item)
+
+    single_path = payload.get("path") or payload.get("filePath") or payload.get("file")
+    add_file(single_path)
+    return list(dict.fromkeys(files))
+
+
+def _extract_diff_payload(payload: dict[str, Any]) -> TaskDiff | None:
+    for key in ("diff", "unifiedDiff", "unified_diff", "patch", "rawDiff", "raw_diff"):
+        diff_text = _coerce_diff_text(payload.get(key))
+        if diff_text:
+            return _build_diff_payload(diff_text)
+
+    changes = payload.get("changes")
+    if isinstance(changes, list):
+        for item in changes:
+            if isinstance(item, dict):
+                for key in ("diff", "unifiedDiff", "unified_diff", "patch", "rawDiff", "raw_diff"):
+                    diff_text = _coerce_diff_text(item.get(key))
+                    if diff_text:
+                        return _build_diff_payload(diff_text)
+
+    files = _extract_changed_files(payload)
+    if files:
+        return TaskDiff(
+            files_changed=files,
+            summary=f"Updated {len(files)} file(s) in the Task Workspace.",
+            raw_diff=None,
+        )
+    return None
+
+
 def _prompt_with_workspace(request: RuntimeStartRequest) -> str:
     operation = (
         "Produce an implementation plan without modifying files or accepting final code changes."
@@ -48,6 +114,17 @@ def _prompt_with_workspace(request: RuntimeStartRequest) -> str:
         f"{operation} "
         "Human approval is required before the task result is accepted as final."
     )
+
+
+def _is_default_model_alias(model: str | None) -> bool:
+    if not model:
+        return False
+    return model.strip().lower() in {"default", "runtime-default", "auto"}
+
+
+def _is_unsupported_model_error(message: str) -> bool:
+    lowered = message.lower()
+    return "model is not supported" in lowered or "not supported when using codex with a chatgpt account" in lowered
 
 
 @dataclass
@@ -73,6 +150,10 @@ class RuntimeAdapter(ABC):
 
     @abstractmethod
     async def list_collaboration_modes(self) -> list[str] | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_models(self) -> list[str] | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -117,22 +198,47 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
 
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
         await self._ensure_connection()
-        thread = await self._rpc(
-            "thread/start",
-            {
-                "cwd": request.working_directory,
-                "approvalPolicy": "on-request",
-                "sandbox": "workspace-write",
-                "personality": "pragmatic",
-            },
-        )
+        requested_model = request.model.strip()
+        used_runtime_default = _is_default_model_alias(requested_model)
+        thread_start_params: dict[str, Any] = {
+            "cwd": request.working_directory,
+            "approvalPolicy": "on-request",
+            "sandbox": "workspace-write",
+            "personality": "pragmatic",
+        }
+        if not used_runtime_default:
+            thread_start_params["model"] = requested_model
+        try:
+            thread = await self._rpc("thread/start", thread_start_params)
+        except RuntimeError as exc:
+            if used_runtime_default or not _is_unsupported_model_error(str(exc)):
+                raise
+            # Some account types reject explicit model IDs. Retry with runtime default model.
+            retry_params = dict(thread_start_params)
+            retry_params.pop("model", None)
+            thread = await self._rpc("thread/start", retry_params)
+            used_runtime_default = True
         thread_id = thread["thread"]["id"]
         state = SessionState(thread_id=thread_id, start_request=request)
         self._sessions[thread_id] = state
-        turn = await self._rpc("turn/start", self._build_turn_start_params(thread_id, request, thread.get("model")))
+        turn = await self._rpc("turn/start", self._build_turn_start_params(thread_id, request))
         state.current_turn_id = turn["turn"]["id"]
+        if used_runtime_default and not _is_default_model_alias(requested_model):
+            await state.queue.put(
+                RuntimeEvent(
+                    type="agent_status",
+                    message=f"Requested model '{requested_model}' is unsupported for this account. Started with runtime default model.",
+                    payload={
+                        "type": "model_defaulted",
+                        "reason": "unsupported_requested_model",
+                        "requested_model": requested_model,
+                        "model": thread.get("model") or "runtime-default",
+                    },
+                )
+            )
         await state.queue.put(RuntimeEvent(type="agent_status", message="Codex App Server turn started"))
-        return RuntimeSession(session_id=thread_id)
+        effective_model = thread.get("model") or ("runtime-default" if used_runtime_default else requested_model)
+        return RuntimeSession(session_id=thread_id, effective_model=effective_model)
 
     async def list_collaboration_modes(self) -> list[str] | None:
         try:
@@ -150,6 +256,30 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             if isinstance(item, dict) and isinstance(item.get("mode"), str):
                 supported.append(item["mode"])
         return supported or None
+
+    async def list_models(self) -> list[str] | None:
+        try:
+            result = await self._rpc("model/list", {})
+        except RuntimeError as exc:
+            message = str(exc).lower()
+            if "method not found" in message or "unknown method" in message or "not supported" in message:
+                return None
+            raise
+        raw_models = result.get("models")
+        if not isinstance(raw_models, list):
+            return None
+        models: list[str] = []
+        for item in raw_models:
+            if isinstance(item, str) and item.strip():
+                models.append(item.strip())
+                continue
+            if isinstance(item, dict):
+                model_id = item.get("id")
+                if isinstance(model_id, str) and model_id.strip():
+                    models.append(model_id.strip())
+        if not models:
+            return None
+        return list(dict.fromkeys(models))
 
     async def stop_task(self, session_id: str) -> None:
         state = self._require_session(session_id)
@@ -204,13 +334,13 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         state.pending_requests.clear()
         state.latest_diff = TaskDiff()
         await state.queue.put(RuntimeEvent(type="agent_status", message="Retry turn started in Codex App Server"))
-        return RuntimeSession(session_id=session_id)
+        requested = state.start_request.model if state.start_request else None
+        return RuntimeSession(session_id=session_id, effective_model=requested)
 
     def _build_turn_start_params(
         self,
         thread_id: str,
         request: RuntimeStartRequest,
-        model: str | None = None,
     ) -> dict[str, Any]:
         return {
             "threadId": thread_id,
@@ -219,9 +349,9 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                 {
                     "mode": "plan",
                     "settings": {
-                        "model": model,
+                        "model": None if _is_default_model_alias(request.model) else request.model,
                         "developer_instructions": None,
-                        "reasoning_effort": "medium",
+                        "reasoning_effort": request.reasoning_effort,
                     },
                 }
                 if request.execution_mode == "plan"
@@ -335,6 +465,19 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                 params=params,
                 interaction_type="result_approval",
             )
+            if method == "item/fileChange/requestApproval":
+                diff_payload = _extract_diff_payload(params)
+                if diff_payload is not None:
+                    state.latest_diff = diff_payload
+                    await state.queue.put(
+                        RuntimeEvent(
+                            type="diff_generated",
+                            message=diff_payload.summary,
+                            payload=diff_payload.model_dump(),
+                        )
+                    )
+                    for file_path in diff_payload.files_changed:
+                        await state.queue.put(RuntimeEvent(type="file_changed", message=file_path, payload={"file": file_path}))
             message = params.get("reason") or params.get("command") or f"Result approval requested: {method}"
             await state.queue.put(
                 RuntimeEvent(
@@ -399,7 +542,23 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             return
 
         if method == "turn/diff/updated":
-            diff = params.get("diff", "")
+            diff = _coerce_diff_text(params.get("diff"))
+            if not diff:
+                diff = _coerce_diff_text(params)
+            if not diff:
+                extracted = _extract_diff_payload(params)
+                if extracted is not None:
+                    state.latest_diff = extracted
+                    await state.queue.put(
+                        RuntimeEvent(
+                            type="diff_generated",
+                            message=state.latest_diff.summary,
+                            payload=state.latest_diff.model_dump(),
+                        )
+                    )
+                    for file_path in state.latest_diff.files_changed:
+                        await state.queue.put(RuntimeEvent(type="file_changed", message=file_path, payload={"file": file_path}))
+                return
             state.latest_diff = _build_diff_payload(diff)
             await state.queue.put(
                 RuntimeEvent(
@@ -524,6 +683,9 @@ class MockRuntimeAdapter(RuntimeAdapter):
     async def list_collaboration_modes(self) -> list[str] | None:
         return ["default", "plan"]
 
+    async def list_models(self) -> list[str] | None:
+        return ["GPT-5.4", "GPT-5.3-Codex"]
+
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
         session_id = f"mock-{request.task_id}"
         self._requests[session_id] = request
@@ -561,7 +723,7 @@ class MockRuntimeAdapter(RuntimeAdapter):
                 summary="Added canonical tag fallback",
                 raw_diff="diff --git a/app/sitemap.ts b/app/sitemap.ts\n+ canonical fallback",
             )
-        return RuntimeSession(session_id=session_id)
+        return RuntimeSession(session_id=session_id, effective_model=request.model)
 
     async def stop_task(self, session_id: str) -> None:
         if session_id not in self._events:
@@ -606,6 +768,8 @@ class MockRuntimeAdapter(RuntimeAdapter):
                 task_id=task_id,
                 title="retry",
                 prompt="retry",
+                model="GPT-5.4",
+                reasoning_effort="medium",
                 repo_path="/srv/repos/demo",
                 working_directory="/srv/repos/demo",
                 default_branch="main",

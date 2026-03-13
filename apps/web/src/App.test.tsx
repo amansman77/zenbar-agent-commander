@@ -10,6 +10,15 @@ let taskDiff: Record<string, unknown> = { files_changed: [], summary: "", raw_di
 
 const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = input.toString();
+  if (url.endsWith("/runtime/models")) {
+    return new Response(
+      JSON.stringify({
+        source: "runtime",
+        models: [{ id: "GPT-5.4" }, { id: "GPT-5.3-Codex" }]
+      }),
+      { status: 200 }
+    );
+  }
   if (url.endsWith("/projects/discover")) {
     return new Response(
       JSON.stringify({
@@ -47,6 +56,8 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
       title: payload.title,
       prompt: payload.prompt,
       execution_mode: payload.execution_mode ?? "execute",
+      model: payload.model ?? "GPT-5.4",
+      reasoning_effort: payload.reasoning_effort ?? "medium",
       status: "running",
       workspace_type: payload.workspace_type ?? "branch",
       workspace_ref: "task/fix-canonical-a1b2",
@@ -87,6 +98,11 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
     taskDetail = { ...(taskDetail ?? {}), status: "running" };
     return new Response(JSON.stringify(taskDetail), { status: 200 });
   }
+  if (url.endsWith("/tasks/task-1/retry") && init?.method === "POST") {
+    const payload = JSON.parse(String(init.body));
+    taskDetail = { ...(taskDetail ?? {}), status: "starting", model: payload.model ?? (taskDetail as Record<string, unknown> | null)?.model };
+    return new Response(JSON.stringify(taskDetail), { status: 200 });
+  }
   if (url.endsWith("/tasks/task-1")) {
     return new Response(JSON.stringify(taskDetail), { status: 200 });
   }
@@ -116,6 +132,13 @@ describe("App", () => {
     taskDetail = null;
     taskEvents = [];
     taskDiff = { files_changed: [], summary: "", raw_diff: null };
+    window.localStorage.clear();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined)
+      }
+    });
     Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: 1024 });
     window.dispatchEvent(new Event("resize"));
   });
@@ -178,10 +201,12 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "New Task" }));
     await waitFor(() => {
       expect(screen.getByLabelText("Execution mode")).toBeEnabled();
-      expect(screen.getByRole("button", { name: "Create task" })).toBeEnabled();
+      expect(screen.getByLabelText("Model")).toBeEnabled();
     });
 
     fireEvent.change(screen.getByLabelText("Execution mode"), { target: { value: "plan" } });
+    fireEvent.change(screen.getByLabelText("Reasoning effort"), { target: { value: "high" } });
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "GPT-5.4" } });
     fireEvent.click(screen.getByRole("button", { name: "Create task" }));
 
     let taskCall:
@@ -195,7 +220,42 @@ describe("App", () => {
     });
     expect(taskCall).toBeTruthy();
     const [, init] = taskCall!;
-    expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({ execution_mode: "plan" });
+    expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({
+      execution_mode: "plan",
+      model: "GPT-5.4",
+      reasoning_effort: "high"
+    });
+  });
+
+  it("preloads runtime models and requires explicit model selection before task creation", async () => {
+    projects = [
+      {
+        id: "project-1",
+        name: "agent-commander",
+        repo_path: "/Users/hosung/Workspace/zenbar/agent-commander",
+        default_branch: "main",
+        created_at: new Date().toISOString()
+      }
+    ];
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <App />
+      </QueryClientProvider>
+    );
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/runtime/models"))).toBe(true);
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /agent-commander/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "New Task" }));
+
+    const createButton = await screen.findByRole("button", { name: "Create task" });
+    expect(createButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "GPT-5.4" } });
+    expect(createButton).toBeEnabled();
   });
 
   it("renders user input form and submits structured response", async () => {
@@ -385,10 +445,25 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: /agent-commander/i }));
     fireEvent.click(await screen.findByRole("button", { name: /plan canonical/i }));
 
+    expect(await screen.findByText("Input prompt")).toBeInTheDocument();
+    expect(screen.getByText("Create plan")).toBeInTheDocument();
     expect(await screen.findByText("Plan output")).toBeInTheDocument();
     expect(screen.getByText("Produce a safe implementation sequence.")).toBeInTheDocument();
     expect(screen.getByText("Inspect sitemap generation")).toBeInTheDocument();
     expect(screen.getByText("Add regression test coverage")).toBeInTheDocument();
+
+    const writeText = navigator.clipboard.writeText as unknown as ReturnType<typeof vi.fn>;
+    writeText.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("Create plan");
+    });
+
+    writeText.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Copy plan" }));
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalled();
+    });
   });
 
   it("renders plan output from plan delta chunks when plan steps are unavailable", async () => {
@@ -521,5 +596,65 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: /mobile task/i }));
     expect(await screen.findByText("Task Detail")).toBeInTheDocument();
     expect(await screen.findByText("Plan output")).toBeInTheDocument();
+  });
+
+  it("retries task with selected model override", async () => {
+    projects = [
+      {
+        id: "project-1",
+        name: "agent-commander",
+        repo_path: "/Users/hosung/Workspace/zenbar/agent-commander",
+        default_branch: "main",
+        created_at: new Date().toISOString()
+      }
+    ];
+    tasks = [
+      {
+        id: "task-1",
+        project_id: "project-1",
+        title: "Retry with model",
+        status: "failed",
+        execution_mode: "execute",
+        workspace_type: "branch",
+        workspace_ref: "task/retry-model-a1b2",
+        workspace_path: "/tmp/workspace",
+        runtime_session_id: "mock-task-1",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }
+    ];
+    taskDetail = {
+      ...tasks[0],
+      prompt: "Retry with model override",
+      model: "GPT-5.4",
+      project: projects[0],
+      approvals: [],
+      latest_diff: { files_changed: [], summary: "", raw_diff: null },
+      pending_interaction_type: null,
+      pending_request_id: null,
+      pending_request_payload_json: null,
+      pending_questions: []
+    };
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <App />
+      </QueryClientProvider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /agent-commander/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /retry with model/i }));
+    fireEvent.change(await screen.findByLabelText("Retry model"), { target: { value: "GPT-5.3-Codex" } });
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://localhost:8000/tasks/task-1/retry",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ actor: "web-commander", model: "GPT-5.3-Codex" })
+        })
+      );
+    });
   });
 });
