@@ -180,3 +180,22 @@ class RuntimeEvent(BaseModel):
     type: str
     message: str
     payload: dict[str, Any] | None = None
+
+
+class TaskCommitRequest(BaseModel):
+    actor: str = "system"
+    message: str = Field(min_length=1)
+
+
+class TaskPushRequest(BaseModel):
+    actor: str = "system"
+    remote: str = "origin"
+    set_upstream: bool = True
+
+
+class TaskGitActionResponse(BaseModel):
+    ok: bool
+    branch: str | None = None
+    remote: str | None = None
+    message: str
+    output: str | None = None

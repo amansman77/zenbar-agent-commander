@@ -30,6 +30,7 @@ def init_repo(tmpdir: str) -> Path:
     subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Zenbar Test"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "receive.denyCurrentBranch", "updateInstead"], cwd=repo, check=True, capture_output=True)
     (repo / "README.md").write_text("hello\n")
     subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
@@ -244,7 +245,73 @@ def test_create_task_requires_model_field():
             "/tasks",
             json={"project_id": project["id"], "title": "No model", "prompt": "Do work"},
         )
-        assert response.status_code == 422
+    assert response.status_code == 422
+
+
+def test_task_workspace_commit_and_push_flow():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Git Ops", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Commit push", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        workspace_path = task["workspace_path"]
+        assert workspace_path
+        new_file = Path(workspace_path) / "NEW_FILE.md"
+        new_file.write_text("new content\n")
+
+        commit = client.post(
+            f"/tasks/{task['id']}/commit",
+            json={"actor": "pytest", "message": "Add NEW_FILE"},
+        )
+        assert commit.status_code == 200
+        commit_body = commit.json()
+        assert commit_body["ok"] is True
+        assert commit_body["branch"].startswith("task/")
+
+        push = client.post(
+            f"/tasks/{task['id']}/push",
+            json={"actor": "pytest", "remote": "origin", "set_upstream": True},
+        )
+        assert push.status_code == 200
+        push_body = push.json()
+        assert push_body["ok"] is True
+        branch = push_body["branch"]
+        assert branch
+
+        branches = subprocess.run(
+            ["git", "branch", "--list", branch],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert branch in branches
+
+
+def test_task_workspace_commit_fails_without_changes():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Git Ops Empty", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "No changes", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        response = client.post(
+            f"/tasks/{task['id']}/commit",
+            json={"actor": "pytest", "message": "Should fail"},
+        )
+        assert response.status_code == 409
+        assert "No changes to commit" in response.json()["detail"]
 
 
 def test_discover_project_uses_remote_default_branch():
@@ -354,6 +421,35 @@ def test_user_input_request_updates_status_and_responds():
         )
         assert response.status_code == 200
         assert response.json()["status"] == "running"
+
+
+def test_terminal_task_status_is_not_downgraded_by_late_agent_status_event():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Terminal Status Guard", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Guard terminal", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            current.status = "completed"
+            db.add(current)
+            db.commit()
+            append_event(
+                db,
+                current,
+                RuntimeEvent(type="agent_status", message="Late status update"),
+            )
+
+        detail = client.get(f"/tasks/{task['id']}")
+        assert detail.status_code == 200
+        assert detail.json()["status"] == "completed"
 
 
 def test_approve_rejected_outside_waiting_result_approval():

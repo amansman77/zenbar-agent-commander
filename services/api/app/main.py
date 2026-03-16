@@ -39,6 +39,7 @@ from .repo_discovery import (
 from .runtime import create_runtime_adapter
 from .schemas import (
     CreateProjectRequest,
+    TaskCommitRequest,
     CreateTaskRequest,
     DiscoverProjectRequest,
     DiscoverProjectResponse,
@@ -50,6 +51,8 @@ from .schemas import (
     TaskDetail,
     TaskDiff,
     TaskEventResponse,
+    TaskGitActionResponse,
+    TaskPushRequest,
     TaskSummary,
 )
 from .service import TaskOrchestrator, stream_task_events
@@ -247,6 +250,28 @@ async def retry_task(task_id: str, payload: TaskApprovalRequest, db: Session = D
     task = get_task(db, task_id)
     assert task is not None
     return serialize_task_detail(task)
+
+
+@app.post("/tasks/{task_id}/commit", response_model=TaskGitActionResponse)
+async def commit_task_workspace(task_id: str, payload: TaskCommitRequest, db: Session = Depends(get_db)):
+    task = get_task(db, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    try:
+        return await orchestrator.commit_workspace(db, task, payload)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"Commit failed: {exc}") from exc
+
+
+@app.post("/tasks/{task_id}/push", response_model=TaskGitActionResponse)
+async def push_task_workspace(task_id: str, payload: TaskPushRequest, db: Session = Depends(get_db)):
+    task = get_task(db, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    try:
+        return await orchestrator.push_workspace(db, task, payload)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"Push failed: {exc}") from exc
 
 
 @app.get("/tasks/{task_id}/stream")

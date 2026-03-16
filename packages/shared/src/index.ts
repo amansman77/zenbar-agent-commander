@@ -148,3 +148,22 @@ export interface RespondTaskRequest {
   actor?: string;
   answers: Record<string, string[]>;
 }
+
+export interface CommitTaskRequest {
+  actor?: string;
+  message: string;
+}
+
+export interface PushTaskRequest {
+  actor?: string;
+  remote?: string;
+  set_upstream?: boolean;
+}
+
+export interface TaskGitActionResult {
+  ok: boolean;
+  branch: string | null;
+  remote: string | null;
+  message: string;
+  output: string | null;
+}

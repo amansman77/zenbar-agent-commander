@@ -1085,7 +1085,7 @@ export function App() {
                       title={project.repo_path}
                     >
                       <strong>{project.name}</strong>
-                      <span className="truncate">{project.repo_path}</span>
+                      <span className="item-secondary truncate">{project.repo_path}</span>
                     </button>
                   ))
                 ) : (
@@ -1124,8 +1124,8 @@ export function App() {
                           <StatusBadge status={item.status} />
                         </div>
                         <div className="task-meta-row">
-                          <span>{item.execution_mode}</span>
-                          <span className="mono truncate">{item.workspace_ref}</span>
+                          <span className="item-secondary">{item.execution_mode}</span>
+                          <span className="item-secondary mono truncate">{item.workspace_ref}</span>
                         </div>
                       </button>
                     ))
@@ -1185,11 +1185,11 @@ export function App() {
                       setSelectedTaskId(null);
                     }}
                     title={project.repo_path}
-                  >
-                    <strong>{project.name}</strong>
-                    <span className="truncate">{project.repo_path}</span>
-                  </button>
-                ))
+                    >
+                      <strong>{project.name}</strong>
+                      <span className="item-secondary truncate">{project.repo_path}</span>
+                    </button>
+                  ))
               ) : (
                 <p className="empty-state">No projects yet. Create one from New Project.</p>
               )}
@@ -1223,10 +1223,10 @@ export function App() {
                         <StatusBadge status={item.status} />
                       </div>
                       <div className="task-meta-row">
-                        <span>{item.execution_mode}</span>
-                        <span className="mono truncate">{item.workspace_ref}</span>
+                        <span className="item-secondary">{item.execution_mode}</span>
+                        <span className="item-secondary mono truncate">{item.workspace_ref}</span>
                       </div>
-                      <span className="mono truncate">{item.workspace_path ?? "workspace pending"}</span>
+                      <span className="item-secondary mono truncate">{item.workspace_path ?? "workspace pending"}</span>
                     </button>
                   ))
                 ) : (

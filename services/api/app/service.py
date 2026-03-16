@@ -22,7 +22,15 @@ from .repository import (
     set_task_status,
 )
 from .runtime import RuntimeAdapter
-from .schemas import RespondTaskRequest, RuntimeEvent, RuntimeStartRequest, TaskDiff
+from .schemas import (
+    RespondTaskRequest,
+    RuntimeEvent,
+    RuntimeStartRequest,
+    TaskCommitRequest,
+    TaskDiff,
+    TaskGitActionResponse,
+    TaskPushRequest,
+)
 from .streaming import broker
 from .workspace import prepare_workspace
 
@@ -239,6 +247,41 @@ class TaskOrchestrator:
         assert updated is not None
         return updated
 
+    async def commit_workspace(self, db: Session, task: Task, payload: TaskCommitRequest) -> TaskGitActionResponse:
+        if not task.workspace_path:
+            raise RuntimeError("Task workspace is not ready")
+        result = await asyncio.to_thread(self._commit_workspace_sync, task.workspace_path, payload.message, payload.actor)
+        append_event(
+            db,
+            task,
+            RuntimeEvent(
+                type="agent_status",
+                message=f"Workspace committed on {result.branch}",
+                payload={"type": "workspace_committed", "branch": result.branch, "message": payload.message},
+            ),
+        )
+        return result
+
+    async def push_workspace(self, db: Session, task: Task, payload: TaskPushRequest) -> TaskGitActionResponse:
+        if not task.workspace_path:
+            raise RuntimeError("Task workspace is not ready")
+        result = await asyncio.to_thread(
+            self._push_workspace_sync,
+            task.workspace_path,
+            payload.remote,
+            payload.set_upstream,
+        )
+        append_event(
+            db,
+            task,
+            RuntimeEvent(
+                type="agent_status",
+                message=f"Workspace branch pushed: {result.remote}/{result.branch}",
+                payload={"type": "workspace_pushed", "branch": result.branch, "remote": result.remote},
+            ),
+        )
+        return result
+
     async def _restart_with_fresh_session(self, db: Session, task: Task) -> Task:
         project = task.project
         if project is None:
@@ -337,6 +380,56 @@ class TaskOrchestrator:
             text=True,
         )
         return completed.stdout.strip()
+
+    def _run_git_full(self, cwd: str, args: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", cwd, *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def _git_checked(self, cwd: str, args: list[str], env: dict[str, str] | None = None) -> str:
+        completed = self._run_git_full(cwd, args, env=env)
+        if completed.returncode != 0:
+            message = completed.stderr.strip() or completed.stdout.strip() or f"git {' '.join(args)} failed"
+            raise RuntimeError(message)
+        return (completed.stdout.strip() or completed.stderr.strip()).strip()
+
+    def _commit_workspace_sync(self, workspace_path: str, message: str, actor: str) -> TaskGitActionResponse:
+        self._git_checked(workspace_path, ["rev-parse", "--is-inside-work-tree"])
+        status = self._git_checked(workspace_path, ["status", "--porcelain"])
+        if not status:
+            raise RuntimeError("No changes to commit in Task Workspace")
+
+        self._git_checked(workspace_path, ["add", "-A"])
+        env = os.environ.copy()
+        if actor.strip():
+            name = actor.strip()
+            email = os.getenv("ZENBAR_GIT_AUTHOR_EMAIL", "zenbar@local")
+            env.setdefault("GIT_AUTHOR_NAME", name)
+            env.setdefault("GIT_COMMITTER_NAME", name)
+            env.setdefault("GIT_AUTHOR_EMAIL", email)
+            env.setdefault("GIT_COMMITTER_EMAIL", email)
+        commit_output = self._git_checked(workspace_path, ["commit", "-m", message], env=env)
+        branch = self._git_checked(workspace_path, ["rev-parse", "--abbrev-ref", "HEAD"])
+        return TaskGitActionResponse(ok=True, branch=branch, message="Committed workspace changes", output=commit_output or None)
+
+    def _push_workspace_sync(self, workspace_path: str, remote: str, set_upstream: bool) -> TaskGitActionResponse:
+        branch = self._git_checked(workspace_path, ["rev-parse", "--abbrev-ref", "HEAD"])
+        args = ["push"]
+        if set_upstream:
+            args.append("-u")
+        args.extend([remote, branch])
+        push_output = self._git_checked(workspace_path, args)
+        return TaskGitActionResponse(
+            ok=True,
+            branch=branch,
+            remote=remote,
+            message="Pushed workspace branch",
+            output=push_output or None,
+        )
 
     def _compute_workspace_diff(self, task: Task) -> TaskDiff | None:
         workspace = task.workspace_path

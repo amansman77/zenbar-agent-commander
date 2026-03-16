@@ -1,15 +1,18 @@
 import type {
   ApproveTaskRequest,
+  CommitTaskRequest,
   CreateProjectRequest,
   DiscoverProjectRequest,
   DiscoverProjectResponse,
   ListRuntimeModelsResponse,
   CreateTaskRequest,
   ProjectSummary,
+  PushTaskRequest,
   RespondTaskRequest,
   TaskDetail,
   TaskDiff,
   TaskEvent,
+  TaskGitActionResult,
   TaskSummary
 } from "@zenbar/shared";
 
@@ -80,6 +83,16 @@ export const api = {
     }),
   retryTask: (taskId: string, payload: ApproveTaskRequest) =>
     request<TaskDetail>(`/tasks/${taskId}/retry`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  commitTaskWorkspace: (taskId: string, payload: CommitTaskRequest) =>
+    request<TaskGitActionResult>(`/tasks/${taskId}/commit`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  pushTaskWorkspace: (taskId: string, payload: PushTaskRequest = {}) =>
+    request<TaskGitActionResult>(`/tasks/${taskId}/push`, {
       method: "POST",
       body: JSON.stringify(payload)
     }),

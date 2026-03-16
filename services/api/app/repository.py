@@ -144,7 +144,12 @@ def append_event(db: Session, task: Task, event: RuntimeEvent) -> TaskEvent:
     db.add(record)
     status = map_status_from_event(record.type)
     if status:
-        task.status = status
+        terminal_statuses = {"completed", "failed", "stopped"}
+        if task.status in terminal_statuses and status not in terminal_statuses:
+            # Keep terminal task states stable even if late runtime activity events arrive.
+            pass
+        else:
+            task.status = status
     if record.type in {"user_input_requested", "result_approval_requested"}:
         payload = event.payload or {}
         task.pending_interaction_type = (
