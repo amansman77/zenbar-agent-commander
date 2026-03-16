@@ -50,6 +50,11 @@ button.secondary {
   color: var(--primary);
 }
 
+button.secondary:hover:not(:disabled) {
+  background: #dbe8fb;
+  color: #0b2d50;
+}
+
 button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -194,20 +199,82 @@ textarea {
 
 .list-item:hover,
 .task-row:hover {
+  background: #e6eef9;
   border-color: #c6d4e5;
+  color: #0f3158;
 }
 
 .list-item.active,
 .task-row.active {
   border-color: #8da9c9;
   background: #eaf2fc;
+  color: #0e2d52;
 }
 
-.list-item span,
-.task-row span {
+.list-item.active:hover,
+.task-row.active:hover {
+  background: #dfeafb;
+}
+
+.item-secondary {
   display: block;
   font-size: 0.82rem;
   color: var(--text-soft);
+}
+
+.list-item:hover .item-secondary,
+.task-row:hover .item-secondary {
+  color: #345170;
+}
+
+.list-item.active .item-secondary,
+.task-row.active .item-secondary {
+  color: #2f4968;
+}
+
+.list-item.active:hover .item-secondary,
+.task-row.active:hover .item-secondary {
+  color: #1f3c5e;
+}
+
+.list-item:not(.active):hover {
+  background: #dbe8fb;
+  border-color: #98b7dd;
+  color: #0b2d50;
+}
+
+.list-item:not(.active):hover strong {
+  color: #082543;
+}
+
+.list-item:not(.active):hover .item-secondary {
+  color: #25496c;
+}
+
+.task-row:not(.active):hover {
+  background: #dbe8fb;
+  border-color: #9ab7dc;
+}
+
+.task-row:not(.active):hover strong {
+  color: #0b2c50;
+}
+
+.task-row:not(.active):hover .item-secondary {
+  color: #274869;
+}
+
+.task-row.active:hover {
+  background: #d2e3fb;
+  border-color: #7ea2cf;
+}
+
+.task-row.active:hover strong {
+  color: #082443;
+}
+
+.task-row.active:hover .item-secondary {
+  color: #17395e;
 }
 
 .task-meta-row {
@@ -297,6 +364,12 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.action-row button.secondary:hover:not(:disabled) {
+  background: #dbe8fb;
+  color: #0b2d50;
+  box-shadow: inset 0 0 0 1px #98b7dd;
 }
 
 .retry-model-control {
