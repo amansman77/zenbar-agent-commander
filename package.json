@@ -7,7 +7,12 @@
     "build": "pnpm --filter @zenbar/shared build && pnpm --filter web build",
     "dev": "./scripts/dev-all.sh",
     "dev:api": "./scripts/dev-api.sh",
+    "dev:api:external": "./scripts/dev-api-external.sh",
     "dev:web": "./scripts/dev-web.sh",
+    "dev:web:external": "./scripts/dev-web-external.sh",
+    "dev:external": "./scripts/dev-external.sh",
+    "dev:external:bg": "./scripts/dev-external-bg.sh",
+    "dev:external:stop": "./scripts/dev-external-stop.sh",
     "lint": "pnpm --filter @zenbar/shared lint && pnpm --filter web lint",
     "test": "pnpm --filter @zenbar/shared test && pnpm --filter web test",
     "test:api": ".venv/bin/pytest services/api/tests -q"

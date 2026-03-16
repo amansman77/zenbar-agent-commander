@@ -1,0 +1,44 @@
+#!/bin/sh
+set -eu
+
+ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+API_SCRIPT="$ROOT_DIR/scripts/dev-api-external.sh"
+WEB_SCRIPT="$ROOT_DIR/scripts/dev-web-external.sh"
+TMP_DIR="$ROOT_DIR/tmp"
+API_PID_FILE="$TMP_DIR/dev-external-api.pid"
+WEB_PID_FILE="$TMP_DIR/dev-external-web.pid"
+API_LOG_FILE="$TMP_DIR/dev-external-api.log"
+WEB_LOG_FILE="$TMP_DIR/dev-external-web.log"
+
+mkdir -p "$TMP_DIR"
+
+is_running() {
+  pid_file="$1"
+  if [ ! -f "$pid_file" ]; then
+    return 1
+  fi
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  if [ -z "$pid" ]; then
+    return 1
+  fi
+  kill -0 "$pid" 2>/dev/null
+}
+
+if is_running "$API_PID_FILE" || is_running "$WEB_PID_FILE"; then
+  echo "External dev server is already running."
+  echo "Stop first: pnpm dev:external:stop"
+  exit 1
+fi
+
+nohup sh "$API_SCRIPT" >"$API_LOG_FILE" 2>&1 &
+API_PID=$!
+echo "$API_PID" >"$API_PID_FILE"
+
+nohup sh "$WEB_SCRIPT" >"$WEB_LOG_FILE" 2>&1 &
+WEB_PID=$!
+echo "$WEB_PID" >"$WEB_PID_FILE"
+
+echo "Started external dev servers in background."
+echo "  API pid: $API_PID (log: $API_LOG_FILE)"
+echo "  Web pid: $WEB_PID (log: $WEB_LOG_FILE)"
+echo "Stop with: pnpm dev:external:stop"

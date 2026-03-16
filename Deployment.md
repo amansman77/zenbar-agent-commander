@@ -70,6 +70,23 @@ Recommended devices on the tailnet:
 * iPhone
 * home workstation
 
+External dev startup:
+
+```bash
+pnpm dev:external
+```
+
+Overrides:
+
+```text
+ZENBAR_PUBLIC_HOST
+ZENBAR_API_HOST
+ZENBAR_API_PORT
+ZENBAR_WEB_HOST
+ZENBAR_WEB_PORT
+VITE_API_BASE_URL
+```
+
 ## Deployment Principles
 
 ### Local-first runtime

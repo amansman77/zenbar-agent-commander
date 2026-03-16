@@ -151,11 +151,38 @@ Start both servers from the repo root:
 pnpm dev
 ```
 
+Start both servers in external mode (`0.0.0.0` bind):
+
+```bash
+pnpm dev:external
+```
+
+Run external mode in background:
+
+```bash
+pnpm dev:external:bg
+pnpm dev:external:stop
+```
+
+External mode default ports:
+
+```text
+Web Commander: 15173
+Orchestration API: 18000
+```
+
 Start them separately when needed:
 
 ```bash
 pnpm dev:api
 pnpm dev:web
+```
+
+External mode (separate):
+
+```bash
+pnpm dev:api:external
+pnpm dev:web:external
 ```
 
 Default local URLs:
@@ -164,6 +191,22 @@ Default local URLs:
 Web Commander: http://127.0.0.1:5173
 Orchestration API: http://127.0.0.1:8000
 ```
+
+External mode environment variables:
+
+```text
+ZENBAR_PUBLIC_HOST          # preferred host/IP used for VITE_API_BASE_URL (optional)
+ZENBAR_API_HOST             # default: 0.0.0.0
+ZENBAR_API_PORT             # default: 18000
+ZENBAR_WEB_HOST             # default: 0.0.0.0
+ZENBAR_WEB_PORT             # default: 15173
+VITE_API_BASE_URL           # explicit override for web API target
+```
+
+Notes:
+
+* `dev:web:external` auto-detects a Tailscale IPv4 when available.
+* For iPhone/remote access in a tailnet, open `http://<agent-host-tailscale-ip>:5173`.
 
 ## Summary
 
