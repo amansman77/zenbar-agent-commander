@@ -390,8 +390,8 @@ function TaskForm({
   onCreate: (payload: CreateTaskRequest) => void;
   onClose: () => void;
 }) {
-  const [title, setTitle] = useState("Fix sitemap canonical");
-  const [prompt, setPrompt] = useState("Analyze the repository and fix canonical tag generation.");
+  const [title, setTitle] = useState("");
+  const [prompt, setPrompt] = useState("");
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("execute");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [model, setModel] = useState("");
@@ -444,11 +444,21 @@ function TaskForm({
       </div>
       <label>
         Title
-        <input value={title} onChange={(event) => setTitle(event.target.value)} disabled={!project} />
+        <input
+          value={title}
+          onChange={(event) => setTitle(event.target.value)}
+          placeholder="Fix sitemap canonical"
+          disabled={!project}
+        />
       </label>
       <label>
         Prompt
-        <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} disabled={!project} />
+        <textarea
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          placeholder="Analyze the repository and fix canonical tag generation."
+          disabled={!project}
+        />
       </label>
       <label>
         Execution mode
