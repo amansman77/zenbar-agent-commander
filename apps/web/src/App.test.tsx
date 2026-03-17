@@ -175,7 +175,7 @@ describe("App", () => {
 
     expect(screen.getByDisplayValue("/tmp/custom")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/projects/discover",
+      expect.stringMatching(/\/projects\/discover$/),
       expect.objectContaining({ method: "POST" })
     );
   });
@@ -320,7 +320,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "http://localhost:8000/tasks/task-1/respond",
+        expect.stringMatching(/\/tasks\/task-1\/respond$/),
         expect.objectContaining({ method: "POST" })
       );
     });
@@ -585,7 +585,7 @@ describe("App", () => {
     );
 
     expect(await screen.findByText("Projects")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "New Project" }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "New Project" }))[1]);
     fireEvent.change(screen.getByLabelText("Project name"), { target: { value: "agent-commander" } });
     fireEvent.change(screen.getByLabelText("Repository path"), { target: { value: "/Users/hosung/Workspace/zenbar/agent-commander" } });
     fireEvent.change(screen.getByLabelText("Default branch"), { target: { value: "main" } });
@@ -594,8 +594,8 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: /agent-commander/i }));
     expect(await screen.findByText("Tasks")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /mobile task/i }));
-    expect(await screen.findByText("Task Detail")).toBeInTheDocument();
-    expect(await screen.findByText("Plan output")).toBeInTheDocument();
+    expect(await screen.findByText("Input prompt")).toBeInTheDocument();
+    expect(await screen.findByText("Log")).toBeInTheDocument();
   });
 
   it("retries task with selected model override", async () => {
@@ -649,7 +649,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "http://localhost:8000/tasks/task-1/retry",
+        expect.stringMatching(/\/tasks\/task-1\/retry$/),
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({ actor: "web-commander", model: "GPT-5.3-Codex" })

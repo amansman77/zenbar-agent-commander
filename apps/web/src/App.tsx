@@ -791,8 +791,9 @@ export function App() {
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [mobileScreen, setMobileScreen] = useState<MobileScreen>("projects");
-  const [fabOpen, setFabOpen] = useState(false);
-  const [expandedEvents, setExpandedEvents] = useState<Record<string, boolean>>({});
+  const [mobileDetailTab, setMobileDetailTab] = useState<"log" | "diff">("log");
+  const [mobilePromptExpanded, setMobilePromptExpanded] = useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [planCopyState, setPlanCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [promptCopyState, setPromptCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [retryModel, setRetryModel] = useState("");
@@ -1002,9 +1003,15 @@ export function App() {
   useEffect(() => {
     if (!isMobile) {
       setMobileScreen("projects");
-      setFabOpen(false);
+      setMobileMoreOpen(false);
     }
   }, [isMobile]);
+
+  useEffect(() => {
+    setMobileDetailTab("log");
+    setMobilePromptExpanded(false);
+    setMobileMoreOpen(false);
+  }, [task?.id]);
 
   const copyToClipboard = async (content: string): Promise<boolean> => {
     try {
@@ -1059,6 +1066,250 @@ export function App() {
       return <p className="empty-state">Select a task to inspect the Task Workspace and approval state.</p>;
     }
 
+    const canApprove = task.status === "waiting_result_approval";
+    const canStop = !["completed", "failed", "stopped"].includes(task.status);
+    const canRetry = ["failed", "stopped", "completed"].includes(task.status) && Boolean(retryModel);
+    const promptPreview = task.prompt.replace(/\s+/g, " ").trim();
+    const compactPromptPreview =
+      promptPreview.length > 120 ? `${promptPreview.slice(0, 120).trimEnd()}...` : promptPreview || "No prompt";
+
+    if (mobile) {
+      return (
+        <>
+          <div className="mobile-detail-control">
+            <div className="mobile-detail-control-top">
+              <button type="button" className="secondary mobile-back" onClick={() => setMobileScreen("tasks")}>
+                Back
+              </button>
+              <strong className="truncate">{task.title}</strong>
+              <StatusBadge status={task.status} />
+              <button type="button" className="secondary" onClick={() => setMobileMoreOpen(true)}>
+                More
+              </button>
+            </div>
+            <div className="mobile-detail-action-row">
+              <button onClick={() => taskActionMutation.mutate({ action: "approveTask", taskId: task.id })} disabled={!canApprove}>
+                Approve
+              </button>
+              <button
+                className="secondary"
+                onClick={() => taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: retryModel || undefined })}
+                disabled={!canRetry}
+              >
+                Retry
+              </button>
+              <button className="secondary" onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })} disabled={!canStop}>
+                Stop
+              </button>
+            </div>
+          </div>
+
+          <details className="mobile-meta-section" open>
+            <summary>Summary</summary>
+            <div className="meta-grid mobile-meta-grid">
+              <div>
+                <span className="meta-label">Project</span>
+                <strong className="break-value">{task.project?.name ?? "Unknown project"}</strong>
+              </div>
+              <div>
+                <span className="meta-label">Model (effective)</span>
+                <strong className="break-value mono">{task.effective_model ?? task.model ?? "Unknown"}</strong>
+              </div>
+              <div>
+                <span className="meta-label">Execution mode</span>
+                <strong className="break-value">{task.execution_mode}</strong>
+              </div>
+              <div>
+                <span className="meta-label">Reasoning</span>
+                <strong className="break-value">{task.reasoning_effort ?? "medium"}</strong>
+              </div>
+            </div>
+          </details>
+
+          <details className="mobile-meta-section">
+            <summary>Advanced</summary>
+            <div className="meta-grid mobile-meta-grid">
+              <div>
+                <span className="meta-label">Task workspace</span>
+                <strong className="break-value mono">{task.workspace_ref}</strong>
+                <span className="break-value mono">{task.workspace_path}</span>
+              </div>
+              <div>
+                <span className="meta-label">Runtime session</span>
+                <strong className="break-value mono">{task.runtime_session_id ?? "Not started"}</strong>
+              </div>
+            </div>
+          </details>
+
+          <section className="mobile-prompt-section">
+            <button
+              type="button"
+              className="mobile-prompt-toggle"
+              onClick={() => setMobilePromptExpanded((value) => !value)}
+              aria-expanded={mobilePromptExpanded}
+            >
+              <span>Input prompt</span>
+              <span className="mobile-prompt-preview">{compactPromptPreview}</span>
+            </button>
+            {mobilePromptExpanded ? (
+              <div className="output-panel prompt-output">
+                <div className="row-header">
+                  <span className="meta-label">Full prompt</span>
+                  <button type="button" className="secondary" onClick={copyPromptOutput}>
+                    Copy
+                  </button>
+                </div>
+                {promptCopyState === "copied" ? <p className="copy-status">Prompt copied to clipboard.</p> : null}
+                {promptCopyState === "error" ? <p className="copy-status">Prompt copy failed.</p> : null}
+                <MarkdownRenderer markdown={task.prompt} />
+              </div>
+            ) : null}
+          </section>
+
+          <div className="mobile-detail-tabs" role="tablist" aria-label="Task detail tabs">
+            <button
+              type="button"
+              className={mobileDetailTab === "log" ? "active" : ""}
+              role="tab"
+              aria-selected={mobileDetailTab === "log"}
+              onClick={() => setMobileDetailTab("log")}
+            >
+              Log
+            </button>
+            <button
+              type="button"
+              className={mobileDetailTab === "diff" ? "active" : ""}
+              role="tab"
+              aria-selected={mobileDetailTab === "diff"}
+              onClick={() => setMobileDetailTab("diff")}
+            >
+              Diff
+            </button>
+          </div>
+
+          <div className="mobile-detail-tab-panel">
+            {mobileDetailTab === "log" ? (
+              <>
+                {latestPlan ? (
+                  <section className="output-panel">
+                    <div className="row-header">
+                      <h3>Plan output</h3>
+                      <button type="button" className="secondary" onClick={copyPlanOutput}>
+                        Copy plan
+                      </button>
+                    </div>
+                    {planCopyState === "copied" ? <p className="copy-status">Copied to clipboard.</p> : null}
+                    {planCopyState === "error" ? <p className="copy-status">Copy failed.</p> : null}
+                    <div className="plan-output">
+                      <MarkdownRenderer markdown={planMarkdown || "Latest implementation plan from Codex runtime."} />
+                    </div>
+                  </section>
+                ) : null}
+
+                <section className="output-panel">
+                  <div className="row-header">
+                    <h3>Event log</h3>
+                    <button type="button" className="secondary" onClick={() => setMobileMoreOpen(true)}>
+                      Add action
+                    </button>
+                  </div>
+                  <ul className="mobile-event-list">
+                    {events.map((event) => (
+                      <li key={event.id}>
+                        <span className={`event-icon event-icon-${event.type.includes("error") ? "error" : "normal"}`} aria-hidden="true">
+                          ●
+                        </span>
+                        <div>
+                          <p className="event-message">{event.message}</p>
+                          <p className="event-meta">
+                            <span className="mono">{event.type}</span>
+                            <span>{new Date(event.created_at).toLocaleTimeString()}</span>
+                          </p>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  {events.length === 0 ? <p className="empty-state">No events yet.</p> : null}
+                </section>
+              </>
+            ) : (
+              <section className="output-panel mobile-diff-view">
+                <p>{diff?.summary && diff.summary.trim().length > 0 ? diff.summary : "Waiting for runtime diff."}</p>
+                <ul>
+                  {diff?.files_changed.map((file: string) => (
+                    <li key={file}>{file}</li>
+                  ))}
+                </ul>
+                {diff?.raw_diff ? <ColoredDiff rawDiff={diff.raw_diff} /> : null}
+              </section>
+            )}
+          </div>
+
+          {mobileMoreOpen ? (
+            <div className="bottom-sheet-backdrop" onClick={() => setMobileMoreOpen(false)}>
+              <div
+                className="bottom-sheet"
+                role="dialog"
+                aria-modal="true"
+                aria-label="More actions"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="bottom-sheet-header">
+                  <h3>More actions</h3>
+                  <button type="button" className="secondary" onClick={() => setMobileMoreOpen(false)}>
+                    Close
+                  </button>
+                </div>
+                <div className="bottom-sheet-list">
+                  <label className="retry-model-control">
+                    Commit message
+                    <input
+                      aria-label="Commit message"
+                      value={commitMessage}
+                      onChange={(event) => setCommitMessage(event.target.value)}
+                      placeholder="Apply Task Workspace updates"
+                    />
+                  </label>
+                  <button
+                    className="secondary"
+                    onClick={() => workspaceCommitMutation.mutate({ taskId: task.id, message: commitMessage.trim() })}
+                    disabled={!task.workspace_path || !commitMessage.trim() || workspaceCommitMutation.isPending}
+                  >
+                    Commit
+                  </button>
+                  <button
+                    className="secondary"
+                    onClick={() => workspacePushMutation.mutate({ taskId: task.id })}
+                    disabled={!task.workspace_path || workspacePushMutation.isPending}
+                  >
+                    Push
+                  </button>
+                  <label className="retry-model-control">
+                    Change model
+                    <select
+                      aria-label="Retry model"
+                      value={retryModel}
+                      onChange={(event) => setRetryModel(event.target.value)}
+                      disabled={retryModelOptions.length === 0}
+                    >
+                      {retryModelOptions.map((model) => (
+                        <option key={model} value={model}>
+                          {model}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                {workspaceCommitMutation.error instanceof Error ? <p role="alert">{workspaceCommitMutation.error.message}</p> : null}
+                {workspacePushMutation.error instanceof Error ? <p role="alert">{workspacePushMutation.error.message}</p> : null}
+                {gitActionMessage ? <p className="copy-status">{gitActionMessage}</p> : null}
+              </div>
+            </div>
+          ) : null}
+        </>
+      );
+    }
+
     return (
       <>
         <div className="meta-grid">
@@ -1069,10 +1320,6 @@ export function App() {
           <div>
             <span className="meta-label">Execution mode</span>
             <strong className="break-value">{task.execution_mode}</strong>
-          </div>
-          <div>
-            <span className="meta-label">Requested model</span>
-            <strong className="break-value mono">{task.model ?? "Unknown"}</strong>
           </div>
           <div>
             <span className="meta-label">Effective model</span>
@@ -1120,21 +1367,21 @@ export function App() {
           </label>
           <button
             onClick={() => taskActionMutation.mutate({ action: "approveTask", taskId: task.id })}
-            disabled={task.status !== "waiting_result_approval"}
+            disabled={!canApprove}
           >
             Approve
           </button>
           <button
             className="secondary"
             onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })}
-            disabled={["completed", "failed", "stopped"].includes(task.status)}
+            disabled={!canStop}
           >
             Stop
           </button>
           <button
             className="secondary"
             onClick={() => taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: retryModel || undefined })}
-            disabled={!["failed", "stopped", "completed"].includes(task.status) || !retryModel}
+            disabled={!canRetry}
           >
             Retry
           </button>
@@ -1235,38 +1482,14 @@ export function App() {
 
           <section>
             <h3>Event log</h3>
-            {mobile ? (
-              <ul className="event-accordion output-panel">
-                {events.map((event) => (
-                  <li key={event.id}>
-                    <button
-                      type="button"
-                      className="event-toggle"
-                      onClick={() =>
-                        setExpandedEvents((previous) => ({ ...previous, [event.id]: !previous[event.id] }))
-                      }
-                    >
-                      <span>{expandedEvents[event.id] ? "▼" : "▶"} {event.message}</span>
-                    </button>
-                    {expandedEvents[event.id] ? (
-                      <div className="event-detail">
-                        <span className="mono">{event.type}</span>
-                        <span>{new Date(event.created_at).toLocaleString()}</span>
-                      </div>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <ul className="event-list output-panel">
-                {events.map((event) => (
-                  <li key={event.id}>
-                    <span>{event.type}</span>
-                    <strong>{event.message}</strong>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <ul className="event-list output-panel">
+              {events.map((event) => (
+                <li key={event.id}>
+                  <span>{event.type}</span>
+                  <strong>{event.message}</strong>
+                </li>
+              ))}
+            </ul>
           </section>
 
           <section>
@@ -1314,14 +1537,19 @@ export function App() {
                     <h2>Projects</h2>
                     <p>Tap a project to open tasks</p>
                   </div>
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={handleDeleteProject}
-                    disabled={!selectedProject || deleteProjectMutation.isPending}
-                  >
-                    {deleteProjectMutation.isPending ? "Deleting..." : "Delete Project"}
-                  </button>
+                  <div className="inline-actions">
+                    <button type="button" onClick={() => setProjectModalOpen(true)}>
+                      New Project
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={handleDeleteProject}
+                      disabled={!selectedProject || deleteProjectMutation.isPending}
+                    >
+                      {deleteProjectMutation.isPending ? "Deleting..." : "Delete Project"}
+                    </button>
+                  </div>
                 </div>
               </div>
               <div className="panel-scroll">
@@ -1358,6 +1586,9 @@ export function App() {
                   <h2>Tasks</h2>
                   <p>{selectedProject?.name ?? "Select project"}</p>
                 </div>
+                <button type="button" onClick={() => setTaskModalOpen(true)} disabled={!selectedProject}>
+                  New Task
+                </button>
               </div>
               <div className="panel-scroll">
                 {selectedProject ? (
@@ -1393,17 +1624,7 @@ export function App() {
           ) : null}
 
           {mobileScreen === "detail" ? (
-            <section className="panel mobile-screen detail-panel">
-              <div className="panel-header mobile-title-row">
-                <button type="button" className="secondary mobile-back" onClick={() => setMobileScreen("tasks")}>
-                  Back
-                </button>
-                <div>
-                  <h2>Task Detail</h2>
-                  <p>{task?.title ?? "Select task"}</p>
-                </div>
-                {task ? <StatusBadge status={task.status} /> : null}
-              </div>
+            <section className="panel mobile-screen detail-panel mobile-detail-screen">
               {renderTaskDetailContent(true)}
             </section>
           ) : null}
@@ -1503,37 +1724,6 @@ export function App() {
           </section>
         </main>
       )}
-
-      {isMobile ? (
-        <div className="fab-wrap">
-          {fabOpen ? (
-            <div className="fab-menu">
-              <button
-                type="button"
-                onClick={() => {
-                  setProjectModalOpen(true);
-                  setFabOpen(false);
-                }}
-              >
-                New Project
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setTaskModalOpen(true);
-                  setFabOpen(false);
-                }}
-                disabled={!selectedProject}
-              >
-                New Task
-              </button>
-            </div>
-          ) : null}
-          <button type="button" className="fab-button" onClick={() => setFabOpen((value) => !value)}>
-            +
-          </button>
-        </div>
-      ) : null}
 
       <Modal title="New Project" open={projectModalOpen} onClose={() => setProjectModalOpen(false)} isMobile={isMobile}>
         <ProjectForm onCreate={(payload) => createProjectMutation.mutate(payload)} onClose={() => setProjectModalOpen(false)} />
