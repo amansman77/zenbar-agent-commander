@@ -373,7 +373,8 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: /need input/i }));
 
     expect(await screen.findByText("User input required")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
     fireEvent.change(screen.getByLabelText("Branch"), { target: { value: "main" } });
     fireEvent.click(screen.getByRole("button", { name: "Send response" }));
 

@@ -23,8 +23,8 @@ const statusTone: Record<TaskStatus, string> = {
   queued: "slate",
   starting: "blue",
   running: "blue",
-  waiting_user_input: "amber",
-  waiting_result_approval: "amber",
+  waiting_user_input: "orange",
+  waiting_result_approval: "orange",
   stopped: "slate",
   failed: "red",
   completed: "green"
@@ -37,6 +37,15 @@ function defaultAnswers(questions: TaskQuestion[]): Record<string, string> {
 type PlanStep = { step: string; status: string };
 type PlanSnapshot = { explanation: string | null; steps: PlanStep[]; text: string | null };
 type MobileScreen = "projects" | "tasks" | "detail";
+type TaskActionState = "running" | "waiting_approval" | "completed" | "failed";
+
+type ParsedDiffFile = {
+  id: string;
+  fileName: string;
+  lines: string[];
+  additions: number;
+  deletions: number;
+};
 
 function extractLatestPlan(events: TaskEvent[]): PlanSnapshot | null {
   const deltaChunks: string[] = [];
@@ -254,6 +263,66 @@ function diffLineClass(line: string): string {
   return "diff-line-neutral";
 }
 
+function inferTaskActionState(status: TaskStatus): TaskActionState {
+  if (status === "waiting_result_approval") {
+    return "waiting_approval";
+  }
+  if (status === "completed") {
+    return "completed";
+  }
+  if (status === "failed" || status === "stopped") {
+    return "failed";
+  }
+  return "running";
+}
+
+function parseDiffFiles(rawDiff: string): ParsedDiffFile[] {
+  const lines = rawDiff.split("\n");
+  const files: ParsedDiffFile[] = [];
+  let current: ParsedDiffFile | null = null;
+
+  const flushCurrent = () => {
+    if (current) {
+      files.push(current);
+      current = null;
+    }
+  };
+
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      flushCurrent();
+      const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+      const fileName = match?.[2] ?? line.replace("diff --git ", "");
+      current = {
+        id: `${fileName}-${files.length}`,
+        fileName,
+        lines: [line],
+        additions: 0,
+        deletions: 0
+      };
+      continue;
+    }
+    if (!current) {
+      current = {
+        id: `raw-${files.length}`,
+        fileName: `changes-${files.length + 1}`,
+        lines: [],
+        additions: 0,
+        deletions: 0
+      };
+    }
+    current.lines.push(line);
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      current.additions += 1;
+    } else if (line.startsWith("-") && !line.startsWith("---")) {
+      current.deletions += 1;
+    }
+  }
+
+  flushCurrent();
+  return files;
+}
+
 function ColoredDiff({ rawDiff }: { rawDiff: string }) {
   const lines = rawDiff.split("\n");
   return (
@@ -267,6 +336,41 @@ function ColoredDiff({ rawDiff }: { rawDiff: string }) {
         ))}
       </code>
     </pre>
+  );
+}
+
+function GroupedDiff({
+  rawDiff,
+  filesChanged,
+  expanded,
+  onToggle
+}: {
+  rawDiff: string;
+  filesChanged: string[];
+  expanded: Record<string, boolean>;
+  onToggle: (id: string) => void;
+}) {
+  const parsed = useMemo(() => parseDiffFiles(rawDiff), [rawDiff]);
+  const groups = parsed.length > 0 ? parsed : filesChanged.map((file, index) => ({ id: `${file}-${index}`, fileName: file, lines: [], additions: 0, deletions: 0 }));
+
+  return (
+    <div className="diff-groups">
+      {groups.map((group) => {
+        const isExpanded = Boolean(expanded[group.id]);
+        const changeCount = group.additions + group.deletions;
+        return (
+          <section key={group.id} className="diff-group">
+            <button type="button" className="diff-group-header" onClick={() => onToggle(group.id)} aria-expanded={isExpanded}>
+              <span className="mono truncate">{group.fileName}</span>
+              <span className="diff-change-count">
+                {changeCount} changes
+              </span>
+            </button>
+            {isExpanded && group.lines.length > 0 ? <ColoredDiff rawDiff={group.lines.join("\n")} /> : null}
+          </section>
+        );
+      })}
+    </div>
   );
 }
 
@@ -840,7 +944,7 @@ export function App() {
   const [mobileScreen, setMobileScreen] = useState<MobileScreen>("projects");
   const [mobileDetailTab, setMobileDetailTab] = useState<"log" | "diff">("log");
   const [mobilePromptExpanded, setMobilePromptExpanded] = useState(false);
-  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+  const [expandedDiffFiles, setExpandedDiffFiles] = useState<Record<string, boolean>>({});
   const [planCopyState, setPlanCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [promptCopyState, setPromptCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [retryModel, setRetryModel] = useState("");
@@ -1050,14 +1154,13 @@ export function App() {
   useEffect(() => {
     if (!isMobile) {
       setMobileScreen("projects");
-      setMobileMoreOpen(false);
     }
   }, [isMobile]);
 
   useEffect(() => {
     setMobileDetailTab("log");
     setMobilePromptExpanded(false);
-    setMobileMoreOpen(false);
+    setExpandedDiffFiles({});
   }, [task?.id]);
 
   const copyToClipboard = async (content: string): Promise<boolean> => {
@@ -1113,42 +1216,79 @@ export function App() {
       return <p className="empty-state">Select a task to inspect the Task Workspace and approval state.</p>;
     }
 
+    const actionState = inferTaskActionState(task.status);
     const canApprove = task.status === "waiting_result_approval";
     const canStop = !["completed", "failed", "stopped"].includes(task.status);
-    const canRetry = ["failed", "stopped", "completed"].includes(task.status) && Boolean(retryModel);
+    const canRetry = Boolean(retryModel);
+    const showRetryModel = actionState !== "waiting_approval";
     const promptPreview = task.prompt.replace(/\s+/g, " ").trim();
     const compactPromptPreview =
-      promptPreview.length > 120 ? `${promptPreview.slice(0, 120).trimEnd()}...` : promptPreview || "No prompt";
+      promptPreview.length > 180 ? `${promptPreview.slice(0, 180).trimEnd()}...` : promptPreview || "No prompt";
+    const primaryActionLabel = actionState === "running" ? "Stop" : actionState === "waiting_approval" ? "Approve" : "Retry";
+    const showBottomAction = mobile && (actionState === "running" || actionState === "waiting_approval");
 
     if (mobile) {
       return (
         <>
-          <div className="mobile-detail-control">
+          <div className={`mobile-detail-control mobile-detail-control-${actionState}`}>
             <div className="mobile-detail-control-top">
               <button type="button" className="secondary mobile-back" onClick={() => setMobileScreen("tasks")}>
                 Back
               </button>
               <strong className="truncate">{task.title}</strong>
               <StatusBadge status={task.status} />
-              <button type="button" className="secondary" onClick={() => setMobileMoreOpen(true)}>
-                More
-              </button>
             </div>
             <div className="mobile-detail-action-row">
-              <button onClick={() => taskActionMutation.mutate({ action: "approveTask", taskId: task.id })} disabled={!canApprove}>
-                Approve
-              </button>
-              <button
-                className="secondary"
-                onClick={() => taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: retryModel || undefined })}
-                disabled={!canRetry}
-              >
-                Retry
-              </button>
-              <button className="secondary" onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })} disabled={!canStop}>
-                Stop
-              </button>
+              {actionState === "running" ? (
+                <>
+                  <button onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })} disabled={!canStop}>
+                    Stop
+                  </button>
+                  <button
+                    className="secondary"
+                    onClick={() => taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: retryModel || undefined })}
+                    disabled={!canRetry}
+                  >
+                    Retry
+                  </button>
+                </>
+              ) : null}
+              {actionState === "waiting_approval" ? (
+                <>
+                  <button onClick={() => taskActionMutation.mutate({ action: "approveTask", taskId: task.id })} disabled={!canApprove}>
+                    Approve
+                  </button>
+                  <button className="secondary" onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })} disabled={!canStop}>
+                    Reject
+                  </button>
+                </>
+              ) : null}
+              {actionState === "completed" || actionState === "failed" ? (
+                <button
+                  onClick={() => taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: retryModel || undefined })}
+                  disabled={!canRetry}
+                >
+                  Retry
+                </button>
+              ) : null}
             </div>
+            {showRetryModel ? (
+              <label className="retry-model-control retry-model-control-mobile">
+                Retry model
+                <select
+                  aria-label="Retry model"
+                  value={retryModel}
+                  onChange={(event) => setRetryModel(event.target.value)}
+                  disabled={retryModelOptions.length === 0}
+                >
+                  {retryModelOptions.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
           </div>
 
           <details className="mobile-meta-section" open>
@@ -1189,28 +1329,34 @@ export function App() {
           </details>
 
           <section className="mobile-prompt-section">
-            <button
-              type="button"
-              className="mobile-prompt-toggle"
-              onClick={() => setMobilePromptExpanded((value) => !value)}
-              aria-expanded={mobilePromptExpanded}
-            >
-              <span>Input prompt</span>
-              <span className="mobile-prompt-preview">{compactPromptPreview}</span>
-            </button>
-            {mobilePromptExpanded ? (
-              <div className="output-panel prompt-output">
-                <div className="row-header">
-                  <span className="meta-label">Full prompt</span>
-                  <button type="button" className="secondary" onClick={copyPromptOutput}>
-                    Copy
+            <div className="output-panel prompt-output">
+              <div className="row-header">
+                <h3>Input prompt</h3>
+                {!mobilePromptExpanded ? (
+                  <button type="button" className="secondary" onClick={() => setMobilePromptExpanded(true)}>
+                    Expand
                   </button>
-                </div>
-                {promptCopyState === "copied" ? <p className="copy-status">Prompt copied to clipboard.</p> : null}
-                {promptCopyState === "error" ? <p className="copy-status">Prompt copy failed.</p> : null}
-                <MarkdownRenderer markdown={task.prompt} />
+                ) : (
+                  <div className="inline-actions">
+                    <button type="button" className="secondary" onClick={() => setMobilePromptExpanded(false)}>
+                      Collapse
+                    </button>
+                    <button type="button" className="secondary" onClick={copyPromptOutput}>
+                      Copy
+                    </button>
+                  </div>
+                )}
               </div>
-            ) : null}
+              {mobilePromptExpanded ? (
+                <>
+                  {promptCopyState === "copied" ? <p className="copy-status">Prompt copied to clipboard.</p> : null}
+                  {promptCopyState === "error" ? <p className="copy-status">Prompt copy failed.</p> : null}
+                  <MarkdownRenderer markdown={task.prompt} />
+                </>
+              ) : (
+                <p className="mobile-prompt-preview">{compactPromptPreview}</p>
+              )}
+            </div>
           </section>
 
           <div className="mobile-detail-tabs" role="tablist" aria-label="Task detail tabs">
@@ -1236,7 +1382,7 @@ export function App() {
 
           <div className="mobile-detail-tab-panel">
             {mobileDetailTab === "log" ? (
-              <>
+              <div className="mobile-log-scroll">
                 {latestPlan ? (
                   <section className="output-panel">
                     <div className="row-header">
@@ -1256,101 +1402,102 @@ export function App() {
                 <section className="output-panel">
                   <div className="row-header">
                     <h3>Event log</h3>
-                    <button type="button" className="secondary" onClick={() => setMobileMoreOpen(true)}>
-                      Add action
-                    </button>
                   </div>
                   <ul className="mobile-event-list">
-                    {events.map((event) => (
-                      <li key={event.id}>
-                        <span className={`event-icon event-icon-${event.type.includes("error") ? "error" : "normal"}`} aria-hidden="true">
-                          ●
-                        </span>
-                        <div>
-                          <p className="event-message">{event.message}</p>
-                          <p className="event-meta">
-                            <span className="mono">{event.type}</span>
-                            <span>{new Date(event.created_at).toLocaleTimeString()}</span>
-                          </p>
-                        </div>
-                      </li>
-                    ))}
+                    {events.map((event) => {
+                      const isImportant = ["failed", "completed", "result_approval_requested", "result_approval_granted", "user_input_requested"].includes(event.type);
+                      return (
+                        <li key={event.id} className={isImportant ? "event-item-important" : ""}>
+                          <span className={`event-icon event-icon-${event.type.includes("error") ? "error" : "normal"}`} aria-hidden="true">
+                            ●
+                          </span>
+                          <div>
+                            <p className={`event-message ${event.type === "agent_status" ? "event-message-agent-status" : ""}`}>{event.message}</p>
+                            <p className="event-meta">
+                              <span className="mono">{event.type}</span>
+                              <span>{new Date(event.created_at).toLocaleTimeString()}</span>
+                            </p>
+                          </div>
+                        </li>
+                      );
+                    })}
                   </ul>
                   {events.length === 0 ? <p className="empty-state">No events yet.</p> : null}
                 </section>
-              </>
+              </div>
             ) : (
-              <section className="output-panel mobile-diff-view">
+              <section className="output-panel mobile-diff-scroll">
+                <div className="row-header">
+                  <h3>Diff</h3>
+                  <div className="inline-actions">
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => workspaceCommitMutation.mutate({ taskId: task.id, message: commitMessage.trim() })}
+                      disabled={!task.workspace_path || !commitMessage.trim() || workspaceCommitMutation.isPending}
+                    >
+                      Commit
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => workspacePushMutation.mutate({ taskId: task.id })}
+                      disabled={!task.workspace_path || workspacePushMutation.isPending}
+                    >
+                      Push
+                    </button>
+                  </div>
+                </div>
+                <label className="retry-model-control retry-model-control-mobile">
+                  Commit message
+                  <input
+                    aria-label="Commit message"
+                    value={commitMessage}
+                    onChange={(event) => setCommitMessage(event.target.value)}
+                    placeholder="Apply Task Workspace updates"
+                  />
+                </label>
+                {workspaceCommitMutation.error instanceof Error ? <p role="alert">{workspaceCommitMutation.error.message}</p> : null}
+                {workspacePushMutation.error instanceof Error ? <p role="alert">{workspacePushMutation.error.message}</p> : null}
+                {gitActionMessage ? <p className="copy-status">{gitActionMessage}</p> : null}
                 <p>{diff?.summary && diff.summary.trim().length > 0 ? diff.summary : "Waiting for runtime diff."}</p>
-                <ul>
-                  {diff?.files_changed.map((file: string) => (
-                    <li key={file}>{file}</li>
-                  ))}
-                </ul>
-                {diff?.raw_diff ? <ColoredDiff rawDiff={diff.raw_diff} /> : null}
+                {diff?.raw_diff ? (
+                  <GroupedDiff
+                    rawDiff={diff.raw_diff}
+                    filesChanged={diff.files_changed}
+                    expanded={expandedDiffFiles}
+                    onToggle={(id) =>
+                      setExpandedDiffFiles((previous) => ({
+                        ...previous,
+                        [id]: !previous[id]
+                      }))
+                    }
+                  />
+                ) : (
+                  <ul>
+                    {diff?.files_changed.map((file: string) => (
+                      <li key={file}>{file}</li>
+                    ))}
+                  </ul>
+                )}
               </section>
             )}
           </div>
 
-          {mobileMoreOpen ? (
-            <div className="bottom-sheet-backdrop" onClick={() => setMobileMoreOpen(false)}>
-              <div
-                className="bottom-sheet"
-                role="dialog"
-                aria-modal="true"
-                aria-label="More actions"
-                onClick={(event) => event.stopPropagation()}
+          {showBottomAction ? (
+            <div className="mobile-detail-sticky-cta">
+              <button
+                type="button"
+                className={actionState === "waiting_approval" ? "status-action-waiting" : ""}
+                onClick={() =>
+                  actionState === "waiting_approval"
+                    ? taskActionMutation.mutate({ action: "approveTask", taskId: task.id })
+                    : taskActionMutation.mutate({ action: "stopTask", taskId: task.id })
+                }
+                disabled={actionState === "waiting_approval" ? !canApprove : !canStop}
               >
-                <div className="bottom-sheet-header">
-                  <h3>More actions</h3>
-                  <button type="button" className="secondary" onClick={() => setMobileMoreOpen(false)}>
-                    Close
-                  </button>
-                </div>
-                <div className="bottom-sheet-list">
-                  <label className="retry-model-control">
-                    Commit message
-                    <input
-                      aria-label="Commit message"
-                      value={commitMessage}
-                      onChange={(event) => setCommitMessage(event.target.value)}
-                      placeholder="Apply Task Workspace updates"
-                    />
-                  </label>
-                  <button
-                    className="secondary"
-                    onClick={() => workspaceCommitMutation.mutate({ taskId: task.id, message: commitMessage.trim() })}
-                    disabled={!task.workspace_path || !commitMessage.trim() || workspaceCommitMutation.isPending}
-                  >
-                    Commit
-                  </button>
-                  <button
-                    className="secondary"
-                    onClick={() => workspacePushMutation.mutate({ taskId: task.id })}
-                    disabled={!task.workspace_path || workspacePushMutation.isPending}
-                  >
-                    Push
-                  </button>
-                  <label className="retry-model-control">
-                    Change model
-                    <select
-                      aria-label="Retry model"
-                      value={retryModel}
-                      onChange={(event) => setRetryModel(event.target.value)}
-                      disabled={retryModelOptions.length === 0}
-                    >
-                      {retryModelOptions.map((model) => (
-                        <option key={model} value={model}>
-                          {model}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                {workspaceCommitMutation.error instanceof Error ? <p role="alert">{workspaceCommitMutation.error.message}</p> : null}
-                {workspacePushMutation.error instanceof Error ? <p role="alert">{workspacePushMutation.error.message}</p> : null}
-                {gitActionMessage ? <p className="copy-status">{gitActionMessage}</p> : null}
-              </div>
+                {primaryActionLabel}
+              </button>
             </div>
           ) : null}
         </>
@@ -1397,41 +1544,55 @@ export function App() {
               placeholder="Apply Task Workspace updates"
             />
           </label>
-          <label className="retry-model-control">
-            Retry model
-            <select
-              aria-label="Retry model"
-              value={retryModel}
-              onChange={(event) => setRetryModel(event.target.value)}
-              disabled={retryModelOptions.length === 0}
+          {showRetryModel ? (
+            <label className="retry-model-control">
+              Retry model
+              <select
+                aria-label="Retry model"
+                value={retryModel}
+                onChange={(event) => setRetryModel(event.target.value)}
+                disabled={retryModelOptions.length === 0}
+              >
+                {retryModelOptions.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {actionState === "running" ? (
+            <>
+              <button onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })} disabled={!canStop}>
+                Stop
+              </button>
+              <button
+                className="secondary"
+                onClick={() => taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: retryModel || undefined })}
+                disabled={!canRetry}
+              >
+                Retry
+              </button>
+            </>
+          ) : null}
+          {actionState === "waiting_approval" ? (
+            <>
+              <button onClick={() => taskActionMutation.mutate({ action: "approveTask", taskId: task.id })} disabled={!canApprove}>
+                Approve
+              </button>
+              <button className="secondary" onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })} disabled={!canStop}>
+                Reject
+              </button>
+            </>
+          ) : null}
+          {actionState === "completed" || actionState === "failed" ? (
+            <button
+              onClick={() => taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: retryModel || undefined })}
+              disabled={!canRetry}
             >
-              {retryModelOptions.map((model) => (
-                <option key={model} value={model}>
-                  {model}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            onClick={() => taskActionMutation.mutate({ action: "approveTask", taskId: task.id })}
-            disabled={!canApprove}
-          >
-            Approve
-          </button>
-          <button
-            className="secondary"
-            onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })}
-            disabled={!canStop}
-          >
-            Stop
-          </button>
-          <button
-            className="secondary"
-            onClick={() => taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: retryModel || undefined })}
-            disabled={!canRetry}
-          >
-            Retry
-          </button>
+              Retry
+            </button>
+          ) : null}
           <button
             className="secondary"
             onClick={() => workspaceCommitMutation.mutate({ taskId: task.id, message: commitMessage.trim() })}
@@ -1543,12 +1704,25 @@ export function App() {
             <h3>Diff summary</h3>
             <div className="output-panel">
               <p>{diff?.summary && diff.summary.trim().length > 0 ? diff.summary : "Waiting for runtime diff."}</p>
-              <ul>
-                {diff?.files_changed.map((file: string) => (
-                  <li key={file}>{file}</li>
-                ))}
-              </ul>
-              {diff?.raw_diff ? <ColoredDiff rawDiff={diff.raw_diff} /> : null}
+              {diff?.raw_diff ? (
+                <GroupedDiff
+                  rawDiff={diff.raw_diff}
+                  filesChanged={diff.files_changed}
+                  expanded={expandedDiffFiles}
+                  onToggle={(id) =>
+                    setExpandedDiffFiles((previous) => ({
+                      ...previous,
+                      [id]: !previous[id]
+                    }))
+                  }
+                />
+              ) : (
+                <ul>
+                  {diff?.files_changed.map((file: string) => (
+                    <li key={file}>{file}</li>
+                  ))}
+                </ul>
+              )}
             </div>
           </section>
         </div>
