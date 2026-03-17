@@ -195,6 +195,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         self._sessions: dict[str, SessionState] = {}
         self._reader_task: asyncio.Task[None] | None = None
         self._initialized = False
+        self._idle_event_heartbeat_seconds = float(os.getenv("ZENBAR_RUNTIME_IDLE_HEARTBEAT_SECONDS", "30"))
 
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
         await self._ensure_connection()
@@ -375,7 +376,20 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
     async def subscribe_events(self, session_id: str) -> AsyncIterator[RuntimeEvent]:
         state = self._require_session(session_id)
         while True:
-            yield await state.queue.get()
+            try:
+                yield await asyncio.wait_for(state.queue.get(), timeout=self._idle_event_heartbeat_seconds)
+            except asyncio.TimeoutError:
+                reader = self._reader_task
+                if reader is not None and reader.done():
+                    error = reader.exception()
+                    if error is not None:
+                        raise RuntimeError(f"Codex App Server stream reader failed: {error}") from error
+                    raise RuntimeError("Codex App Server stream reader stopped")
+                yield RuntimeEvent(
+                    type="agent_status",
+                    message="Runtime is still running (no new output yet).",
+                    payload={"reason": "idle_heartbeat"},
+                )
 
     async def _ensure_connection(self) -> None:
         async with self._connection_lock:

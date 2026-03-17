@@ -382,14 +382,7 @@ class TaskOrchestrator:
                 attempts += 1
                 detail = str(exc)
                 if "Unknown Codex App Server session" in detail:
-                    await self._handle_runtime_event(
-                        task_id,
-                        RuntimeEvent(
-                            type="failed",
-                            message="Runtime session is no longer available. Retry the task to continue.",
-                            payload={"attempts": attempts, "reason": "stale_runtime_session"},
-                        ),
-                    )
+                    await self._handle_stale_runtime_session(task_id, attempts)
                     return
                 await self._handle_runtime_event(
                     task_id,
@@ -400,6 +393,39 @@ class TaskOrchestrator:
                     ),
                 )
             await asyncio.sleep(min(0.5 * attempts, 5.0))
+
+    async def _handle_stale_runtime_session(self, task_id: str, attempts: int) -> None:
+        with SessionLocal() as db:
+            task = get_task(db, task_id)
+            if task is None:
+                return
+            terminal = task.status in {"completed", "stopped"}
+            if task.runtime_session_id:
+                task = clear_runtime_session(db, task, status=task.status if terminal else "failed")
+            if terminal:
+                event = RuntimeEvent(
+                    type="agent_status",
+                    message="Runtime session ended after task completion.",
+                    payload={"attempts": attempts, "reason": "stale_runtime_session_terminal"},
+                )
+            else:
+                event = RuntimeEvent(
+                    type="failed",
+                    message="Runtime session is no longer available. Retry the task to continue.",
+                    payload={"attempts": attempts, "reason": "stale_runtime_session"},
+                )
+            append_event(db, task, event)
+            task = get_task(db, task_id)
+            if task is None:
+                return
+            records = list_events(db, task_id)
+            latest_event = serialize_event(records[-1])
+            payload = {
+                "event": latest_event.model_dump(mode="json"),
+                "task": serialize_task_detail(task).model_dump(mode="json"),
+                "diff": serialize_diff(task).model_dump(mode="json"),
+            }
+        await broker.publish(task_id, payload)
 
     async def _handle_runtime_event(self, task_id: str, event: RuntimeEvent) -> None:
         with SessionLocal() as db:

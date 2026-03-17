@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import subprocess
@@ -8,6 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from fastapi.testclient import TestClient
+import pytest
 
 os.environ["ZENBAR_RUNTIME_MODE"] = "mock"
 os.environ["ZENBAR_DATABASE_URL"] = f"sqlite:///{Path(__file__).with_name('test_zenbar.db')}"
@@ -277,6 +279,45 @@ def test_runtime_models_endpoint_falls_back_when_runtime_unavailable(monkeypatch
     body = response.json()
     assert body["source"] == "fallback"
     assert body["models"] == [{"id": "default"}]
+
+
+def test_ws_subscribe_events_emits_idle_heartbeat():
+    from app.runtime import AppServerWebSocketAdapter, SessionState
+
+    async def run() -> None:
+        adapter = AppServerWebSocketAdapter("ws://example.invalid")
+        adapter._idle_event_heartbeat_seconds = 0.01
+        adapter._sessions["s1"] = SessionState(thread_id="s1")
+        adapter._reader_task = asyncio.create_task(asyncio.sleep(0.1))
+        try:
+            event = await asyncio.wait_for(anext(adapter.subscribe_events("s1")), timeout=0.2)
+        finally:
+            adapter._reader_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await adapter._reader_task
+        assert event.type == "agent_status"
+        assert event.payload == {"reason": "idle_heartbeat"}
+
+    asyncio.run(run())
+
+
+def test_ws_subscribe_events_fails_when_reader_task_stopped():
+    from app.runtime import AppServerWebSocketAdapter, SessionState
+
+    async def run() -> None:
+        adapter = AppServerWebSocketAdapter("ws://example.invalid")
+        adapter._idle_event_heartbeat_seconds = 0.01
+        adapter._sessions["s1"] = SessionState(thread_id="s1")
+
+        async def done_reader() -> None:
+            return None
+
+        adapter._reader_task = asyncio.create_task(done_reader())
+        await adapter._reader_task
+        with pytest.raises(RuntimeError, match="stream reader stopped"):
+            await asyncio.wait_for(anext(adapter.subscribe_events("s1")), timeout=0.2)
+
+    asyncio.run(run())
 
 
 def test_create_task_rejects_invalid_model():
@@ -875,6 +916,51 @@ def test_retry_restarts_task_when_runtime_session_is_stale():
         assert body["status"] in {"starting", "running", "waiting_result_approval"}
         assert body["runtime_session_id"]
         assert body["runtime_session_id"] != "missing-session"
+
+
+def test_stale_runtime_session_after_completion_keeps_completed_status(monkeypatch):
+    from app.main import orchestrator
+
+    async def stale_stream(_session_id: str):
+        if False:
+            yield RuntimeEvent(type="agent_status", message="unused")
+        raise RuntimeError("Unknown Codex App Server session")
+
+    monkeypatch.setattr(orchestrator.adapter, "stream_in_background", True)
+    monkeypatch.setattr(orchestrator.adapter, "subscribe_events", stale_stream)
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Terminal Stale Session", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Completed stale", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            current.status = "completed"
+            current.runtime_session_id = "missing-session"
+            db.add(current)
+            db.commit()
+
+        asyncio.run(orchestrator._consume_events(task["id"], "missing-session"))
+
+        detail = client.get(f"/tasks/{task['id']}")
+        assert detail.status_code == 200
+        body = detail.json()
+        assert body["status"] == "completed"
+        assert body["runtime_session_id"] is None
+
+        events = client.get(f"/tasks/{task['id']}/events")
+        assert events.status_code == 200
+        latest = events.json()[-1]
+        assert latest["type"] == "agent_status"
+        assert latest["payload_json"]["reason"] == "stale_runtime_session_terminal"
 
 
 def test_retry_accepts_model_override_and_restarts_with_new_model(monkeypatch):
