@@ -493,6 +493,7 @@ function TaskForm({
               <label>
                 Prompt
                 <textarea
+                  className="task-prompt-input"
                   ref={promptRef}
                   value={prompt}
                   onChange={(event) => setPrompt(event.target.value)}
@@ -587,9 +588,9 @@ function TaskForm({
                 <span className="meta-label">Title</span>
                 <strong className="break-value">{title || "-"}</strong>
               </div>
-              <div className="review-field">
+              <div className="review-field review-field-prompt">
                 <span className="meta-label">Prompt</span>
-                <p className="review-prompt">{promptPreview || "-"}</p>
+                <p className="review-prompt">{prompt || "-"}</p>
               </div>
               <div className="review-field">
                 <span className="meta-label">Execution mode</span>
@@ -692,6 +693,7 @@ function TaskForm({
       <label>
         Prompt
         <textarea
+          className="task-prompt-input"
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
           placeholder="Analyze the repository and fix canonical tag generation."

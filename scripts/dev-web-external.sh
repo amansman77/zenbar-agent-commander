@@ -40,6 +40,6 @@ if ! env COREPACK_HOME="$COREPACK_HOME" corepack pnpm --version >/dev/null 2>&1;
   env COREPACK_HOME="$COREPACK_HOME" corepack install
 fi
 if [ -n "$API_TOKEN" ]; then
-  exec env COREPACK_HOME="$COREPACK_HOME" VITE_API_BASE_URL="$API_BASE" VITE_API_TOKEN="$API_TOKEN" corepack pnpm --filter web exec vite --host "$WEB_HOST" --port "$WEB_PORT"
+  exec env COREPACK_HOME="$COREPACK_HOME" VITE_API_BASE_URL="$API_BASE" VITE_API_TOKEN="$API_TOKEN" corepack pnpm --filter web exec vite --host "$WEB_HOST" --port "$WEB_PORT" --strictPort
 fi
-exec env COREPACK_HOME="$COREPACK_HOME" VITE_API_BASE_URL="$API_BASE" corepack pnpm --filter web exec vite --host "$WEB_HOST" --port "$WEB_PORT"
+exec env COREPACK_HOME="$COREPACK_HOME" VITE_API_BASE_URL="$API_BASE" corepack pnpm --filter web exec vite --host "$WEB_HOST" --port "$WEB_PORT" --strictPort
