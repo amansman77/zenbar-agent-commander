@@ -258,6 +258,65 @@ describe("App", () => {
     expect(createButton).toBeEnabled();
   });
 
+  it("submits task through mobile 3-step creation flow", async () => {
+    Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: 390 });
+    window.dispatchEvent(new Event("resize"));
+
+    projects = [
+      {
+        id: "project-1",
+        name: "agent-commander",
+        repo_path: "/Users/hosung/Workspace/zenbar/agent-commander",
+        default_branch: "main",
+        created_at: new Date().toISOString()
+      }
+    ];
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <App />
+      </QueryClientProvider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /agent-commander/i }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "New Task" }))[0]);
+
+    const nextButtonStep1 = await screen.findByRole("button", { name: "Next" });
+    expect(nextButtonStep1).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Mobile flow task" } });
+    fireEvent.change(screen.getByLabelText("Prompt"), { target: { value: "Create a mobile-first plan and execute it safely." } });
+    expect(nextButtonStep1).toBeEnabled();
+    fireEvent.click(nextButtonStep1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "High" }));
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.click(await screen.findByRole("button", { name: "GPT-5.4" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+
+    expect(await screen.findByRole("button", { name: "Show full prompt" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create Task" }));
+
+    let taskCall:
+      | [RequestInfo | URL, RequestInit | undefined]
+      | undefined;
+    await waitFor(() => {
+      taskCall = fetchMock.mock.calls.find(
+        ([url, init]) => String(url).endsWith("/tasks") && (init as RequestInit | undefined)?.method === "POST"
+      ) as [RequestInfo | URL, RequestInit | undefined] | undefined;
+      expect(taskCall).toBeTruthy();
+    });
+    const [, init] = taskCall!;
+    expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({
+      title: "Mobile flow task",
+      prompt: "Create a mobile-first plan and execute it safely.",
+      execution_mode: "plan",
+      reasoning_effort: "high",
+      model: "GPT-5.4"
+    });
+  });
+
   it("renders user input form and submits structured response", async () => {
     projects = [
       {
