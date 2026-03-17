@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   CreateProjectRequest,
@@ -380,6 +380,7 @@ function TaskForm({
   models,
   modelsLoading,
   modelsError,
+  isMobile,
   onCreate,
   onClose
 }: {
@@ -387,14 +388,18 @@ function TaskForm({
   models: RuntimeModelOption[];
   modelsLoading: boolean;
   modelsError: string | null;
+  isMobile: boolean;
   onCreate: (payload: CreateTaskRequest) => void;
   onClose: () => void;
 }) {
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("execute");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [model, setModel] = useState("");
+  const [modelSheetOpen, setModelSheetOpen] = useState(false);
+  const promptRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     const available = models.map((item) => item.id);
@@ -414,28 +419,261 @@ function TaskForm({
     });
   }, [models]);
 
+  const submitTask = () => {
+    if (!project) {
+      return;
+    }
+    if (typeof window !== "undefined" && model) {
+      window.localStorage.setItem(LAST_TASK_MODEL_KEY, model);
+    }
+    onCreate({
+      project_id: project.id,
+      title,
+      prompt,
+      model,
+      reasoning_effort: reasoningEffort,
+      execution_mode: executionMode,
+      workspace_type: "branch"
+    });
+  };
+
+  const ensureFocusedInputVisible = (target: EventTarget | null) => {
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+  };
+
+  const requiredFieldsFilled = title.trim().length > 0 && prompt.trim().length > 0;
+  const canProceedStep1 = Boolean(project && requiredFieldsFilled);
+  const canProceedStep2 = Boolean(project && model && models.length > 0 && !modelsLoading);
   const canSubmit = Boolean(project && model && models.length > 0 && !modelsLoading);
+  const promptPreview =
+    prompt.length > 140
+      ? `${prompt.slice(0, 140).replace(/\s+/g, " ").trimEnd()}...`
+      : prompt.replace(/\s+/g, " ").trim();
+
+  if (isMobile) {
+    return (
+      <form
+        className="panel form-panel task-form-mobile"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (step !== 3 || !canSubmit) {
+            return;
+          }
+          submitTask();
+        }}
+      >
+        <div className="mobile-task-flow">
+          <div className="mobile-task-progress" aria-label={`Step ${step} of 3`}>
+            <span className={step === 1 ? "active" : ""}>1. Basic Info</span>
+            <span className={step === 2 ? "active" : ""}>2. Configuration</span>
+            <span className={step === 3 ? "active" : ""}>3. Review</span>
+          </div>
+
+          {step === 1 ? (
+            <section className="mobile-task-section">
+              <label>
+                Title
+                <input
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  onFocus={(event) => ensureFocusedInputVisible(event.target)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      promptRef.current?.focus();
+                    }
+                  }}
+                  placeholder="Fix sitemap canonical"
+                  disabled={!project}
+                />
+              </label>
+              <label>
+                Prompt
+                <textarea
+                  ref={promptRef}
+                  value={prompt}
+                  onChange={(event) => setPrompt(event.target.value)}
+                  onFocus={(event) => ensureFocusedInputVisible(event.target)}
+                  onKeyDown={(event) => {
+                    if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && canProceedStep1) {
+                      event.preventDefault();
+                      setStep(2);
+                    }
+                  }}
+                  placeholder="Analyze the repository and fix canonical tag generation."
+                  disabled={!project}
+                />
+              </label>
+            </section>
+          ) : null}
+
+          {step === 2 ? (
+            <section className="mobile-task-section">
+              <label>
+                Execution mode
+                <div className="segmented-control" role="group" aria-label="Execution mode">
+                  <button
+                    type="button"
+                    className={`segment-button ${executionMode === "execute" ? "active" : ""}`}
+                    onClick={() => setExecutionMode("execute")}
+                    disabled={!project}
+                  >
+                    Execute
+                  </button>
+                  <button
+                    type="button"
+                    className={`segment-button ${executionMode === "plan" ? "active" : ""}`}
+                    onClick={() => setExecutionMode("plan")}
+                    disabled={!project}
+                  >
+                    Plan
+                  </button>
+                </div>
+              </label>
+              <label>
+                Reasoning effort
+                <div className="segmented-control" role="group" aria-label="Reasoning effort">
+                  <button
+                    type="button"
+                    className={`segment-button ${reasoningEffort === "low" ? "active" : ""}`}
+                    onClick={() => setReasoningEffort("low")}
+                    disabled={!project}
+                  >
+                    Low
+                  </button>
+                  <button
+                    type="button"
+                    className={`segment-button ${reasoningEffort === "medium" ? "active" : ""}`}
+                    onClick={() => setReasoningEffort("medium")}
+                    disabled={!project}
+                  >
+                    Medium
+                  </button>
+                  <button
+                    type="button"
+                    className={`segment-button ${reasoningEffort === "high" ? "active" : ""}`}
+                    onClick={() => setReasoningEffort("high")}
+                    disabled={!project}
+                  >
+                    High
+                  </button>
+                </div>
+              </label>
+              <label>
+                Model
+                <button
+                  type="button"
+                  className="model-picker-button"
+                  onClick={() => setModelSheetOpen(true)}
+                  disabled={!project || modelsLoading}
+                  aria-label="Model"
+                >
+                  {model || (modelsLoading ? "Loading runtime models..." : "Select model")}
+                </button>
+              </label>
+              {modelsError ? <p role="alert">{modelsError}</p> : null}
+              {executionMode === "plan" ? (
+                <p>Plan mode checks Codex runtime collaboration capability and streams planning steps into the event log.</p>
+              ) : null}
+            </section>
+          ) : null}
+
+          {step === 3 ? (
+            <section className="mobile-task-section">
+              <div className="review-field">
+                <span className="meta-label">Title</span>
+                <strong className="break-value">{title || "-"}</strong>
+              </div>
+              <div className="review-field">
+                <span className="meta-label">Prompt</span>
+                <p className="review-prompt">{promptPreview || "-"}</p>
+              </div>
+              <div className="review-field">
+                <span className="meta-label">Execution mode</span>
+                <strong>{executionMode}</strong>
+              </div>
+              <div className="review-field">
+                <span className="meta-label">Reasoning effort</span>
+                <strong>{reasoningEffort}</strong>
+              </div>
+              <div className="review-field">
+                <span className="meta-label">Model</span>
+                <strong className="break-value mono">{model || "-"}</strong>
+              </div>
+            </section>
+          ) : null}
+        </div>
+
+        {modelSheetOpen ? (
+          <div className="bottom-sheet-backdrop" onClick={() => setModelSheetOpen(false)}>
+            <div
+              className="bottom-sheet"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Select model"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="bottom-sheet-header">
+                <h3>Select model</h3>
+                <button type="button" className="secondary" onClick={() => setModelSheetOpen(false)}>
+                  Close
+                </button>
+              </div>
+              <div className="bottom-sheet-list">
+                {models.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`bottom-sheet-option ${model === item.id ? "active" : ""}`}
+                    onClick={() => {
+                      setModel(item.id);
+                      setModelSheetOpen(false);
+                    }}
+                  >
+                    {item.id}
+                  </button>
+                ))}
+                {!modelsLoading && models.length === 0 ? <p className="empty-state">No runtime models available.</p> : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="mobile-task-sticky-cta">
+          {step === 1 ? (
+            <button type="button" onClick={() => setStep(2)} disabled={!canProceedStep1}>
+              Next
+            </button>
+          ) : null}
+          {step === 2 ? (
+            <>
+              <button type="button" className="secondary" onClick={() => setStep(1)}>
+                Back
+              </button>
+              <button type="button" onClick={() => setStep(3)} disabled={!canProceedStep2}>
+                Next
+              </button>
+            </>
+          ) : null}
+          {step === 3 ? (
+            <button type="submit" disabled={!canSubmit}>
+              Create Task
+            </button>
+          ) : null}
+        </div>
+      </form>
+    );
+  }
 
   return (
     <form
       className="panel form-panel"
       onSubmit={(event) => {
         event.preventDefault();
-        if (!project) {
-          return;
-        }
-        if (typeof window !== "undefined" && model) {
-          window.localStorage.setItem(LAST_TASK_MODEL_KEY, model);
-        }
-        onCreate({
-          project_id: project.id,
-          title,
-          prompt,
-          model,
-          reasoning_effort: reasoningEffort,
-          execution_mode: executionMode,
-          workspace_type: "branch"
-        });
+        submitTask();
       }}
     >
       <div className="panel-header">
@@ -515,23 +753,28 @@ function Modal({
   title,
   open,
   onClose,
+  fullScreenMobile = false,
+  isMobile = false,
   children
 }: {
   title: string;
   open: boolean;
   onClose: () => void;
+  fullScreenMobile?: boolean;
+  isMobile?: boolean;
   children: ReactNode;
 }) {
   if (!open) {
     return null;
   }
+  const mobileFullScreen = fullScreenMobile && isMobile;
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={title}>
-      <div className="modal-card">
+      <div className={`modal-card ${mobileFullScreen ? "modal-card-mobile-full" : ""}`}>
         <div className="modal-header">
           <h2>{title}</h2>
-          <button type="button" className="secondary" onClick={onClose}>
-            Close
+          <button type="button" className="secondary modal-close-button" onClick={onClose} aria-label="Close">
+            ×
           </button>
         </div>
         {children}
@@ -1292,16 +1535,23 @@ export function App() {
         </div>
       ) : null}
 
-      <Modal title="New Project" open={projectModalOpen} onClose={() => setProjectModalOpen(false)}>
+      <Modal title="New Project" open={projectModalOpen} onClose={() => setProjectModalOpen(false)} isMobile={isMobile}>
         <ProjectForm onCreate={(payload) => createProjectMutation.mutate(payload)} onClose={() => setProjectModalOpen(false)} />
       </Modal>
 
-      <Modal title="New Task" open={taskModalOpen} onClose={() => setTaskModalOpen(false)}>
+      <Modal
+        title="New Task"
+        open={taskModalOpen}
+        onClose={() => setTaskModalOpen(false)}
+        fullScreenMobile
+        isMobile={isMobile}
+      >
         <TaskForm
           project={selectedProject}
           models={runtimeModelsQuery.data?.models ?? []}
           modelsLoading={runtimeModelsQuery.isLoading}
           modelsError={runtimeModelsQuery.error instanceof Error ? runtimeModelsQuery.error.message : null}
+          isMobile={isMobile}
           onCreate={(payload) => createTaskMutation.mutate(payload)}
           onClose={() => setTaskModalOpen(false)}
         />
