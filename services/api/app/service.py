@@ -40,6 +40,12 @@ class TaskOrchestrator:
         self.adapter = adapter
         self._background_tasks: set[asyncio.Task[None]] = set()
 
+    def _require_task(self, db: Session, task_id: str, action: str) -> Task:
+        refreshed = get_task(db, task_id)
+        if refreshed is None:
+            raise RuntimeError(f"Task '{task_id}' disappeared while {action}")
+        return refreshed
+
     async def start_task(self, db: Session, task: Task, project: Project) -> Task:
         set_task_status(db, task, "starting")
         if task.execution_mode == "plan":
@@ -71,8 +77,7 @@ class TaskOrchestrator:
             task.workspace_type,
             task.workspace_ref,
         )
-        refreshed = get_task(db, task.id)
-        assert refreshed is not None
+        refreshed = self._require_task(db, task.id, "preparing workspace")
         resolved_model, was_defaulted = self._resolve_task_model(db, refreshed)
         resolved_reasoning_effort = self._resolve_reasoning_effort(db, refreshed)
         if was_defaulted:
@@ -92,8 +97,7 @@ class TaskOrchestrator:
             workspace_ref=refreshed.workspace_ref,
         )
         session = await self.adapter.start_task(request)
-        refreshed = get_task(db, refreshed.id)
-        assert refreshed is not None
+        refreshed = self._require_task(db, refreshed.id, "starting runtime session")
         refreshed = set_task_status(
             db,
             refreshed,
@@ -126,15 +130,13 @@ class TaskOrchestrator:
                     payload={"reason": "stale_runtime_session"},
                 ),
             )
-            refreshed = get_task(db, task.id)
-            assert refreshed is not None
+            refreshed = self._require_task(db, task.id, "clearing stale runtime session")
             refreshed = clear_runtime_session(db, refreshed)
             raise RuntimeError("Task runtime session is no longer available. Retry the task to continue.") from exc
         if not self.adapter.stream_in_background:
             await self._consume_events(task.id, task.runtime_session_id)
         db.expire_all()
-        refreshed = get_task(db, task.id)
-        assert refreshed is not None
+        refreshed = self._require_task(db, task.id, "refreshing approval state")
         return refreshed
 
     async def respond_task(self, db: Session, task: Task, payload: RespondTaskRequest) -> Task:
@@ -156,15 +158,13 @@ class TaskOrchestrator:
                     payload={"reason": "stale_runtime_session"},
                 ),
             )
-            refreshed = get_task(db, task.id)
-            assert refreshed is not None
+            refreshed = self._require_task(db, task.id, "clearing stale runtime session")
             refreshed = clear_runtime_session(db, refreshed)
             raise RuntimeError("Task runtime session is no longer available. Retry the task to continue.") from exc
         if not self.adapter.stream_in_background:
             await self._consume_events(task.id, task.runtime_session_id)
         db.expire_all()
-        refreshed = get_task(db, task.id)
-        assert refreshed is not None
+        refreshed = self._require_task(db, task.id, "refreshing response state")
         return refreshed
 
     async def stop_task(self, db: Session, task: Task) -> Task:
@@ -174,8 +174,7 @@ class TaskOrchestrator:
         if not self.adapter.stream_in_background:
             await self._consume_events(task.id, task.runtime_session_id)
         db.expire_all()
-        refreshed = get_task(db, task.id)
-        assert refreshed is not None
+        refreshed = self._require_task(db, task.id, "stopping task")
         return refreshed
 
     async def retry_task(self, db: Session, task: Task, model_override: str | None = None) -> Task:
@@ -192,8 +191,7 @@ class TaskOrchestrator:
                     payload={"type": "retry_model_override", "model": model_override},
                 ),
             )
-            refreshed = get_task(db, task.id)
-            assert refreshed is not None
+            refreshed = self._require_task(db, task.id, "applying retry model override")
             if refreshed.runtime_session_id:
                 refreshed = clear_runtime_session(db, refreshed, status=refreshed.status)
             return await self._restart_with_fresh_session(db, refreshed)
@@ -204,13 +202,11 @@ class TaskOrchestrator:
         except RuntimeError as exc:
             if "Unknown Codex App Server session" not in str(exc):
                 raise
-            refreshed = get_task(db, task.id)
-            assert refreshed is not None
+            refreshed = self._require_task(db, task.id, "recovering from stale retry session")
             refreshed = clear_runtime_session(db, refreshed)
             return await self._restart_with_fresh_session(db, refreshed)
         db.expire_all()
-        refreshed = get_task(db, task.id)
-        assert refreshed is not None
+        refreshed = self._require_task(db, task.id, "retrying task")
         refreshed = set_task_status(
             db,
             refreshed,
@@ -244,7 +240,8 @@ class TaskOrchestrator:
 
         updated = replace_diff(db, task, chosen)
         db.expire_all()
-        assert updated is not None
+        if updated is None:
+            raise RuntimeError(f"Task '{task.id}' disappeared while persisting diff")
         return updated
 
     async def commit_workspace(self, db: Session, task: Task, payload: TaskCommitRequest) -> TaskGitActionResponse:
@@ -295,8 +292,7 @@ class TaskOrchestrator:
                 payload={"reason": "fresh_retry_session"},
             ),
         )
-        refreshed = get_task(db, task.id)
-        assert refreshed is not None
+        refreshed = self._require_task(db, task.id, "starting fresh retry session")
         return await self.start_task(db, refreshed, project)
 
     def _resolve_task_model(self, db: Session, task: Task) -> tuple[str, bool]:
@@ -315,8 +311,7 @@ class TaskOrchestrator:
                 payload={"type": "model_defaulted", "reason": "legacy_task", "model": default_model},
             ),
         )
-        refreshed = get_task(db, task.id)
-        assert refreshed is not None
+        refreshed = self._require_task(db, task.id, "defaulting legacy model")
         return default_model, True
 
     def _resolve_reasoning_effort(self, db: Session, task: Task) -> str:
@@ -351,7 +346,8 @@ class TaskOrchestrator:
                 return
             append_event(db, task, event)
             task = get_task(db, task_id)
-            assert task is not None
+            if task is None:
+                return
             if task.runtime_session_id and event.type in {"diff_generated", "completed"}:
                 task = await self.refresh_diff(db, task)
             records = list_events(db, task_id)

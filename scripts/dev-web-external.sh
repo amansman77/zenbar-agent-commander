@@ -23,10 +23,23 @@ resolve_host() {
 
 API_HOST="$(resolve_host)"
 API_BASE="${VITE_API_BASE_URL:-http://$API_HOST:$API_PORT}"
+API_TOKEN="${VITE_API_TOKEN:-${ZENBAR_API_TOKEN:-}}"
+COREPACK_HOME="${COREPACK_HOME:-/tmp/corepack}"
 
 echo "Web external mode"
 echo "  Web bind: $WEB_HOST:$WEB_PORT"
 echo "  API base: $API_BASE"
+if [ -n "$API_TOKEN" ]; then
+  echo "  API token: configured"
+fi
 
 cd "$ROOT_DIR"
-exec env COREPACK_HOME=/tmp/corepack VITE_API_BASE_URL="$API_BASE" pnpm --filter web exec vite --host "$WEB_HOST" --port "$WEB_PORT"
+if ! env COREPACK_HOME="$COREPACK_HOME" corepack pnpm --version >/dev/null 2>&1; then
+  echo "Repairing Corepack pnpm cache at $COREPACK_HOME ..."
+  rm -rf "$COREPACK_HOME/v1/pnpm" >/dev/null 2>&1 || true
+  env COREPACK_HOME="$COREPACK_HOME" corepack install
+fi
+if [ -n "$API_TOKEN" ]; then
+  exec env COREPACK_HOME="$COREPACK_HOME" VITE_API_BASE_URL="$API_BASE" VITE_API_TOKEN="$API_TOKEN" corepack pnpm --filter web exec vite --host "$WEB_HOST" --port "$WEB_PORT"
+fi
+exec env COREPACK_HOME="$COREPACK_HOME" VITE_API_BASE_URL="$API_BASE" corepack pnpm --filter web exec vite --host "$WEB_HOST" --port "$WEB_PORT"

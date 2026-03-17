@@ -14,7 +14,7 @@
     "dev:external:bg": "./scripts/dev-external-bg.sh",
     "dev:external:stop": "./scripts/dev-external-stop.sh",
     "lint": "pnpm --filter @zenbar/shared lint && pnpm --filter web lint",
-    "test": "pnpm --filter @zenbar/shared test && pnpm --filter web test",
+    "test": "pnpm --filter @zenbar/shared test && pnpm --filter web test && pnpm test:api",
     "test:api": ".venv/bin/pytest services/api/tests -q"
   }
 }

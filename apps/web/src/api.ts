@@ -17,11 +17,20 @@ import type {
 } from "@zenbar/shared";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+const API_TOKEN = (import.meta.env.VITE_API_TOKEN as string | undefined)?.trim();
+
+function authHeaders(): Record<string, string> {
+  if (!API_TOKEN) {
+    return {};
+  }
+  return { "X-Zenbar-Token": API_TOKEN };
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders(),
       ...(init?.headers ?? {})
     },
     ...init
@@ -96,5 +105,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload)
     }),
-  streamUrl: (taskId: string) => `${API_BASE}/tasks/${taskId}/stream`
+  streamUrl: (taskId: string) => {
+    const url = new URL(`${API_BASE}/tasks/${taskId}/stream`);
+    if (API_TOKEN) {
+      url.searchParams.set("token", API_TOKEN);
+    }
+    return url.toString();
+  }
 };

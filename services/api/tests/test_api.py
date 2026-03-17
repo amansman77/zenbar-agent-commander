@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -15,6 +16,7 @@ from app.db import Base, SessionLocal, engine, ensure_schema  # noqa: E402
 from app.main import app  # noqa: E402
 from app.repository import append_event, get_task  # noqa: E402
 from app.schemas import RuntimeEvent  # noqa: E402
+from app.streaming import broker  # noqa: E402
 
 db_file = Path(__file__).with_name("test_zenbar.db")
 if db_file.exists():
@@ -126,6 +128,62 @@ def test_approve_task():
         response = client.post(f"/tasks/{task['id']}/approve", json={"actor": "pytest"})
         assert response.status_code == 200
         assert response.json()["status"] == "completed"
+
+
+def test_stop_task_success_and_invalid_transition():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Stop Guard", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Stop now", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        stopped = client.post(f"/tasks/{task['id']}/stop", json={"actor": "pytest"})
+        assert stopped.status_code == 200
+        assert stopped.json()["status"] == "stopped"
+
+        invalid = client.post(f"/tasks/{task['id']}/stop", json={"actor": "pytest"})
+        assert invalid.status_code == 409
+        assert "cannot be stopped" in invalid.json()["detail"]
+
+
+def test_stream_task_404_for_missing_task():
+    response = client.get("/tasks/missing-task-id/stream")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Task not found"
+
+
+def test_stream_task_emits_sse_payload_shape():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "SSE Shape", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Stream me", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        async def collect_once() -> str:
+            iterator = broker.subscribe(task["id"])
+            publish_task = asyncio.create_task(broker.publish(task["id"], {"event": {"type": "agent_status", "message": "hi"}}))
+            try:
+                line = await asyncio.wait_for(anext(iterator), timeout=0.5)
+            finally:
+                await iterator.aclose()
+                await publish_task
+            return line
+
+        line = asyncio.run(collect_once())
+        assert line.startswith("data: ")
+        payload = json.loads(line.removeprefix("data: "))
+        assert payload["event"]["type"] == "agent_status"
+        assert payload["event"]["message"] == "hi"
 
 
 def test_invalid_retry_transition():
