@@ -226,7 +226,7 @@ async def post_task(payload: CreateTaskRequest, db: Session = Depends(get_db)):
 
 
 @app.get("/tasks/{task_id}", response_model=TaskDetail)
-def get_task_detail(task_id: str, db: Session = Depends(get_db)):
+async def get_task_detail(task_id: str, db: Session = Depends(get_db)):
     task = get_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -235,7 +235,7 @@ def get_task_detail(task_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/tasks/{task_id}/events", response_model=list[TaskEventResponse])
-def get_task_events(task_id: str, db: Session = Depends(get_db)):
+async def get_task_events(task_id: str, db: Session = Depends(get_db)):
     task = get_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")

@@ -52,16 +52,28 @@ class TaskOrchestrator:
             return
         if not session_id:
             return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Called from a sync context without an active event loop.
+            return
         existing = self._stream_tasks.get(task_id)
         if existing is not None and not existing.done():
             return
-        self._start_background_consumer(task_id, session_id)
+        self._start_background_consumer(task_id, session_id, loop=loop)
 
-    def _start_background_consumer(self, task_id: str, session_id: str) -> None:
+    def _start_background_consumer(
+        self,
+        task_id: str,
+        session_id: str,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
         existing = self._stream_tasks.get(task_id)
         if existing is not None and not existing.done():
             return
-        runner = asyncio.create_task(self._consume_events(task_id, session_id))
+        if loop is None:
+            loop = asyncio.get_running_loop()
+        runner = loop.create_task(self._consume_events(task_id, session_id))
         self._background_tasks.add(runner)
         self._stream_tasks[task_id] = runner
 

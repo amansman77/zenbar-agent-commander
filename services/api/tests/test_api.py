@@ -686,6 +686,26 @@ def test_task_events_reconnect_reuses_runtime_session_stream(monkeypatch):
         assert calls == [(task["id"], task["runtime_session_id"])]
 
 
+def test_ensure_runtime_stream_noops_without_running_loop(monkeypatch):
+    from app.main import orchestrator
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_start_background_consumer(
+        task_id: str,
+        session_id: str,
+        loop=None,
+    ) -> None:
+        calls.append((task_id, session_id))
+
+    monkeypatch.setattr(orchestrator.adapter, "stream_in_background", True)
+    monkeypatch.setattr(orchestrator, "_start_background_consumer", fake_start_background_consumer)
+
+    orchestrator.ensure_runtime_stream("task-1", "session-1")
+
+    assert calls == []
+
+
 def test_project_soft_delete_hides_project_and_blocks_project_task_endpoints():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
