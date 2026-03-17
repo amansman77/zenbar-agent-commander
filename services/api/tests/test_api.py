@@ -40,13 +40,18 @@ def init_repo(tmpdir: str) -> Path:
 
 
 def init_repo_with_remote(tmpdir: str) -> Path:
+    repo, _ = init_repo_with_remote_paths(tmpdir)
+    return repo
+
+
+def init_repo_with_remote_paths(tmpdir: str) -> tuple[Path, Path]:
     bare = Path(tmpdir) / "remote.git"
     subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
     repo = init_repo(tmpdir)
     subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "push", "-u", "origin", "main"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "remote", "set-head", "origin", "main"], cwd=repo, check=True, capture_output=True)
-    return repo
+    return repo, bare
 
 
 def test_create_project_and_task_flow():
@@ -350,6 +355,47 @@ def test_task_workspace_commit_and_push_flow():
             text=True,
         ).stdout
         assert branch in branches
+
+
+def test_task_workspace_push_uses_project_origin_remote():
+    with TemporaryDirectory() as tmpdir:
+        repo, bare = init_repo_with_remote_paths(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Git Ops Remote", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Commit push remote", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        workspace_path = task["workspace_path"]
+        assert workspace_path
+        new_file = Path(workspace_path) / "REMOTE_FILE.md"
+        new_file.write_text("remote content\n")
+
+        commit = client.post(
+            f"/tasks/{task['id']}/commit",
+            json={"actor": "pytest", "message": "Add REMOTE_FILE"},
+        )
+        assert commit.status_code == 200
+
+        push = client.post(
+            f"/tasks/{task['id']}/push",
+            json={"actor": "pytest", "remote": "origin", "set_upstream": True},
+        )
+        assert push.status_code == 200
+        branch = push.json()["branch"]
+        assert branch
+
+        remote_heads = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads"],
+            cwd=bare,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        assert branch in remote_heads
 
 
 def test_task_workspace_commit_fails_without_changes():

@@ -26,6 +26,19 @@ def _run_git(args: list[str], cwd: str) -> None:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"git {' '.join(args)} failed")
 
 
+def _run_git_output(args: list[str], cwd: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"git {' '.join(args)} failed")
+    return result.stdout.strip()
+
+
 def _workspace_root() -> Path:
     configured = os.getenv("ZENBAR_WORKSPACE_ROOT")
     if configured:
@@ -53,6 +66,13 @@ def prepare_workspace(repo_path: str, default_branch: str, workspace_type: str, 
     if workspace_path.exists():
         shutil.rmtree(workspace_path)
     _run_git(["clone", str(repo), str(workspace_path)], str(root))
+    try:
+        upstream_origin = _run_git_output(["remote", "get-url", "origin"], str(repo))
+    except RuntimeError:
+        upstream_origin = ""
+    if upstream_origin:
+        _run_git(["remote", "set-url", "origin", upstream_origin], str(workspace_path))
+        _run_git(["remote", "set-url", "--push", "origin", upstream_origin], str(workspace_path))
     _run_git(["checkout", default_branch], str(workspace_path))
     _run_git(["checkout", "-b", workspace_ref], str(workspace_path))
     return PreparedWorkspace(str(workspace_path), workspace_ref, workspace_type)

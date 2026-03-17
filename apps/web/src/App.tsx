@@ -104,7 +104,7 @@ function useTaskStream(taskId: string | null) {
       queryClient.invalidateQueries({ queryKey: ["tasks", payload.task.project_id] });
     };
     source.onerror = () => {
-      source.close();
+      // Keep EventSource's built-in auto-reconnect behavior.
     };
 
     return () => source.close();

@@ -20,7 +20,12 @@ class EventBroker:
         self._listeners[task_id].add(queue)
         try:
             while True:
-                yield await queue.get()
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=15)
+                    yield payload
+                except asyncio.TimeoutError:
+                    # Keep SSE connections alive through idle periods.
+                    yield ": keep-alive\n\n"
         finally:
             self._listeners[task_id].discard(queue)
 
