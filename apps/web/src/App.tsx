@@ -37,7 +37,14 @@ function defaultAnswers(questions: TaskQuestion[]): Record<string, string> {
 type PlanStep = { step: string; status: string };
 type PlanSnapshot = { explanation: string | null; steps: PlanStep[]; text: string | null };
 type MobileScreen = "projects" | "tasks" | "detail";
-type TaskActionState = "running" | "waiting_approval" | "completed" | "failed";
+type RunStatus = "running" | "waiting_approval" | "completed" | "failed";
+type RunActionIntent = "primary" | "danger";
+type RunExecutionAction = "run_again" | "retry";
+type RunActionConfig = {
+  key: "stop" | "approve" | RunExecutionAction;
+  label: string;
+  intent: RunActionIntent;
+};
 
 type ParsedDiffFile = {
   id: string;
@@ -263,7 +270,7 @@ function diffLineClass(line: string): string {
   return "diff-line-neutral";
 }
 
-function inferTaskActionState(status: TaskStatus): TaskActionState {
+function inferRunStatus(status: TaskStatus): RunStatus {
   if (status === "waiting_result_approval") {
     return "waiting_approval";
   }
@@ -274,6 +281,71 @@ function inferTaskActionState(status: TaskStatus): TaskActionState {
     return "failed";
   }
   return "running";
+}
+
+function getPrimaryAction(status: RunStatus): RunActionConfig {
+  switch (status) {
+    case "running":
+      return { key: "stop", label: "Stop", intent: "danger" };
+    case "waiting_approval":
+      return { key: "approve", label: "Approve", intent: "primary" };
+    case "completed":
+      return { key: "run_again", label: "Run again", intent: "primary" };
+    case "failed":
+      return { key: "retry", label: "Retry", intent: "primary" };
+  }
+}
+
+function getSecondaryActions(status: RunStatus): Array<{ key: "reject"; label: string }> {
+  if (status === "waiting_approval") {
+    return [{ key: "reject", label: "Reject" }];
+  }
+  return [];
+}
+
+function getRunStatusLabel(status: RunStatus): string {
+  switch (status) {
+    case "running":
+      return "Running";
+    case "waiting_approval":
+      return "Waiting for approval";
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+  }
+}
+
+function getRunResultLabel(status: RunStatus): string {
+  switch (status) {
+    case "completed":
+      return "success";
+    case "failed":
+      return "failure";
+    case "waiting_approval":
+      return "pending approval";
+    case "running":
+      return "in progress";
+  }
+}
+
+function formatRelativeTime(timestamp: string): string {
+  const target = new Date(timestamp).getTime();
+  const now = Date.now();
+  const deltaMs = Math.max(0, now - target);
+  const minutes = Math.floor(deltaMs / 60_000);
+  if (minutes < 1) {
+    return "just now";
+  }
+  if (minutes < 60) {
+    return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  }
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
 function parseDiffFiles(rawDiff: string): ParsedDiffFile[] {
@@ -375,7 +447,23 @@ function GroupedDiff({
 }
 
 function StatusBadge({ status }: { status: TaskStatus }) {
-  return <span className={`status status-${statusTone[status]}`}>{status}</span>;
+  const label =
+    status === "waiting_result_approval"
+      ? "Waiting for approval"
+      : status === "waiting_user_input"
+        ? "Waiting for input"
+        : status === "starting"
+          ? "Starting"
+          : status === "queued"
+            ? "Queued"
+            : status === "stopped"
+              ? "Stopped"
+              : status === "running"
+                ? "Running"
+                : status === "completed"
+                  ? "Completed"
+                  : "Failed";
+  return <span className={`status status-${statusTone[status]}`}>{label}</span>;
 }
 
 function ProjectForm({
@@ -934,6 +1022,95 @@ function Modal({
   );
 }
 
+function RunActionSheet({
+  open,
+  action,
+  defaultModel,
+  defaultExecutionMode,
+  models,
+  onClose,
+  onConfirm
+}: {
+  open: boolean;
+  action: RunExecutionAction | null;
+  defaultModel: string;
+  defaultExecutionMode: ExecutionMode;
+  models: string[];
+  onClose: () => void;
+  onConfirm: (config: { model: string; executionMode: ExecutionMode }) => void;
+}) {
+  const [model, setModel] = useState(defaultModel);
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>(defaultExecutionMode);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setModel(defaultModel);
+    setExecutionMode(defaultExecutionMode);
+  }, [open, defaultModel, defaultExecutionMode]);
+
+  useEffect(() => {
+    if (!models.includes(model)) {
+      setModel(models[0] ?? "");
+    }
+  }, [model, models]);
+
+  if (!open || !action) {
+    return null;
+  }
+
+  const confirmLabel = action === "run_again" ? "Run again" : "Retry";
+  const canConfirm = Boolean(model);
+
+  return (
+    <div className="bottom-sheet-backdrop" onClick={onClose}>
+      <div className="bottom-sheet" role="dialog" aria-modal="true" aria-label={confirmLabel} onClick={(event) => event.stopPropagation()}>
+        <div className="bottom-sheet-header">
+          <h3>{confirmLabel}</h3>
+          <button type="button" className="secondary" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div className="bottom-sheet-list">
+          <label className="retry-model-control retry-model-control-mobile">
+            Model
+            <select aria-label="Run model" value={model} onChange={(event) => setModel(event.target.value)} disabled={models.length === 0}>
+              {models.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="retry-model-control retry-model-control-mobile">
+            Execution mode
+            <div className="segmented-control two-up" role="group" aria-label="Execution mode">
+              <button
+                type="button"
+                className={`segment-button ${executionMode === "execute" ? "active" : ""}`}
+                onClick={() => setExecutionMode("execute")}
+              >
+                Execute
+              </button>
+              <button
+                type="button"
+                className={`segment-button ${executionMode === "plan" ? "active" : ""}`}
+                onClick={() => setExecutionMode("plan")}
+              >
+                Plan
+              </button>
+            </div>
+          </label>
+          <button type="button" onClick={() => onConfirm({ model, executionMode })} disabled={!canConfirm}>
+            Confirm {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const queryClient = useQueryClient();
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -947,7 +1124,10 @@ export function App() {
   const [expandedDiffFiles, setExpandedDiffFiles] = useState<Record<string, boolean>>({});
   const [planCopyState, setPlanCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [promptCopyState, setPromptCopyState] = useState<"idle" | "copied" | "error">("idle");
-  const [retryModel, setRetryModel] = useState("");
+  const [runActionModel, setRunActionModel] = useState("");
+  const [runActionSheetOpen, setRunActionSheetOpen] = useState(false);
+  const [pendingRunAction, setPendingRunAction] = useState<RunExecutionAction | null>(null);
+  const [pendingExecutionMode, setPendingExecutionMode] = useState<ExecutionMode>("execute");
   const [commitMessage, setCommitMessage] = useState("Apply Task Workspace updates");
   const [gitActionMessage, setGitActionMessage] = useState<string | null>(null);
   const isMobile = useIsMobileBreakpoint();
@@ -1082,7 +1262,7 @@ export function App() {
   const task = taskDetailQuery.data ?? null;
   const events = taskEventsQuery.data ?? [];
   const diff = taskDiffQuery.data ?? task?.latest_diff;
-  const retryModelOptions = useMemo(() => {
+  const runActionModelOptions = useMemo(() => {
     const ids = runtimeModelsQuery.data?.models.map((item) => item.id) ?? [];
     if (task?.model && !ids.includes(task.model)) {
       return [task.model, ...ids];
@@ -1137,19 +1317,24 @@ export function App() {
 
   useEffect(() => {
     if (!task) {
-      setRetryModel("");
+      setRunActionModel("");
+      setPendingRunAction(null);
+      setRunActionSheetOpen(false);
       setCommitMessage("Apply Task Workspace updates");
       setGitActionMessage(null);
       return;
     }
-    if (task.model && retryModelOptions.includes(task.model)) {
-      setRetryModel(task.model);
+    if (task.model && runActionModelOptions.includes(task.model)) {
+      setRunActionModel(task.model);
     } else {
-      setRetryModel(retryModelOptions[0] ?? "");
+      setRunActionModel(runActionModelOptions[0] ?? "");
     }
+    setPendingRunAction(null);
+    setRunActionSheetOpen(false);
+    setPendingExecutionMode(task.execution_mode ?? "execute");
     setCommitMessage(`Apply updates for ${task.title}`);
     setGitActionMessage(null);
-  }, [task, retryModelOptions]);
+  }, [task, runActionModelOptions]);
 
   useEffect(() => {
     if (!isMobile) {
@@ -1211,26 +1396,75 @@ export function App() {
     window.setTimeout(() => setPromptCopyState("idle"), 1500);
   };
 
+  const handleRunActionConfirm = (config: { model: string; executionMode: ExecutionMode }) => {
+    if (!task || !pendingRunAction) {
+      return;
+    }
+    if (typeof window !== "undefined" && config.model) {
+      window.localStorage.setItem(LAST_TASK_MODEL_KEY, config.model);
+    }
+    setRunActionModel(config.model);
+    setPendingExecutionMode(config.executionMode);
+    setRunActionSheetOpen(false);
+    setPendingRunAction(null);
+    taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: config.model || undefined });
+  };
+
   const renderTaskDetailContent = (mobile: boolean) => {
     if (!task) {
       return <p className="empty-state">Select a task to inspect the Task Workspace and approval state.</p>;
     }
 
-    const actionState = inferTaskActionState(task.status);
+    const runStatus = inferRunStatus(task.status);
+    const runStatusLabel = getRunStatusLabel(runStatus);
+    const primaryAction = getPrimaryAction(runStatus);
+    const secondaryActions = getSecondaryActions(runStatus);
     const canApprove = task.status === "waiting_result_approval";
     const canStop = !["completed", "failed", "stopped"].includes(task.status);
-    const canRetry = Boolean(retryModel);
-    const showRetryModel = actionState !== "waiting_approval";
+    const canRunWithSelectedModel = runActionModelOptions.length > 0;
     const promptPreview = task.prompt.replace(/\s+/g, " ").trim();
     const compactPromptPreview =
       promptPreview.length > 180 ? `${promptPreview.slice(0, 180).trimEnd()}...` : promptPreview || "No prompt";
-    const primaryActionLabel = actionState === "running" ? "Stop" : actionState === "waiting_approval" ? "Approve" : "Retry";
-    const showBottomAction = mobile && (actionState === "running" || actionState === "waiting_approval");
+    const latestRunTimestamp = events.at(-1)?.created_at ?? task.updated_at;
+    const compactEvents = events.filter((event, index, list) => {
+      if (event.type !== "agent_status") {
+        return true;
+      }
+      const previous = list[index - 1];
+      if (!previous) {
+        return true;
+      }
+      return !(previous.type === "agent_status" && previous.message === event.message);
+    });
+
+    const triggerRunAction = (action: RunExecutionAction) => {
+      setPendingRunAction(action);
+      setRunActionSheetOpen(true);
+    };
+
+    const handlePrimaryAction = () => {
+      if (primaryAction.key === "stop") {
+        taskActionMutation.mutate({ action: "stopTask", taskId: task.id });
+        return;
+      }
+      if (primaryAction.key === "approve") {
+        taskActionMutation.mutate({ action: "approveTask", taskId: task.id });
+        return;
+      }
+      triggerRunAction(primaryAction.key);
+    };
+
+    const isPrimaryDisabled =
+      primaryAction.key === "stop"
+        ? !canStop
+        : primaryAction.key === "approve"
+          ? !canApprove
+          : !canRunWithSelectedModel;
 
     if (mobile) {
       return (
         <>
-          <div className={`mobile-detail-control mobile-detail-control-${actionState}`}>
+          <div className={`mobile-detail-control mobile-detail-control-${runStatus}`}>
             <div className="mobile-detail-control-top">
               <button type="button" className="secondary mobile-back" onClick={() => setMobileScreen("tasks")}>
                 Back
@@ -1239,57 +1473,36 @@ export function App() {
               <StatusBadge status={task.status} />
             </div>
             <div className="mobile-detail-action-row">
-              {actionState === "running" ? (
-                <>
-                  <button onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })} disabled={!canStop}>
-                    Stop
-                  </button>
-                  <button
-                    className="secondary"
-                    onClick={() => taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: retryModel || undefined })}
-                    disabled={!canRetry}
-                  >
-                    Retry
-                  </button>
-                </>
-              ) : null}
-              {actionState === "waiting_approval" ? (
-                <>
-                  <button onClick={() => taskActionMutation.mutate({ action: "approveTask", taskId: task.id })} disabled={!canApprove}>
-                    Approve
-                  </button>
-                  <button className="secondary" onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })} disabled={!canStop}>
-                    Reject
-                  </button>
-                </>
-              ) : null}
-              {actionState === "completed" || actionState === "failed" ? (
+              <button
+                type="button"
+                className={primaryAction.intent === "danger" ? "status-action-danger" : ""}
+                onClick={handlePrimaryAction}
+                disabled={isPrimaryDisabled}
+              >
+                {primaryAction.label}
+              </button>
+              {secondaryActions.map((action) => (
                 <button
-                  onClick={() => taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: retryModel || undefined })}
-                  disabled={!canRetry}
+                  key={action.key}
+                  type="button"
+                  className="secondary"
+                  onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })}
+                  disabled={!canStop}
                 >
-                  Retry
+                  {action.label}
                 </button>
-              ) : null}
+              ))}
             </div>
-            {showRetryModel ? (
-              <label className="retry-model-control retry-model-control-mobile">
-                Retry model
-                <select
-                  aria-label="Retry model"
-                  value={retryModel}
-                  onChange={(event) => setRetryModel(event.target.value)}
-                  disabled={retryModelOptions.length === 0}
-                >
-                  {retryModelOptions.map((model) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
           </div>
+
+          <section className="mobile-run-context">
+            <h3>Run context</h3>
+            <p>
+              <strong>{runStatusLabel}</strong>
+            </p>
+            <p>Last run: {getRunResultLabel(runStatus)}</p>
+            <p>{formatRelativeTime(latestRunTimestamp)}</p>
+          </section>
 
           <details className="mobile-meta-section" open>
             <summary>Summary</summary>
@@ -1312,52 +1525,6 @@ export function App() {
               </div>
             </div>
           </details>
-
-          <details className="mobile-meta-section">
-            <summary>Advanced</summary>
-            <div className="meta-grid mobile-meta-grid">
-              <div>
-                <span className="meta-label">Task workspace</span>
-                <strong className="break-value mono">{task.workspace_ref}</strong>
-                <span className="break-value mono">{task.workspace_path}</span>
-              </div>
-              <div>
-                <span className="meta-label">Runtime session</span>
-                <strong className="break-value mono">{task.runtime_session_id ?? "Not started"}</strong>
-              </div>
-            </div>
-          </details>
-
-          <section className="mobile-prompt-section">
-            <div className="output-panel prompt-output">
-              <div className="row-header">
-                <h3>Input prompt</h3>
-                {!mobilePromptExpanded ? (
-                  <button type="button" className="secondary" onClick={() => setMobilePromptExpanded(true)}>
-                    Expand
-                  </button>
-                ) : (
-                  <div className="inline-actions">
-                    <button type="button" className="secondary" onClick={() => setMobilePromptExpanded(false)}>
-                      Collapse
-                    </button>
-                    <button type="button" className="secondary" onClick={copyPromptOutput}>
-                      Copy
-                    </button>
-                  </div>
-                )}
-              </div>
-              {mobilePromptExpanded ? (
-                <>
-                  {promptCopyState === "copied" ? <p className="copy-status">Prompt copied to clipboard.</p> : null}
-                  {promptCopyState === "error" ? <p className="copy-status">Prompt copy failed.</p> : null}
-                  <MarkdownRenderer markdown={task.prompt} />
-                </>
-              ) : (
-                <p className="mobile-prompt-preview">{compactPromptPreview}</p>
-              )}
-            </div>
-          </section>
 
           <div className="mobile-detail-tabs" role="tablist" aria-label="Task detail tabs">
             <button
@@ -1404,7 +1571,7 @@ export function App() {
                     <h3>Event log</h3>
                   </div>
                   <ul className="mobile-event-list">
-                    {events.map((event) => {
+                    {compactEvents.map((event) => {
                       const isImportant = ["failed", "completed", "result_approval_requested", "result_approval_granted", "user_input_requested"].includes(event.type);
                       return (
                         <li key={event.id} className={isImportant ? "event-item-important" : ""}>
@@ -1414,7 +1581,6 @@ export function App() {
                           <div>
                             <p className={`event-message ${event.type === "agent_status" ? "event-message-agent-status" : ""}`}>{event.message}</p>
                             <p className="event-meta">
-                              <span className="mono">{event.type}</span>
                               <span>{new Date(event.created_at).toLocaleTimeString()}</span>
                             </p>
                           </div>
@@ -1484,22 +1650,36 @@ export function App() {
             )}
           </div>
 
-          {showBottomAction ? (
-            <div className="mobile-detail-sticky-cta">
-              <button
-                type="button"
-                className={actionState === "waiting_approval" ? "status-action-waiting" : ""}
-                onClick={() =>
-                  actionState === "waiting_approval"
-                    ? taskActionMutation.mutate({ action: "approveTask", taskId: task.id })
-                    : taskActionMutation.mutate({ action: "stopTask", taskId: task.id })
-                }
-                disabled={actionState === "waiting_approval" ? !canApprove : !canStop}
-              >
-                {primaryActionLabel}
-              </button>
+          <section className="mobile-prompt-section">
+            <div className="output-panel prompt-output">
+              <div className="row-header">
+                <h3>Input prompt</h3>
+                {!mobilePromptExpanded ? (
+                  <button type="button" className="secondary" onClick={() => setMobilePromptExpanded(true)}>
+                    Expand
+                  </button>
+                ) : (
+                  <div className="inline-actions">
+                    <button type="button" className="secondary" onClick={() => setMobilePromptExpanded(false)}>
+                      Collapse
+                    </button>
+                    <button type="button" className="secondary" onClick={copyPromptOutput}>
+                      Copy
+                    </button>
+                  </div>
+                )}
+              </div>
+              {mobilePromptExpanded ? (
+                <>
+                  {promptCopyState === "copied" ? <p className="copy-status">Prompt copied to clipboard.</p> : null}
+                  {promptCopyState === "error" ? <p className="copy-status">Prompt copy failed.</p> : null}
+                  <MarkdownRenderer markdown={task.prompt} />
+                </>
+              ) : (
+                <p className="mobile-prompt-preview">{compactPromptPreview}</p>
+              )}
             </div>
-          ) : null}
+          </section>
         </>
       );
     }
@@ -1544,55 +1724,25 @@ export function App() {
               placeholder="Apply Task Workspace updates"
             />
           </label>
-          {showRetryModel ? (
-            <label className="retry-model-control">
-              Retry model
-              <select
-                aria-label="Retry model"
-                value={retryModel}
-                onChange={(event) => setRetryModel(event.target.value)}
-                disabled={retryModelOptions.length === 0}
-              >
-                {retryModelOptions.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : null}
-          {actionState === "running" ? (
-            <>
-              <button onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })} disabled={!canStop}>
-                Stop
-              </button>
-              <button
-                className="secondary"
-                onClick={() => taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: retryModel || undefined })}
-                disabled={!canRetry}
-              >
-                Retry
-              </button>
-            </>
-          ) : null}
-          {actionState === "waiting_approval" ? (
-            <>
-              <button onClick={() => taskActionMutation.mutate({ action: "approveTask", taskId: task.id })} disabled={!canApprove}>
-                Approve
-              </button>
-              <button className="secondary" onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })} disabled={!canStop}>
-                Reject
-              </button>
-            </>
-          ) : null}
-          {actionState === "completed" || actionState === "failed" ? (
+          <button
+            type="button"
+            className={primaryAction.intent === "danger" ? "status-action-danger" : ""}
+            onClick={handlePrimaryAction}
+            disabled={isPrimaryDisabled}
+          >
+            {primaryAction.label}
+          </button>
+          {secondaryActions.map((action) => (
             <button
-              onClick={() => taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: retryModel || undefined })}
-              disabled={!canRetry}
+              key={action.key}
+              type="button"
+              className="secondary"
+              onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })}
+              disabled={!canStop}
             >
-              Retry
+              {action.label}
             </button>
-          ) : null}
+          ))}
           <button
             className="secondary"
             onClick={() => workspaceCommitMutation.mutate({ taskId: task.id, message: commitMessage.trim() })}
@@ -1608,6 +1758,14 @@ export function App() {
             Push
           </button>
         </div>
+        <section className="run-context-panel">
+          <h3>Run context</h3>
+          <p>
+            <strong>{runStatusLabel}</strong>
+          </p>
+          <p>Last run: {getRunResultLabel(runStatus)}</p>
+          <p>{formatRelativeTime(latestRunTimestamp)}</p>
+        </section>
         {workspaceCommitMutation.error instanceof Error ? <p role="alert">{workspaceCommitMutation.error.message}</p> : null}
         {workspacePushMutation.error instanceof Error ? <p role="alert">{workspacePushMutation.error.message}</p> : null}
         {gitActionMessage ? <p className="copy-status">{gitActionMessage}</p> : null}
@@ -1691,10 +1849,10 @@ export function App() {
           <section>
             <h3>Event log</h3>
             <ul className="event-list output-panel">
-              {events.map((event) => (
-                <li key={event.id}>
-                  <span>{event.type}</span>
+              {compactEvents.map((event) => (
+                <li key={event.id} className={["failed", "completed", "result_approval_requested", "result_approval_granted", "user_input_requested"].includes(event.type) ? "event-item-important" : ""}>
                   <strong>{event.message}</strong>
+                  <span>{new Date(event.created_at).toLocaleTimeString()}</span>
                 </li>
               ))}
             </ul>
@@ -1945,6 +2103,19 @@ export function App() {
           </section>
         </main>
       )}
+
+      <RunActionSheet
+        open={runActionSheetOpen}
+        action={pendingRunAction}
+        defaultModel={runActionModel}
+        defaultExecutionMode={pendingExecutionMode}
+        models={runActionModelOptions}
+        onClose={() => {
+          setRunActionSheetOpen(false);
+          setPendingRunAction(null);
+        }}
+        onConfirm={handleRunActionConfirm}
+      />
 
       <Modal title="New Project" open={projectModalOpen} onClose={() => setProjectModalOpen(false)} isMobile={isMobile}>
         <ProjectForm onCreate={(payload) => createProjectMutation.mutate(payload)} onClose={() => setProjectModalOpen(false)} />
