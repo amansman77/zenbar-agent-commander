@@ -399,6 +399,9 @@ function TaskForm({
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [model, setModel] = useState("");
   const [modelSheetOpen, setModelSheetOpen] = useState(false);
+  const [promptExpanded, setPromptExpanded] = useState(false);
+  const [viewportInset, setViewportInset] = useState(0);
+  const titleRef = useRef<HTMLInputElement | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
@@ -418,6 +421,35 @@ function TaskForm({
       return "";
     });
   }, [models]);
+
+  useEffect(() => {
+    if (!isMobile || step !== 1) {
+      return;
+    }
+    titleRef.current?.focus();
+  }, [isMobile, step]);
+
+  useEffect(() => {
+    if (!isMobile || typeof window === "undefined" || !window.visualViewport) {
+      return;
+    }
+    const viewport = window.visualViewport;
+    const syncInset = () => {
+      const heightDelta = window.innerHeight - viewport.height - viewport.offsetTop;
+      setViewportInset(Math.max(0, Math.round(heightDelta)));
+    };
+    syncInset();
+    viewport.addEventListener("resize", syncInset);
+    viewport.addEventListener("scroll", syncInset);
+    return () => {
+      viewport.removeEventListener("resize", syncInset);
+      viewport.removeEventListener("scroll", syncInset);
+    };
+  }, [isMobile]);
+
+  useEffect(() => {
+    setPromptExpanded(false);
+  }, [step]);
 
   const submitTask = () => {
     if (!project) {
@@ -439,6 +471,9 @@ function TaskForm({
 
   const ensureFocusedInputVisible = (target: EventTarget | null) => {
     if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (typeof target.scrollIntoView !== "function") {
       return;
     }
     target.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -477,9 +512,11 @@ function TaskForm({
               <label>
                 Title
                 <input
+                  ref={titleRef}
                   value={title}
                   onChange={(event) => setTitle(event.target.value)}
                   onFocus={(event) => ensureFocusedInputVisible(event.target)}
+                  enterKeyHint="next"
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey) {
                       event.preventDefault();
@@ -498,6 +535,7 @@ function TaskForm({
                   value={prompt}
                   onChange={(event) => setPrompt(event.target.value)}
                   onFocus={(event) => ensureFocusedInputVisible(event.target)}
+                  enterKeyHint="done"
                   onKeyDown={(event) => {
                     if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && canProceedStep1) {
                       event.preventDefault();
@@ -515,7 +553,7 @@ function TaskForm({
             <section className="mobile-task-section">
               <label>
                 Execution mode
-                <div className="segmented-control" role="group" aria-label="Execution mode">
+                <div className="segmented-control two-up" role="group" aria-label="Execution mode">
                   <button
                     type="button"
                     className={`segment-button ${executionMode === "execute" ? "active" : ""}`}
@@ -590,7 +628,14 @@ function TaskForm({
               </div>
               <div className="review-field review-field-prompt">
                 <span className="meta-label">Prompt</span>
-                <p className="review-prompt">{prompt || "-"}</p>
+                <p className={`review-prompt ${!promptExpanded ? "collapsed" : ""}`}>
+                  {(promptExpanded ? prompt : promptPreview) || "-"}
+                </p>
+                {prompt.trim().length > 0 ? (
+                  <button type="button" className="secondary review-expand-button" onClick={() => setPromptExpanded((previous) => !previous)}>
+                    {promptExpanded ? "Collapse" : "Show full prompt"}
+                  </button>
+                ) : null}
               </div>
               <div className="review-field">
                 <span className="meta-label">Execution mode</span>
@@ -643,7 +688,7 @@ function TaskForm({
           </div>
         ) : null}
 
-        <div className="mobile-task-sticky-cta">
+        <div className="mobile-task-sticky-cta" style={{ bottom: `${viewportInset}px` }}>
           {step === 1 ? (
             <button type="button" onClick={() => setStep(2)} disabled={!canProceedStep1}>
               Next

@@ -472,7 +472,7 @@ textarea {
   border: 0;
   border-radius: 0;
   box-shadow: none;
-  padding: 0 0 5.4rem;
+  padding: 0 0 calc(5.4rem + env(safe-area-inset-bottom));
   min-height: calc(100vh - 56px);
 }
 
@@ -536,6 +536,10 @@ textarea {
   gap: 8px;
 }
 
+.segmented-control.two-up {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .segment-button {
   background: #e8edf5;
   color: #29415d;
@@ -570,8 +574,19 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.review-prompt.collapsed {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.review-expand-button {
+  margin-top: 0.55rem;
+}
+
 .review-field-prompt .review-prompt {
-  max-height: min(40vh, 320px);
+  max-height: min(38vh, 300px);
   overflow: auto;
   padding-right: 0.25rem;
 }
