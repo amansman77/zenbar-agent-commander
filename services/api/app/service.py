@@ -39,12 +39,39 @@ class TaskOrchestrator:
     def __init__(self, adapter: RuntimeAdapter) -> None:
         self.adapter = adapter
         self._background_tasks: set[asyncio.Task[None]] = set()
+        self._stream_tasks: dict[str, asyncio.Task[None]] = {}
 
     def _require_task(self, db: Session, task_id: str, action: str) -> Task:
         refreshed = get_task(db, task_id)
         if refreshed is None:
             raise RuntimeError(f"Task '{task_id}' disappeared while {action}")
         return refreshed
+
+    def ensure_runtime_stream(self, task_id: str, session_id: str | None) -> None:
+        if not self.adapter.stream_in_background:
+            return
+        if not session_id:
+            return
+        existing = self._stream_tasks.get(task_id)
+        if existing is not None and not existing.done():
+            return
+        self._start_background_consumer(task_id, session_id)
+
+    def _start_background_consumer(self, task_id: str, session_id: str) -> None:
+        existing = self._stream_tasks.get(task_id)
+        if existing is not None and not existing.done():
+            return
+        runner = asyncio.create_task(self._consume_events(task_id, session_id))
+        self._background_tasks.add(runner)
+        self._stream_tasks[task_id] = runner
+
+        def _cleanup(completed: asyncio.Task[None]) -> None:
+            self._background_tasks.discard(completed)
+            current = self._stream_tasks.get(task_id)
+            if current is completed:
+                self._stream_tasks.pop(task_id, None)
+
+        runner.add_done_callback(_cleanup)
 
     async def start_task(self, db: Session, task: Task, project: Project) -> Task:
         set_task_status(db, task, "starting")
@@ -106,9 +133,7 @@ class TaskOrchestrator:
             effective_model=session.effective_model or resolved_model,
         )
         if self.adapter.stream_in_background:
-            runner = asyncio.create_task(self._consume_events(task.id, session.session_id))
-            self._background_tasks.add(runner)
-            runner.add_done_callback(self._background_tasks.discard)
+            self._start_background_consumer(task.id, session.session_id)
         else:
             await self._consume_events(task.id, session.session_id)
         return refreshed
@@ -215,9 +240,7 @@ class TaskOrchestrator:
             effective_model=session.effective_model or refreshed.model,
         )
         if self.adapter.stream_in_background:
-            runner = asyncio.create_task(self._consume_events(task.id, session.session_id))
-            self._background_tasks.add(runner)
-            runner.add_done_callback(self._background_tasks.discard)
+            self._start_background_consumer(task.id, session.session_id)
         else:
             await self._consume_events(task.id, session.session_id)
         return refreshed
@@ -323,21 +346,48 @@ class TaskOrchestrator:
         return "medium"
 
     async def _consume_events(self, task_id: str, session_id: str) -> None:
+        if not self.adapter.stream_in_background:
+            async for event in self.adapter.subscribe_events(session_id):
+                await self._handle_runtime_event(task_id, event)
+            return
+
         attempts = 0
-        while attempts < 3:
+        while True:
             try:
                 async for event in self.adapter.subscribe_events(session_id):
                     await self._handle_runtime_event(task_id, event)
-                return
+                # Re-subscribe if runtime stream ended unexpectedly.
+                attempts += 1
+                await self._handle_runtime_event(
+                    task_id,
+                    RuntimeEvent(
+                        type="agent_status",
+                        message="Runtime event stream closed; attempting to reconnect.",
+                        payload={"attempts": attempts, "reason": "stream_closed"},
+                    ),
+                )
             except Exception as exc:
                 attempts += 1
-                if attempts >= 3:
+                detail = str(exc)
+                if "Unknown Codex App Server session" in detail:
                     await self._handle_runtime_event(
                         task_id,
-                        RuntimeEvent(type="failed", message=f"Runtime stream failed: {exc}", payload={"attempts": attempts}),
+                        RuntimeEvent(
+                            type="failed",
+                            message="Runtime session is no longer available. Retry the task to continue.",
+                            payload={"attempts": attempts, "reason": "stale_runtime_session"},
+                        ),
                     )
                     return
-                await asyncio.sleep(0.5 * attempts)
+                await self._handle_runtime_event(
+                    task_id,
+                    RuntimeEvent(
+                        type="agent_status",
+                        message="Runtime stream interrupted; reconnecting in background.",
+                        payload={"attempts": attempts, "error": detail[:500]},
+                    ),
+                )
+            await asyncio.sleep(min(0.5 * attempts, 5.0))
 
     async def _handle_runtime_event(self, task_id: str, event: RuntimeEvent) -> None:
         with SessionLocal() as db:

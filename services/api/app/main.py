@@ -137,6 +137,11 @@ def _require_task(task, detail: str = "Task not found"):
     return task
 
 
+def _ensure_task_runtime_stream(task) -> None:
+    session_id = getattr(task, "runtime_session_id", None)
+    orchestrator.ensure_runtime_stream(task.id, session_id)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
@@ -225,13 +230,16 @@ def get_task_detail(task_id: str, db: Session = Depends(get_db)):
     task = get_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_runtime_stream(task)
     return serialize_task_detail(task)
 
 
 @app.get("/tasks/{task_id}/events", response_model=list[TaskEventResponse])
 def get_task_events(task_id: str, db: Session = Depends(get_db)):
-    if get_task(db, task_id) is None:
+    task = get_task(db, task_id)
+    if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_runtime_stream(task)
     return [serialize_event(item) for item in list_events(db, task_id)]
 
 
@@ -240,6 +248,7 @@ async def get_task_diff(task_id: str, db: Session = Depends(get_db)):
     task = get_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_runtime_stream(task)
     task = await orchestrator.refresh_diff(db, task)
     return serialize_diff(task)
 
@@ -339,6 +348,8 @@ async def push_task_workspace(task_id: str, payload: TaskPushRequest, db: Sessio
 
 @app.get("/tasks/{task_id}/stream")
 async def stream_task(task_id: str, db: Session = Depends(get_db)):
-    if get_task(db, task_id) is None:
+    task = get_task(db, task_id)
+    if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_runtime_stream(task)
     return StreamingResponse(stream_task_events(task_id), media_type="text/event-stream")

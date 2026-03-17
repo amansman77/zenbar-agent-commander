@@ -634,6 +634,58 @@ def test_get_task_diff_falls_back_to_workspace_git_diff_when_runtime_diff_is_una
         assert "README.md" in body["files_changed"]
 
 
+def test_task_detail_reconnect_reuses_runtime_session_stream(monkeypatch):
+    from app import main
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Reconnect Detail", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Reconnect me", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        calls: list[tuple[str, str | None]] = []
+
+        def ensure_runtime_stream(task_id: str, session_id: str | None) -> None:
+            calls.append((task_id, session_id))
+
+        monkeypatch.setattr(main.orchestrator, "ensure_runtime_stream", ensure_runtime_stream)
+        response = client.get(f"/tasks/{task['id']}")
+
+        assert response.status_code == 200
+        assert calls == [(task["id"], task["runtime_session_id"])]
+
+
+def test_task_events_reconnect_reuses_runtime_session_stream(monkeypatch):
+    from app import main
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Reconnect Events", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Reconnect events", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        calls: list[tuple[str, str | None]] = []
+
+        def ensure_runtime_stream(task_id: str, session_id: str | None) -> None:
+            calls.append((task_id, session_id))
+
+        monkeypatch.setattr(main.orchestrator, "ensure_runtime_stream", ensure_runtime_stream)
+        response = client.get(f"/tasks/{task['id']}/events")
+
+        assert response.status_code == 200
+        assert calls == [(task["id"], task["runtime_session_id"])]
+
+
 def test_project_soft_delete_hides_project_and_blocks_project_task_endpoints():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
