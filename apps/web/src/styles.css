@@ -822,39 +822,42 @@ textarea {
   gap: 8px;
 }
 
-.log-tab-structured {
+.log-timeline {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
-.log-section {
+.timeline-item {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #fff;
   padding: 0.65rem;
 }
 
-.log-section-conversation {
-  background: #f9fbff;
-  border-color: #cddcef;
-  padding: 0.8rem;
+.timeline-conversation {
+  background: #f6faff;
+  border-color: #c5d9f2;
+  padding: 0.75rem;
 }
 
-.log-section-system {
+.timeline-execution {
+  background: #fbfdff;
+}
+
+.timeline-system-high {
+  background: #f8fbff;
+  border-color: #d5e3f6;
+}
+
+.timeline-technical {
   background: #fbfcfe;
 }
 
-.log-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 1.8rem;
-  min-height: 1.4rem;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  color: #4a6079;
-  font-size: 0.74rem;
-  font-weight: 700;
+.timeline-technical summary {
+  cursor: pointer;
+  color: #365679;
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 
 .execution-summary p {
@@ -867,29 +870,27 @@ textarea {
   margin-top: 0.16rem;
 }
 
-.log-list-conversation,
-.log-list-execution,
-.log-list-system {
+.timeline-details-list {
   margin-top: 0.55rem;
 }
 
-.log-list-conversation li,
-.log-list-execution li,
-.log-list-system li {
+.timeline-details-list li {
   display: block;
   padding: 0.55rem 0.6rem;
 }
 
-.log-item-conversation .event-message,
-.log-list-conversation .event-message {
+.conversation-message {
   font-size: 0.97rem;
   line-height: 1.45;
   font-weight: 600;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
-.log-list-system .event-message {
-  font-size: 0.83rem;
-  font-weight: 500;
+.conversation-message.mobile {
+  -webkit-line-clamp: 4;
 }
 
 .output-panel {
