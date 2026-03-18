@@ -34,6 +34,35 @@ is_port_in_use() {
   lsof -tiTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
 }
 
+cleanup_pid() {
+  pid_file="$1"
+  if [ -f "$pid_file" ]; then
+    rm -f "$pid_file"
+  fi
+}
+
+start_bg_process() {
+  name="$1"
+  script_path="$2"
+  pid_file="$3"
+  log_file="$4"
+
+  nohup sh "$script_path" >"$log_file" 2>&1 &
+  pid=$!
+  echo "$pid" >"$pid_file"
+
+  # Give the process a moment to fail fast (env parse errors, missing deps, etc).
+  sleep 1
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "$name failed to start (pid $pid exited early)."
+    echo "Recent $name log:"
+    tail -n 40 "$log_file" 2>/dev/null || true
+    cleanup_pid "$pid_file"
+    return 1
+  fi
+  return 0
+}
+
 if is_running "$API_PID_FILE" || is_running "$WEB_PID_FILE"; then
   echo "External dev server is already running."
   echo "Stop first: pnpm dev:external:stop"
@@ -46,13 +75,18 @@ if is_port_in_use "$API_PORT" || is_port_in_use "$WEB_PORT"; then
   exit 1
 fi
 
-nohup sh "$API_SCRIPT" >"$API_LOG_FILE" 2>&1 &
-API_PID=$!
-echo "$API_PID" >"$API_PID_FILE"
+if ! start_bg_process "API" "$API_SCRIPT" "$API_PID_FILE" "$API_LOG_FILE"; then
+  exit 1
+fi
+API_PID="$(cat "$API_PID_FILE")"
 
-nohup sh "$WEB_SCRIPT" >"$WEB_LOG_FILE" 2>&1 &
-WEB_PID=$!
-echo "$WEB_PID" >"$WEB_PID_FILE"
+if ! start_bg_process "Web" "$WEB_SCRIPT" "$WEB_PID_FILE" "$WEB_LOG_FILE"; then
+  # Prevent orphan API process when web startup fails.
+  kill "$API_PID" 2>/dev/null || true
+  cleanup_pid "$API_PID_FILE"
+  exit 1
+fi
+WEB_PID="$(cat "$WEB_PID_FILE")"
 
 echo "Started external dev servers in background."
 echo "  API pid: $API_PID (log: $API_LOG_FILE)"

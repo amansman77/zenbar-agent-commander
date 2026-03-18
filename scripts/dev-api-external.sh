@@ -9,6 +9,7 @@ API_PORT="${ZENBAR_API_PORT:-18000}"
 WEB_PORT="${ZENBAR_WEB_PORT:-15173}"
 ALLOW_REMOTE="${ZENBAR_ALLOW_UNAUTHENTICATED_REMOTE:-false}"
 DEFAULT_CORS_ORIGINS="${ZENBAR_CORS_ORIGINS:-}"
+API_RELOAD="${ZENBAR_API_RELOAD:-false}"
 
 load_env_file() {
   env_file="$1"
@@ -50,8 +51,16 @@ if [ -z "$DEFAULT_CORS_ORIGINS" ]; then
   DEFAULT_CORS_ORIGINS="http://localhost:$WEB_PORT,http://127.0.0.1:$WEB_PORT,http://$PUBLIC_HOST:$WEB_PORT"
 fi
 
+echo "API external mode"
+echo "  API bind: $API_HOST:$API_PORT"
+echo "  API reload: $API_RELOAD"
+
 cd "$API_DIR"
+UVICORN_ARGS="--host $API_HOST --port $API_PORT"
+if [ "$API_RELOAD" = "true" ] || [ "$API_RELOAD" = "1" ]; then
+  UVICORN_ARGS="--reload $UVICORN_ARGS"
+fi
 exec env \
   ZENBAR_ALLOW_UNAUTHENTICATED_REMOTE="$ALLOW_REMOTE" \
   ZENBAR_CORS_ORIGINS="$DEFAULT_CORS_ORIGINS" \
-  "$VENV_PYTHON" -m uvicorn app.main:app --reload --host "$API_HOST" --port "$API_PORT"
+  "$VENV_PYTHON" -m uvicorn app.main:app $UVICORN_ARGS

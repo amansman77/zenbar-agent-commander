@@ -597,6 +597,86 @@ def test_terminal_task_status_is_not_downgraded_by_late_agent_status_event():
         assert detail.json()["status"] == "completed"
 
 
+def test_waiting_result_approval_is_not_downgraded_by_agent_status_event():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Waiting Approval Guard", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Keep waiting", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            append_event(
+                db,
+                current,
+                RuntimeEvent(
+                    type="result_approval_requested",
+                    message="Need approval",
+                    payload={"request_id": "req-approve"},
+                ),
+            )
+            current = get_task(db, task["id"])
+            assert current is not None
+            append_event(
+                db,
+                current,
+                RuntimeEvent(type="agent_status", message="Heartbeat while waiting"),
+            )
+
+        detail = client.get(f"/tasks/{task['id']}")
+        assert detail.status_code == 200
+        assert detail.json()["status"] == "waiting_result_approval"
+        assert detail.json()["pending_interaction_type"] == "result_approval"
+
+
+def test_waiting_result_approval_transitions_to_running_on_approval_granted():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Approval Resume", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Resume run", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            append_event(
+                db,
+                current,
+                RuntimeEvent(
+                    type="result_approval_requested",
+                    message="Need approval",
+                    payload={"request_id": "req-approve"},
+                ),
+            )
+            current = get_task(db, task["id"])
+            assert current is not None
+            append_event(
+                db,
+                current,
+                RuntimeEvent(
+                    type="result_approval_granted",
+                    message="Approved",
+                    payload={"request_id": "req-approve"},
+                ),
+            )
+
+        detail = client.get(f"/tasks/{task['id']}")
+        assert detail.status_code == 200
+        assert detail.json()["status"] == "running"
+        assert detail.json()["pending_interaction_type"] is None
+
+
 def test_approve_rejected_outside_waiting_result_approval():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
@@ -725,6 +805,71 @@ def test_task_events_reconnect_reuses_runtime_session_stream(monkeypatch):
 
         assert response.status_code == 200
         assert calls == [(task["id"], task["runtime_session_id"])]
+
+
+def test_task_detail_reconciles_stale_runtime_session_to_failed():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Reconcile Stale Session", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Reconcile me", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            current.status = "running"
+            current.runtime_session_id = "missing-session"
+            db.add(current)
+            db.commit()
+
+        detail = client.get(f"/tasks/{task['id']}")
+        assert detail.status_code == 200
+        body = detail.json()
+        assert body["status"] == "failed"
+        assert body["runtime_session_id"] is None
+
+        events = client.get(f"/tasks/{task['id']}/events")
+        assert events.status_code == 200
+        assert any(
+            item["type"] == "failed" and (item["payload_json"] or {}).get("reason") == "stale_runtime_session"
+            for item in events.json()
+        )
+
+
+def test_reconcile_active_tasks_marks_stale_sessions_failed():
+    from app.main import orchestrator
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Reconcile Startup", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Startup reconcile", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            current.status = "running"
+            current.runtime_session_id = "missing-session"
+            db.add(current)
+            db.commit()
+
+        reconciled = asyncio.run(orchestrator.reconcile_active_tasks())
+        assert reconciled >= 1
+
+        detail = client.get(f"/tasks/{task['id']}")
+        assert detail.status_code == 200
+        assert detail.json()["status"] == "failed"
+        assert detail.json()["runtime_session_id"] is None
 
 
 def test_ensure_runtime_stream_noops_without_running_loop(monkeypatch):

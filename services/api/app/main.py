@@ -141,11 +141,17 @@ def _ensure_task_runtime_stream(task) -> None:
     session_id = getattr(task, "runtime_session_id", None)
     orchestrator.ensure_runtime_stream(task.id, session_id)
 
+async def _reconcile_and_ensure_task_runtime_stream(task, db: Session):
+    task = await orchestrator.reconcile_task_runtime_session(db, task)
+    _ensure_task_runtime_stream(task)
+    return task
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     ensure_schema()
+    await orchestrator.reconcile_active_tasks()
     await managed_app_server.start()
     try:
         yield
@@ -230,7 +236,7 @@ async def get_task_detail(task_id: str, db: Session = Depends(get_db)):
     task = get_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    _ensure_task_runtime_stream(task)
+    task = await _reconcile_and_ensure_task_runtime_stream(task, db)
     return serialize_task_detail(task)
 
 
@@ -239,7 +245,7 @@ async def get_task_events(task_id: str, db: Session = Depends(get_db)):
     task = get_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    _ensure_task_runtime_stream(task)
+    task = await _reconcile_and_ensure_task_runtime_stream(task, db)
     return [serialize_event(item) for item in list_events(db, task_id)]
 
 
@@ -248,7 +254,7 @@ async def get_task_diff(task_id: str, db: Session = Depends(get_db)):
     task = get_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    _ensure_task_runtime_stream(task)
+    task = await _reconcile_and_ensure_task_runtime_stream(task, db)
     task = await orchestrator.refresh_diff(db, task)
     return serialize_diff(task)
 
@@ -351,5 +357,5 @@ async def stream_task(task_id: str, db: Session = Depends(get_db)):
     task = get_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    _ensure_task_runtime_stream(task)
+    task = await _reconcile_and_ensure_task_runtime_stream(task, db)
     return StreamingResponse(stream_task_events(task_id), media_type="text/event-stream")

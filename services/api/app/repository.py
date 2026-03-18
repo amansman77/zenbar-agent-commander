@@ -148,6 +148,14 @@ def append_event(db: Session, task: Task, event: RuntimeEvent) -> TaskEvent:
         if task.status in terminal_statuses and status not in terminal_statuses:
             # Keep terminal task states stable even if late runtime activity events arrive.
             pass
+        elif status == "running" and task.status in {"waiting_user_input", "waiting_result_approval"}:
+            payload = event.payload or {}
+            can_leave_waiting = (
+                record.type in {"user_input_submitted", "result_approval_granted"}
+                or (record.type == "agent_status" and payload.get("cleanup_pending_snapshot"))
+            )
+            if can_leave_waiting:
+                task.status = status
         else:
             task.status = status
     if record.type in {"user_input_requested", "result_approval_requested"}:

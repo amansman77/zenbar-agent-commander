@@ -5,6 +5,7 @@ import os
 import subprocess
 from collections.abc import AsyncIterator
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal
@@ -36,6 +37,8 @@ from .workspace import prepare_workspace
 
 
 class TaskOrchestrator:
+    ACTIVE_TASK_STATUSES = {"starting", "running", "waiting_user_input", "waiting_result_approval"}
+
     def __init__(self, adapter: RuntimeAdapter) -> None:
         self.adapter = adapter
         self._background_tasks: set[asyncio.Task[None]] = set()
@@ -278,6 +281,52 @@ class TaskOrchestrator:
         if updated is None:
             raise RuntimeError(f"Task '{task.id}' disappeared while persisting diff")
         return updated
+
+    async def reconcile_task_runtime_session(self, db: Session, task: Task) -> Task:
+        if task.status not in self.ACTIVE_TASK_STATUSES:
+            return task
+        if not task.runtime_session_id:
+            return task
+        try:
+            await self.adapter.get_diff(task.runtime_session_id)
+            return task
+        except RuntimeError as exc:
+            if "Unknown Codex App Server session" not in str(exc):
+                raise
+        refreshed = self._require_task(db, task.id, "reconciling stale runtime session")
+        refreshed = clear_runtime_session(db, refreshed)
+        append_event(
+            db,
+            refreshed,
+            RuntimeEvent(
+                type="failed",
+                message="Runtime session is no longer available. Retry the task to continue.",
+                payload={"reason": "stale_runtime_session", "cleanup": "reconcile"},
+            ),
+        )
+        db.expire_all()
+        return self._require_task(db, task.id, "refreshing reconciled task")
+
+    async def reconcile_active_tasks(self) -> int:
+        with SessionLocal() as db:
+            task_ids = list(
+                db.scalars(
+                    select(Task.id).where(
+                        Task.status.in_(self.ACTIVE_TASK_STATUSES),
+                        Task.runtime_session_id.is_not(None),
+                    )
+                )
+            )
+            reconciled = 0
+            for task_id in task_ids:
+                task = get_task(db, task_id)
+                if task is None:
+                    continue
+                status_before = task.status
+                task = await self.reconcile_task_runtime_session(db, task)
+                if status_before != task.status and task.status == "failed":
+                    reconciled += 1
+            return reconciled
 
     async def commit_workspace(self, db: Session, task: Task, payload: TaskCommitRequest) -> TaskGitActionResponse:
         if not task.workspace_path:
