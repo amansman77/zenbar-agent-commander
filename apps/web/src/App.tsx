@@ -47,6 +47,7 @@ type RunActionConfig = {
   label: string;
   intent: RunActionIntent;
 };
+type SecondaryRunAction = { key: "reject" | "ask_changes"; label: string };
 
 type ParsedDiffFile = {
   id: string;
@@ -488,9 +489,12 @@ function getPrimaryAction(status: RunStatus): RunActionConfig {
   }
 }
 
-function getSecondaryActions(status: RunStatus): Array<{ key: "reject"; label: string }> {
+function getSecondaryActions(status: RunStatus): SecondaryRunAction[] {
   if (status === "waiting_approval") {
     return [{ key: "reject", label: "Reject" }];
+  }
+  if (status === "completed") {
+    return [{ key: "ask_changes", label: "Ask for changes" }];
   }
   return [];
 }
@@ -759,6 +763,39 @@ function StructuredLogTab({ events, mobile }: { events: TaskEvent[]; mobile: boo
         return <TechnicalEventsBlock key={item.id} events={item.events} mobile={mobile} />;
       })}
     </div>
+  );
+}
+
+function SessionComposer({
+  value,
+  disabled,
+  pending,
+  onChange,
+  onSend
+}: {
+  value: string;
+  disabled: boolean;
+  pending: boolean;
+  onChange: (value: string) => void;
+  onSend: () => void;
+}) {
+  const canSend = value.trim().length > 0 && !disabled && !pending;
+  return (
+    <section className="session-composer">
+      <textarea
+        aria-label="Session follow-up"
+        className="session-composer-input"
+        placeholder="Ask the agent about this run..."
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled || pending}
+      />
+      <div className="session-composer-actions">
+        <button type="button" onClick={onSend} disabled={!canSend}>
+          {pending ? "Sending..." : "Send"}
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -1426,6 +1463,7 @@ export function App() {
   const [pendingExecutionMode, setPendingExecutionMode] = useState<ExecutionMode>("execute");
   const [commitMessage, setCommitMessage] = useState("Apply Task Workspace updates");
   const [gitActionMessage, setGitActionMessage] = useState<string | null>(null);
+  const [followupDraft, setFollowupDraft] = useState("");
   const isMobile = useIsMobileBreakpoint();
 
   const projectsQuery = useQuery({
@@ -1536,6 +1574,19 @@ export function App() {
     }
   });
 
+  const followupMutation = useMutation({
+    mutationFn: async (input: { sessionId: string; content: string }) =>
+      api.createFollowupTurn(input.sessionId, { content: input.content }),
+    onSuccess: (updatedTask) => {
+      queryClient.setQueryData(["task", updatedTask.id], updatedTask);
+      queryClient.invalidateQueries({ queryKey: ["tasks", updatedTask.project_id] });
+      queryClient.invalidateQueries({ queryKey: ["task-events", updatedTask.id] });
+      queryClient.invalidateQueries({ queryKey: ["task-diff", updatedTask.id] });
+      setFollowupDraft("");
+      setMobileDetailTab("log");
+    }
+  });
+
   const workspaceCommitMutation = useMutation({
     mutationFn: (input: { taskId: string; message: string }) =>
       api.commitTaskWorkspace(input.taskId, { actor, message: input.message }),
@@ -1630,6 +1681,7 @@ export function App() {
     setPendingExecutionMode(task.execution_mode ?? "execute");
     setCommitMessage(`Apply updates for ${task.title}`);
     setGitActionMessage(null);
+    setFollowupDraft("");
   }, [task, runActionModelOptions]);
 
   useEffect(() => {
@@ -1706,6 +1758,17 @@ export function App() {
     taskActionMutation.mutate({ action: "retryTask", taskId: task.id, model: config.model || undefined });
   };
 
+  const handleSendFollowup = () => {
+    if (!task) {
+      return;
+    }
+    const message = followupDraft.trim();
+    if (!message) {
+      return;
+    }
+    followupMutation.mutate({ sessionId: task.session_id, content: message });
+  };
+
   const renderTaskDetailContent = (mobile: boolean) => {
     if (!task) {
       return <p className="empty-state">Select a task to inspect the Task Workspace and approval state.</p>;
@@ -1722,6 +1785,7 @@ export function App() {
     const compactPromptPreview =
       promptPreview.length > 180 ? `${promptPreview.slice(0, 180).trimEnd()}...` : promptPreview || "No prompt";
     const latestRunTimestamp = (events.length > 0 ? events[events.length - 1]?.created_at : null) ?? task.updated_at;
+    const followupDisabled = runStatus === "running" || task.status === "waiting_result_approval" || task.status === "waiting_user_input";
 
     const triggerRunAction = (action: RunExecutionAction) => {
       setPendingRunAction(action);
@@ -1780,8 +1844,15 @@ export function App() {
                   key={action.key}
                   type="button"
                   className="secondary"
-                  onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })}
-                  disabled={!canStop}
+                  onClick={() => {
+                    if (action.key === "reject") {
+                      taskActionMutation.mutate({ action: "stopTask", taskId: task.id });
+                      return;
+                    }
+                    setFollowupDraft("Please revise this result with tighter spacing.");
+                    setMobileDetailTab("log");
+                  }}
+                  disabled={action.key === "reject" ? !canStop : followupDisabled}
                 >
                   {action.label}
                 </button>
@@ -1865,6 +1936,14 @@ export function App() {
                     <h3>Event log</h3>
                   </div>
                   <StructuredLogTab events={events} mobile />
+                  <SessionComposer
+                    value={followupDraft}
+                    onChange={setFollowupDraft}
+                    onSend={handleSendFollowup}
+                    disabled={followupDisabled}
+                    pending={followupMutation.isPending}
+                  />
+                  {followupMutation.error instanceof Error ? <p role="alert">{followupMutation.error.message}</p> : null}
                 </section>
               </div>
             ) : (
@@ -2028,8 +2107,14 @@ export function App() {
               key={action.key}
               type="button"
               className="secondary"
-              onClick={() => taskActionMutation.mutate({ action: "stopTask", taskId: task.id })}
-              disabled={!canStop}
+              onClick={() => {
+                if (action.key === "reject") {
+                  taskActionMutation.mutate({ action: "stopTask", taskId: task.id });
+                  return;
+                }
+                setFollowupDraft("Please revise this result with tighter spacing.");
+              }}
+              disabled={action.key === "reject" ? !canStop : followupDisabled}
             >
               {action.label}
             </button>
@@ -2141,6 +2226,14 @@ export function App() {
             <h3>Event log</h3>
             <div className="output-panel">
               <StructuredLogTab events={events} mobile={false} />
+              <SessionComposer
+                value={followupDraft}
+                onChange={setFollowupDraft}
+                onSend={handleSendFollowup}
+                disabled={followupDisabled}
+                pending={followupMutation.isPending}
+              />
+              {followupMutation.error instanceof Error ? <p role="alert">{followupMutation.error.message}</p> : null}
             </div>
           </section>
 

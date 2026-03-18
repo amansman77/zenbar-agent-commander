@@ -21,6 +21,7 @@ from .repository import (
     get_project_any,
     get_project,
     get_task,
+    get_task_by_session_id,
     list_events,
     list_projects,
     list_tasks,
@@ -48,6 +49,7 @@ from .schemas import (
     RespondTaskRequest,
     RuntimeModelOption,
     RuntimeModelsResponse,
+    FollowupTurnRequest,
     TaskApprovalRequest,
     TaskDetail,
     TaskDiff,
@@ -350,6 +352,23 @@ async def push_task_workspace(task_id: str, payload: TaskPushRequest, db: Sessio
     except Exception as exc:
         detail = _safe_runtime_error_detail("Push failed", exc)
         raise HTTPException(status_code=409, detail=detail) from exc
+
+
+@app.post("/sessions/{session_id}/turns", response_model=TaskDetail)
+async def post_session_turn(session_id: str, payload: FollowupTurnRequest, db: Session = Depends(get_db)):
+    task = get_task_by_session_id(db, session_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Follow-up content cannot be empty")
+    try:
+        await orchestrator.followup_task(db, task, content)
+    except Exception as exc:
+        detail = _safe_runtime_error_detail("Follow-up failed", exc)
+        raise HTTPException(status_code=409, detail=detail) from exc
+    task = _require_task(get_task(db, task.id))
+    return serialize_task_detail(task)
 
 
 @app.get("/tasks/{task_id}/stream")

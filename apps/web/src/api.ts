@@ -4,6 +4,7 @@ import type {
   CreateProjectRequest,
   DiscoverProjectRequest,
   DiscoverProjectResponse,
+  FollowupTurnRequest,
   ListRuntimeModelsResponse,
   CreateTaskRequest,
   ProjectSummary,
@@ -82,6 +83,11 @@ export const api = {
     }),
   respondTask: (taskId: string, payload: RespondTaskRequest) =>
     request<TaskDetail>(`/tasks/${taskId}/respond`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  createFollowupTurn: (sessionId: string, payload: FollowupTurnRequest) =>
+    request<TaskDetail>(`/sessions/${sessionId}/turns`, {
       method: "POST",
       body: JSON.stringify(payload)
     }),

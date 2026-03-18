@@ -112,8 +112,28 @@ export interface TaskQuestion {
   options: TaskQuestionOption[] | null;
 }
 
+export interface SessionTurn {
+  id: string;
+  session_id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
+export interface SessionRun {
+  id: string;
+  session_id: string;
+  parent_run_id: string | null;
+  status: "running" | "completed" | "failed";
+  input: string;
+  created_at: string;
+}
+
 export interface TaskDetail extends TaskSummary {
   prompt: string;
+  session_id: string;
+  turns: SessionTurn[];
+  runs: SessionRun[];
   project: ProjectSummary;
   approvals: TaskApproval[];
   latest_diff: TaskDiff;
@@ -147,6 +167,10 @@ export interface ApproveTaskRequest {
 export interface RespondTaskRequest {
   actor?: string;
   answers: Record<string, string[]>;
+}
+
+export interface FollowupTurnRequest {
+  content: string;
 }
 
 export interface CommitTaskRequest {

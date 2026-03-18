@@ -13,6 +13,9 @@ from .models import Project, Task
 from .repository import (
     append_event,
     clear_runtime_session,
+    create_run,
+    create_turn,
+    get_latest_run,
     get_task,
     replace_diff,
     list_events,
@@ -89,6 +92,8 @@ class TaskOrchestrator:
         runner.add_done_callback(_cleanup)
 
     async def start_task(self, db: Session, task: Task, project: Project) -> Task:
+        parent_run = get_latest_run(db, task.id)
+        create_run(db, task, input_text=task.prompt, parent_run_id=parent_run.id if parent_run else None)
         set_task_status(db, task, "starting")
         if task.execution_mode == "plan":
             append_event(db, task, RuntimeEvent(type="agent_status", message="Checking Codex runtime plan capability"))
@@ -237,6 +242,8 @@ class TaskOrchestrator:
             return await self._restart_with_fresh_session(db, refreshed)
         if not task.runtime_session_id:
             return await self._restart_with_fresh_session(db, task)
+        parent_run = get_latest_run(db, task.id)
+        create_run(db, task, input_text="Run again", parent_run_id=parent_run.id if parent_run else None)
         try:
             session = await self.adapter.retry_task(task.runtime_session_id)
         except RuntimeError as exc:
@@ -257,6 +264,36 @@ class TaskOrchestrator:
         if self.adapter.stream_in_background:
             self._start_background_consumer(task.id, session.session_id)
         else:
+            await self._consume_events(task.id, session.session_id)
+        return refreshed
+
+    async def followup_task(self, db: Session, task: Task, content: str) -> Task:
+        if task.status in {"starting", "running", "waiting_user_input", "waiting_result_approval"}:
+            raise RuntimeError(f"Task cannot accept follow-up from status '{task.status}'")
+        if not task.runtime_session_id:
+            raise RuntimeError("Task has no runtime session")
+        create_turn(db, task, role="user", content=content)
+        append_event(
+            db,
+            task,
+            RuntimeEvent(
+                type="agent_status",
+                message=content,
+                payload={"role": "user", "content": content},
+            ),
+        )
+        parent_run = get_latest_run(db, task.id)
+        create_run(db, task, input_text=content, parent_run_id=parent_run.id if parent_run else None)
+        session = await self.adapter.followup_task(task.runtime_session_id, content)
+        refreshed = self._require_task(db, task.id, "starting follow-up turn")
+        refreshed = set_task_status(
+            db,
+            refreshed,
+            "running",
+            runtime_session_id=session.session_id,
+            effective_model=session.effective_model or refreshed.model,
+        )
+        if not self.adapter.stream_in_background:
             await self._consume_events(task.id, session.session_id)
         return refreshed
 

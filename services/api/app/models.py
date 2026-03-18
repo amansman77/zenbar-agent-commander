@@ -54,6 +54,8 @@ class Task(Base):
     project: Mapped[Project] = relationship(back_populates="tasks")
     events: Mapped[list["TaskEvent"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     approvals: Mapped[list["TaskApproval"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    turns: Mapped[list["TaskTurn"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    runs: Mapped[list["TaskRun"]] = relationship(back_populates="task", cascade="all, delete-orphan")
 
 
 class TaskEvent(Base):
@@ -80,3 +82,31 @@ class TaskApproval(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     task: Mapped[Task] = relationship(back_populates="approvals")
+
+
+class TaskTurn(Base):
+    __tablename__ = "task_turns"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(String(255), index=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"))
+    role: Mapped[str] = mapped_column(String(32))
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    task: Mapped[Task] = relationship(back_populates="turns")
+
+
+class TaskRun(Base):
+    __tablename__ = "task_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(String(255), index=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"))
+    parent_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="running")
+    input: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    task: Mapped[Task] = relationship(back_populates="runs")

@@ -20,6 +20,8 @@ WorkspaceType = Literal["branch", "worktree"]
 ExecutionMode = Literal["execute", "plan"]
 ReasoningEffort = Literal["low", "medium", "high"]
 PendingInteractionType = Literal["user_input", "result_approval"]
+TurnRole = Literal["user", "assistant"]
+RunState = Literal["running", "completed", "failed"]
 EventType = Literal[
     "agent_status",
     "file_changed",
@@ -113,6 +115,10 @@ class RespondTaskRequest(BaseModel):
     answers: dict[str, list[str]]
 
 
+class FollowupTurnRequest(BaseModel):
+    content: str = Field(min_length=1)
+
+
 class TaskDiff(BaseModel):
     files_changed: list[str] = Field(default_factory=list)
     summary: str = ""
@@ -148,6 +154,9 @@ class TaskSummary(BaseModel):
 
 class TaskDetail(TaskSummary):
     prompt: str
+    session_id: str
+    turns: list["SessionTurn"] = Field(default_factory=list)
+    runs: list["SessionRun"] = Field(default_factory=list)
     project: ProjectSummary
     approvals: list[TaskApprovalResponse]
     latest_diff: TaskDiff
@@ -160,6 +169,23 @@ class TaskDetail(TaskSummary):
 class RuntimeSession(BaseModel):
     session_id: str
     effective_model: str | None = None
+
+
+class SessionTurn(BaseModel):
+    id: str
+    session_id: str
+    role: TurnRole
+    content: str
+    created_at: datetime
+
+
+class SessionRun(BaseModel):
+    id: str
+    session_id: str
+    parent_run_id: str | None = None
+    status: RunState
+    input: str
+    created_at: datetime
 
 
 class RuntimeStartRequest(BaseModel):

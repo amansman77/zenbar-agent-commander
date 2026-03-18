@@ -177,6 +177,10 @@ class RuntimeAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def followup_task(self, session_id: str, message: str) -> RuntimeSession:
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_diff(self, session_id: str) -> TaskDiff:
         raise NotImplementedError
 
@@ -337,6 +341,19 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         await state.queue.put(RuntimeEvent(type="agent_status", message="Retry turn started in Codex App Server"))
         requested = state.start_request.model if state.start_request else None
         return RuntimeSession(session_id=session_id, effective_model=requested)
+
+    async def followup_task(self, session_id: str, message: str) -> RuntimeSession:
+        state = self._require_session(session_id)
+        request = state.start_request
+        if request is None:
+            raise RuntimeError("Follow-up unavailable because original task request is missing")
+        params = self._build_turn_start_params(session_id, request)
+        params["input"] = [{"type": "text", "text": message, "text_elements": []}]
+        turn = await self._rpc("turn/start", params)
+        state.current_turn_id = turn["turn"]["id"]
+        state.pending_requests.clear()
+        await state.queue.put(RuntimeEvent(type="agent_status", message="Follow-up turn started in Codex App Server"))
+        return RuntimeSession(session_id=session_id, effective_model=request.model)
 
     def _build_turn_start_params(
         self,
@@ -792,6 +809,26 @@ class MockRuntimeAdapter(RuntimeAdapter):
                 workspace_ref=f"task/retry-{task_id[:4]}",
             )
         return await self.start_task(request)
+
+    async def followup_task(self, session_id: str, message: str) -> RuntimeSession:
+        if session_id not in self._events:
+            raise RuntimeError("Unknown Codex App Server session")
+        request = self._requests.get(session_id)
+        if request is None:
+            raise RuntimeError("Follow-up unavailable because original task request is missing")
+        self._events.setdefault(session_id, []).extend(
+            [
+                RuntimeEvent(type="agent_status", message="Follow-up turn started"),
+                RuntimeEvent(type="command_executed", message="updated requested changes"),
+                RuntimeEvent(
+                    type="agent_status",
+                    message="Applied follow-up changes",
+                    payload={"role": "assistant", "content": "Applied requested follow-up changes."},
+                ),
+                RuntimeEvent(type="completed", message="Follow-up completed"),
+            ]
+        )
+        return RuntimeSession(session_id=session_id, effective_model=request.model)
 
     async def get_diff(self, session_id: str) -> TaskDiff:
         if session_id not in self._diffs:
