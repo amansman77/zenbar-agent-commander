@@ -38,6 +38,7 @@ type PlanStep = { step: string; status: string };
 type PlanSnapshot = { explanation: string | null; steps: PlanStep[]; text: string | null };
 type MobileScreen = "projects" | "tasks" | "detail";
 type RunStatus = "running" | "waiting_approval" | "completed" | "failed";
+type LogType = "conversation" | "execution" | "system";
 type RunActionIntent = "primary" | "danger";
 type RunExecutionAction = "run_again" | "retry";
 type RunActionConfig = {
@@ -53,6 +54,90 @@ type ParsedDiffFile = {
   additions: number;
   deletions: number;
 };
+
+type GroupedLogEvents = {
+  conversation: TaskEvent[];
+  execution: TaskEvent[];
+  system: TaskEvent[];
+};
+
+type ExecutionSummary = {
+  commands: number;
+  fileChanges: number;
+  diffs: number;
+};
+
+function inferEventRole(event: TaskEvent): string | null {
+  const payload = event.payload_json;
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const role = payload.role;
+  if (typeof role === "string") {
+    return role.toLowerCase();
+  }
+  return null;
+}
+
+function classifyLogEvent(event: TaskEvent): LogType {
+  const role = inferEventRole(event);
+  if (role === "assistant" || role === "user") {
+    return "conversation";
+  }
+
+  if (event.type === "command_executed" || event.type === "diff_generated" || event.type === "file_changed") {
+    return "execution";
+  }
+
+  return "system";
+}
+
+function dedupeSystemEvents(events: TaskEvent[]): TaskEvent[] {
+  return events.filter((event, index, list) => {
+    if (event.type !== "agent_status") {
+      return true;
+    }
+    const previous = list[index - 1];
+    if (!previous) {
+      return true;
+    }
+    return !(previous.type === "agent_status" && previous.message === event.message);
+  });
+}
+
+function groupLogEvents(events: TaskEvent[]): GroupedLogEvents {
+  const grouped: GroupedLogEvents = {
+    conversation: [],
+    execution: [],
+    system: []
+  };
+  for (const event of events) {
+    grouped[classifyLogEvent(event)].push(event);
+  }
+  grouped.system = dedupeSystemEvents(grouped.system);
+  return grouped;
+}
+
+function buildExecutionSummary(events: TaskEvent[]): ExecutionSummary {
+  return {
+    commands: events.filter((event) => event.type === "command_executed").length,
+    fileChanges: events.filter((event) => event.type === "file_changed").length,
+    diffs: events.filter((event) => event.type === "diff_generated").length
+  };
+}
+
+function formatExecutionEventLabel(event: TaskEvent): string {
+  if (event.type === "file_changed") {
+    return `updated ${event.message}`;
+  }
+  if (event.type === "command_executed") {
+    return `ran ${event.message}`;
+  }
+  if (event.type === "diff_generated") {
+    return event.message || "generated diff";
+  }
+  return event.message;
+}
 
 function extractLatestPlan(events: TaskEvent[]): PlanSnapshot | null {
   const deltaChunks: string[] = [];
@@ -464,6 +549,108 @@ function StatusBadge({ status }: { status: TaskStatus }) {
                   ? "Completed"
                   : "Failed";
   return <span className={`status status-${statusTone[status]}`}>{label}</span>;
+}
+
+function ConversationSection({ events, mobile }: { events: TaskEvent[]; mobile: boolean }) {
+  return (
+    <section className="log-section log-section-conversation">
+      <div className="row-header">
+        <h3>Conversation</h3>
+        <span className="log-count">{events.length}</span>
+      </div>
+      {events.length === 0 ? (
+        <p className="empty-state">No conversation messages yet.</p>
+      ) : (
+        <ul className={mobile ? "mobile-event-list log-list-conversation" : "event-list log-list-conversation"}>
+          {events.map((event) => (
+            <li key={event.id} className="log-item-conversation">
+              <p className="event-message">{event.message}</p>
+              <p className="event-meta">
+                <span>{new Date(event.created_at).toLocaleTimeString()}</span>
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function ExecutionSection({ events, mobile }: { events: TaskEvent[]; mobile: boolean }) {
+  const summary = useMemo(() => buildExecutionSummary(events), [events]);
+  const [expanded, setExpanded] = useState(false);
+  const actionCount = events.length;
+
+  return (
+    <section className="log-section log-section-execution">
+      <div className="row-header">
+        <h3>Execution ({actionCount} actions)</h3>
+        <button type="button" className="secondary" onClick={() => setExpanded((previous) => !previous)} disabled={actionCount === 0}>
+          {expanded ? "Collapse" : "Expand"}
+        </button>
+      </div>
+
+      <div className="execution-summary">
+        <p>- ran {summary.commands} commands</p>
+        <p>- updated {summary.fileChanges} files</p>
+        <p>- generated {summary.diffs} diffs</p>
+      </div>
+
+      {expanded ? (
+        events.length > 0 ? (
+          <ul className={mobile ? "mobile-event-list log-list-execution" : "event-list log-list-execution"}>
+            {events.map((event) => (
+              <li key={event.id}>
+                <p className="event-message">{formatExecutionEventLabel(event)}</p>
+                <p className="event-meta">
+                  <span>{new Date(event.created_at).toLocaleTimeString()}</span>
+                </p>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="empty-state">No execution events yet.</p>
+        )
+      ) : null}
+    </section>
+  );
+}
+
+function SystemSection({ events, mobile }: { events: TaskEvent[]; mobile: boolean }) {
+  return (
+    <section className="log-section log-section-system">
+      <div className="row-header">
+        <h3>System</h3>
+        <span className="log-count">{events.length}</span>
+      </div>
+      {events.length === 0 ? (
+        <p className="empty-state">No system events yet.</p>
+      ) : (
+        <ul className={mobile ? "mobile-event-list log-list-system" : "event-list log-list-system"}>
+          {events.map((event) => (
+            <li key={event.id}>
+              <p className="event-message event-message-agent-status">{event.message}</p>
+              <p className="event-meta">
+                <span>{new Date(event.created_at).toLocaleTimeString()}</span>
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function StructuredLogTab({ events, mobile }: { events: TaskEvent[]; mobile: boolean }) {
+  const grouped = useMemo(() => groupLogEvents(events), [events]);
+
+  return (
+    <div className="log-tab-structured">
+      <ConversationSection events={grouped.conversation} mobile={mobile} />
+      <ExecutionSection events={grouped.execution} mobile={mobile} />
+      <SystemSection events={grouped.system} mobile={mobile} />
+    </div>
+  );
 }
 
 function ProjectForm({
@@ -1075,7 +1262,7 @@ function RunActionSheet({
         <div className="bottom-sheet-list">
           <label className="retry-model-control retry-model-control-mobile">
             Model
-            <select aria-label="Run model" value={model} onChange={(event) => setModel(event.target.value)} disabled={models.length === 0}>
+            <select aria-label="Retry model" value={model} onChange={(event) => setModel(event.target.value)} disabled={models.length === 0}>
               {models.map((item) => (
                 <option key={item} value={item}>
                   {item}
@@ -1425,17 +1612,7 @@ export function App() {
     const promptPreview = task.prompt.replace(/\s+/g, " ").trim();
     const compactPromptPreview =
       promptPreview.length > 180 ? `${promptPreview.slice(0, 180).trimEnd()}...` : promptPreview || "No prompt";
-    const latestRunTimestamp = events.at(-1)?.created_at ?? task.updated_at;
-    const compactEvents = events.filter((event, index, list) => {
-      if (event.type !== "agent_status") {
-        return true;
-      }
-      const previous = list[index - 1];
-      if (!previous) {
-        return true;
-      }
-      return !(previous.type === "agent_status" && previous.message === event.message);
-    });
+    const latestRunTimestamp = (events.length > 0 ? events[events.length - 1]?.created_at : null) ?? task.updated_at;
 
     const triggerRunAction = (action: RunExecutionAction) => {
       setPendingRunAction(action);
@@ -1449,6 +1626,14 @@ export function App() {
       }
       if (primaryAction.key === "approve") {
         taskActionMutation.mutate({ action: "approveTask", taskId: task.id });
+        return;
+      }
+      if (!mobile) {
+        taskActionMutation.mutate({
+          action: "retryTask",
+          taskId: task.id,
+          model: runActionModel || undefined
+        });
         return;
       }
       triggerRunAction(primaryAction.key);
@@ -1570,25 +1755,7 @@ export function App() {
                   <div className="row-header">
                     <h3>Event log</h3>
                   </div>
-                  <ul className="mobile-event-list">
-                    {compactEvents.map((event) => {
-                      const isImportant = ["failed", "completed", "result_approval_requested", "result_approval_granted", "user_input_requested"].includes(event.type);
-                      return (
-                        <li key={event.id} className={isImportant ? "event-item-important" : ""}>
-                          <span className={`event-icon event-icon-${event.type.includes("error") ? "error" : "normal"}`} aria-hidden="true">
-                            ●
-                          </span>
-                          <div>
-                            <p className={`event-message ${event.type === "agent_status" ? "event-message-agent-status" : ""}`}>{event.message}</p>
-                            <p className="event-meta">
-                              <span>{new Date(event.created_at).toLocaleTimeString()}</span>
-                            </p>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                  {events.length === 0 ? <p className="empty-state">No events yet.</p> : null}
+                  <StructuredLogTab events={events} mobile />
                 </section>
               </div>
             ) : (
@@ -1715,6 +1882,21 @@ export function App() {
         </div>
 
         <div className="action-row">
+          <label className="retry-model-control">
+            Retry model
+            <select
+              aria-label="Retry model"
+              value={runActionModel}
+              onChange={(event) => setRunActionModel(event.target.value)}
+              disabled={runActionModelOptions.length === 0}
+            >
+              {runActionModelOptions.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="retry-model-control">
             Commit message
             <input
@@ -1848,14 +2030,9 @@ export function App() {
 
           <section>
             <h3>Event log</h3>
-            <ul className="event-list output-panel">
-              {compactEvents.map((event) => (
-                <li key={event.id} className={["failed", "completed", "result_approval_requested", "result_approval_granted", "user_input_requested"].includes(event.type) ? "event-item-important" : ""}>
-                  <strong>{event.message}</strong>
-                  <span>{new Date(event.created_at).toLocaleTimeString()}</span>
-                </li>
-              ))}
-            </ul>
+            <div className="output-panel">
+              <StructuredLogTab events={events} mobile={false} />
+            </div>
           </section>
 
           <section>

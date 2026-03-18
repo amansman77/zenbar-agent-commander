@@ -822,6 +822,76 @@ textarea {
   gap: 8px;
 }
 
+.log-tab-structured {
+  display: grid;
+  gap: 12px;
+}
+
+.log-section {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 0.65rem;
+}
+
+.log-section-conversation {
+  background: #f9fbff;
+  border-color: #cddcef;
+  padding: 0.8rem;
+}
+
+.log-section-system {
+  background: #fbfcfe;
+}
+
+.log-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.8rem;
+  min-height: 1.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: #4a6079;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.execution-summary p {
+  margin: 0;
+  color: #2a4969;
+  font-size: 0.86rem;
+}
+
+.execution-summary p + p {
+  margin-top: 0.16rem;
+}
+
+.log-list-conversation,
+.log-list-execution,
+.log-list-system {
+  margin-top: 0.55rem;
+}
+
+.log-list-conversation li,
+.log-list-execution li,
+.log-list-system li {
+  display: block;
+  padding: 0.55rem 0.6rem;
+}
+
+.log-item-conversation .event-message,
+.log-list-conversation .event-message {
+  font-size: 0.97rem;
+  line-height: 1.45;
+  font-weight: 600;
+}
+
+.log-list-system .event-message {
+  font-size: 0.83rem;
+  font-weight: 500;
+}
+
 .output-panel {
   margin: 0;
   border: 1px solid var(--line);
@@ -1006,6 +1076,12 @@ textarea {
   margin-bottom: 0.1rem;
   color: var(--text-soft);
   font-size: 0.76rem;
+}
+
+.event-list.log-list-conversation li,
+.event-list.log-list-execution li,
+.event-list.log-list-system li {
+  display: block;
 }
 
 .empty-state {
