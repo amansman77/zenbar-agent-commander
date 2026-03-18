@@ -39,6 +39,7 @@ type PlanSnapshot = { explanation: string | null; steps: PlanStep[]; text: strin
 type MobileScreen = "projects" | "tasks" | "detail";
 type RunStatus = "running" | "waiting_approval" | "completed" | "failed";
 type LogType = "conversation" | "execution" | "system";
+type SystemImportance = "high" | "low";
 type RunActionIntent = "primary" | "danger";
 type RunExecutionAction = "run_again" | "retry";
 type RunActionConfig = {
@@ -55,17 +56,17 @@ type ParsedDiffFile = {
   deletions: number;
 };
 
-type GroupedLogEvents = {
-  conversation: TaskEvent[];
-  execution: TaskEvent[];
-  system: TaskEvent[];
-};
-
 type ExecutionSummary = {
   commands: number;
   fileChanges: number;
   diffs: number;
 };
+
+type TimelineItem =
+  | { id: string; kind: "conversation"; event: TaskEvent }
+  | { id: string; kind: "execution"; events: TaskEvent[] }
+  | { id: string; kind: "system"; event: TaskEvent }
+  | { id: string; kind: "technical"; events: TaskEvent[] };
 
 function inferEventRole(event: TaskEvent): string | null {
   const payload = event.payload_json;
@@ -79,20 +80,54 @@ function inferEventRole(event: TaskEvent): string | null {
   return null;
 }
 
-function classifyLogEvent(event: TaskEvent): LogType {
-  const role = inferEventRole(event);
-  if (role === "assistant" || role === "user") {
-    return "conversation";
+function getEventText(event: TaskEvent): string {
+  const payload = event.payload_json;
+  if (payload && typeof payload === "object" && typeof payload.content === "string") {
+    const content = payload.content.trim();
+    if (content.length > 0) {
+      return content;
+    }
   }
+  return (event.message || "").trim();
+}
 
-  if (event.type === "command_executed" || event.type === "diff_generated" || event.type === "file_changed") {
+function isExecutionEvent(event: TaskEvent): boolean {
+  return event.type === "command_executed" || event.type === "diff_generated" || event.type === "file_changed";
+}
+
+function isNarrativeEvent(event: TaskEvent): boolean {
+  const role = inferEventRole(event);
+  const text = getEventText(event);
+  if (role === "assistant" || role === "user") {
+    return true;
+  }
+  return typeof text === "string" && text.length > 20;
+}
+
+function classifyLogEvent(event: TaskEvent): LogType {
+  if (isExecutionEvent(event)) {
     return "execution";
   }
-
+  if (isNarrativeEvent(event)) {
+    return "conversation";
+  }
   return "system";
 }
 
-function dedupeSystemEvents(events: TaskEvent[]): TaskEvent[] {
+function getSystemImportance(event: TaskEvent): SystemImportance {
+  if (
+    event.type === "completed" ||
+    event.type === "failed" ||
+    event.type === "stopped" ||
+    event.type === "result_approval_requested" ||
+    event.type === "user_input_requested"
+  ) {
+    return "high";
+  }
+  return "low";
+}
+
+function dedupeLowSystemEvents(events: TaskEvent[]): TaskEvent[] {
   return events.filter((event, index, list) => {
     if (event.type !== "agent_status") {
       return true;
@@ -103,19 +138,6 @@ function dedupeSystemEvents(events: TaskEvent[]): TaskEvent[] {
     }
     return !(previous.type === "agent_status" && previous.message === event.message);
   });
-}
-
-function groupLogEvents(events: TaskEvent[]): GroupedLogEvents {
-  const grouped: GroupedLogEvents = {
-    conversation: [],
-    execution: [],
-    system: []
-  };
-  for (const event of events) {
-    grouped[classifyLogEvent(event)].push(event);
-  }
-  grouped.system = dedupeSystemEvents(grouped.system);
-  return grouped;
 }
 
 function buildExecutionSummary(events: TaskEvent[]): ExecutionSummary {
@@ -137,6 +159,91 @@ function formatExecutionEventLabel(event: TaskEvent): string {
     return event.message || "generated diff";
   }
   return event.message;
+}
+
+function buildTimelineItems(events: TaskEvent[]): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  let executionBuffer: TaskEvent[] = [];
+  let technicalBuffer: TaskEvent[] = [];
+
+  const flushExecution = () => {
+    if (executionBuffer.length === 0) {
+      return;
+    }
+    const first = executionBuffer[0];
+    const last = executionBuffer[executionBuffer.length - 1];
+    items.push({ id: `execution-${first.id}-${last.id}`, kind: "execution", events: executionBuffer });
+    executionBuffer = [];
+  };
+
+  const flushTechnical = () => {
+    if (technicalBuffer.length === 0) {
+      return;
+    }
+    const deduped = dedupeLowSystemEvents(technicalBuffer);
+    const first = deduped[0];
+    const last = deduped[deduped.length - 1];
+    if (first && last) {
+      items.push({ id: `technical-${first.id}-${last.id}`, kind: "technical", events: deduped });
+    }
+    technicalBuffer = [];
+  };
+
+  for (const event of events) {
+    const type = classifyLogEvent(event);
+    if (type === "execution") {
+      flushTechnical();
+      executionBuffer.push(event);
+      continue;
+    }
+    if (type === "conversation") {
+      flushExecution();
+      flushTechnical();
+      items.push({ id: event.id, kind: "conversation", event });
+      continue;
+    }
+    flushExecution();
+    if (getSystemImportance(event) === "high") {
+      flushTechnical();
+      items.push({ id: event.id, kind: "system", event });
+    } else {
+      technicalBuffer.push(event);
+    }
+  }
+
+  flushExecution();
+  flushTechnical();
+  return items;
+}
+
+function formatSystemEventLabel(event: TaskEvent): string {
+  if (event.type === "completed") {
+    return "Completed ✓";
+  }
+  if (event.type === "failed") {
+    return "Failed";
+  }
+  if (event.type === "stopped") {
+    return "Stopped";
+  }
+  if (event.type === "result_approval_requested") {
+    return "Waiting approval";
+  }
+  if (event.type === "user_input_requested") {
+    return "Waiting input";
+  }
+  return event.message || event.type.replace(/_/g, " ");
+}
+
+function getConversationSpeaker(event: TaskEvent): string {
+  const role = inferEventRole(event);
+  if (role === "user") {
+    return "User";
+  }
+  if (role === "assistant") {
+    return "Agent";
+  }
+  return "Agent";
 }
 
 function extractLatestPlan(events: TaskEvent[]): PlanSnapshot | null {
@@ -551,41 +658,31 @@ function StatusBadge({ status }: { status: TaskStatus }) {
   return <span className={`status status-${statusTone[status]}`}>{label}</span>;
 }
 
-function ConversationSection({ events, mobile }: { events: TaskEvent[]; mobile: boolean }) {
+function ConversationItem({ event, mobile }: { event: TaskEvent; mobile: boolean }) {
+  const text = getEventText(event) || "(No message)";
+  const speaker = getConversationSpeaker(event);
   return (
-    <section className="log-section log-section-conversation">
+    <article className="timeline-item timeline-conversation">
       <div className="row-header">
-        <h3>Conversation</h3>
-        <span className="log-count">{events.length}</span>
+        <strong>{speaker}</strong>
       </div>
-      {events.length === 0 ? (
-        <p className="empty-state">No conversation messages yet.</p>
-      ) : (
-        <ul className={mobile ? "mobile-event-list log-list-conversation" : "event-list log-list-conversation"}>
-          {events.map((event) => (
-            <li key={event.id} className="log-item-conversation">
-              <p className="event-message">{event.message}</p>
-              <p className="event-meta">
-                <span>{new Date(event.created_at).toLocaleTimeString()}</span>
-              </p>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
+      <p className={mobile ? "event-message conversation-message mobile" : "event-message conversation-message"}>{text}</p>
+      <p className="event-meta">
+        <span>{new Date(event.created_at).toLocaleTimeString()}</span>
+      </p>
+    </article>
   );
 }
 
-function ExecutionSection({ events, mobile }: { events: TaskEvent[]; mobile: boolean }) {
+function ExecutionBlock({ events, mobile }: { events: TaskEvent[]; mobile: boolean }) {
   const summary = useMemo(() => buildExecutionSummary(events), [events]);
   const [expanded, setExpanded] = useState(false);
-  const actionCount = events.length;
 
   return (
-    <section className="log-section log-section-execution">
+    <article className="timeline-item timeline-execution">
       <div className="row-header">
-        <h3>Execution ({actionCount} actions)</h3>
-        <button type="button" className="secondary" onClick={() => setExpanded((previous) => !previous)} disabled={actionCount === 0}>
+        <h3>Execution</h3>
+        <button type="button" className="secondary" onClick={() => setExpanded((previous) => !previous)} disabled={events.length === 0}>
           {expanded ? "Collapse" : "Expand"}
         </button>
       </div>
@@ -597,58 +694,70 @@ function ExecutionSection({ events, mobile }: { events: TaskEvent[]; mobile: boo
       </div>
 
       {expanded ? (
-        events.length > 0 ? (
-          <ul className={mobile ? "mobile-event-list log-list-execution" : "event-list log-list-execution"}>
-            {events.map((event) => (
-              <li key={event.id}>
-                <p className="event-message">{formatExecutionEventLabel(event)}</p>
-                <p className="event-meta">
-                  <span>{new Date(event.created_at).toLocaleTimeString()}</span>
-                </p>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="empty-state">No execution events yet.</p>
-        )
-      ) : null}
-    </section>
-  );
-}
-
-function SystemSection({ events, mobile }: { events: TaskEvent[]; mobile: boolean }) {
-  return (
-    <section className="log-section log-section-system">
-      <div className="row-header">
-        <h3>System</h3>
-        <span className="log-count">{events.length}</span>
-      </div>
-      {events.length === 0 ? (
-        <p className="empty-state">No system events yet.</p>
-      ) : (
-        <ul className={mobile ? "mobile-event-list log-list-system" : "event-list log-list-system"}>
+        <ul className={mobile ? "mobile-event-list timeline-details-list" : "event-list timeline-details-list"}>
           {events.map((event) => (
             <li key={event.id}>
-              <p className="event-message event-message-agent-status">{event.message}</p>
+              <p className="event-message">{formatExecutionEventLabel(event)}</p>
               <p className="event-meta">
                 <span>{new Date(event.created_at).toLocaleTimeString()}</span>
               </p>
             </li>
           ))}
         </ul>
-      )}
-    </section>
+      ) : null}
+    </article>
+  );
+}
+
+function SystemEvent({ event }: { event: TaskEvent }) {
+  return (
+    <article className="timeline-item timeline-system-high">
+      <div className="row-header">
+        <h3>{formatSystemEventLabel(event)}</h3>
+      </div>
+      {event.message ? <p className="event-message event-message-agent-status">{event.message}</p> : null}
+      <p className="event-meta">
+        <span>{new Date(event.created_at).toLocaleTimeString()}</span>
+      </p>
+    </article>
+  );
+}
+
+function TechnicalEventsBlock({ events, mobile }: { events: TaskEvent[]; mobile: boolean }) {
+  return (
+    <details className="timeline-item timeline-technical">
+      <summary>View technical events ({events.length})</summary>
+      <ul className={mobile ? "mobile-event-list timeline-details-list" : "event-list timeline-details-list"}>
+        {events.map((event) => (
+          <li key={event.id}>
+            <p className="event-message event-message-agent-status">{event.message || event.type.replace(/_/g, " ")}</p>
+            <p className="event-meta">
+              <span>{new Date(event.created_at).toLocaleTimeString()}</span>
+            </p>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 
 function StructuredLogTab({ events, mobile }: { events: TaskEvent[]; mobile: boolean }) {
-  const grouped = useMemo(() => groupLogEvents(events), [events]);
+  const items = useMemo(() => buildTimelineItems(events), [events]);
 
   return (
-    <div className="log-tab-structured">
-      <ConversationSection events={grouped.conversation} mobile={mobile} />
-      <ExecutionSection events={grouped.execution} mobile={mobile} />
-      <SystemSection events={grouped.system} mobile={mobile} />
+    <div className="log-timeline">
+      {items.map((item) => {
+        if (item.kind === "conversation") {
+          return <ConversationItem key={item.id} event={item.event} mobile={mobile} />;
+        }
+        if (item.kind === "execution") {
+          return <ExecutionBlock key={item.id} events={item.events} mobile={mobile} />;
+        }
+        if (item.kind === "system") {
+          return <SystemEvent key={item.id} event={item.event} />;
+        }
+        return <TechnicalEventsBlock key={item.id} events={item.events} mobile={mobile} />;
+      })}
     </div>
   );
 }
