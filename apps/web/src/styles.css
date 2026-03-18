@@ -879,6 +879,23 @@ textarea {
   padding: 0.55rem 0.6rem;
 }
 
+.session-composer {
+  margin-top: 0.7rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.7rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.session-composer-input {
+  min-height: 88px;
+}
+
+.session-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .conversation-message {
   font-size: 0.97rem;
   line-height: 1.45;

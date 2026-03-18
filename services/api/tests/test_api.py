@@ -137,6 +137,66 @@ def test_approve_task():
         assert response.json()["status"] == "completed"
 
 
+def test_followup_turn_appends_new_run_without_mutating_previous_run():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Followup", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Session flow", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        approved = client.post(f"/tasks/{task['id']}/approve", json={"actor": "pytest"})
+        assert approved.status_code == 200
+        before = approved.json()
+        assert before["status"] == "completed"
+        assert len(before["runs"]) == 1
+        first_run_id = before["runs"][0]["id"]
+        assert before["runs"][0]["status"] == "completed"
+
+        followup = client.post(
+            f"/sessions/{before['session_id']}/turns",
+            json={"content": "Please tighten spacing."},
+        )
+        assert followup.status_code == 200
+        body = followup.json()
+        assert len(body["runs"]) == 2
+        assert body["runs"][0]["id"] == first_run_id
+        assert body["runs"][0]["status"] == "completed"
+        assert body["runs"][1]["parent_run_id"] == first_run_id
+        assert body["turns"][-1]["role"] == "user"
+        assert body["turns"][-1]["content"] == "Please tighten spacing."
+
+        events = client.get(f"/tasks/{task['id']}/events")
+        assert events.status_code == 200
+        assert any(
+            item["payload_json"] and item["payload_json"].get("role") == "user" and item["message"] == "Please tighten spacing."
+            for item in events.json()
+        )
+
+
+def test_followup_turn_rejects_while_run_is_active():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Followup active guard", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Active", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        response = client.post(
+            f"/sessions/{task['id']}/turns",
+            json={"content": "run another pass"},
+        )
+        assert response.status_code == 409
+
+
 def test_stop_task_success_and_invalid_transition():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)

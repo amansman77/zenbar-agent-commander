@@ -7,13 +7,15 @@ from uuid import uuid4
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from .models import Project, Task, TaskApproval, TaskEvent
+from .models import Project, Task, TaskApproval, TaskEvent, TaskRun, TaskTurn
 from .schemas import (
     CreateProjectRequest,
     CreateTaskRequest,
     PendingInteractionType,
     ProjectSummary,
     RuntimeEvent,
+    SessionRun,
+    SessionTurn,
     TaskApprovalResponse,
     TaskDetail,
     TaskDiff,
@@ -81,6 +83,10 @@ def create_task(db: Session, payload: CreateTaskRequest) -> Task:
     )
     db.add(task)
     db.commit()
+    created = get_task(db, task.id)
+    if created is None:
+        raise RuntimeError("Task creation failed")
+    create_turn(db, created, role="user", content=payload.prompt)
     return get_task(db, task.id)
 
 
@@ -92,9 +98,73 @@ def get_task(db: Session, task_id: str) -> Task | None:
     stmt = (
         select(Task)
         .where(Task.id == task_id)
-        .options(selectinload(Task.project), selectinload(Task.approvals), selectinload(Task.events))
+        .options(
+            selectinload(Task.project),
+            selectinload(Task.approvals),
+            selectinload(Task.events),
+            selectinload(Task.turns),
+            selectinload(Task.runs),
+        )
     )
     return db.scalars(stmt).first()
+
+
+def session_id_for_task(task: Task) -> str:
+    return task.id
+
+
+def get_task_by_session_id(db: Session, session_id: str) -> Task | None:
+    return get_task(db, session_id)
+
+
+def create_turn(db: Session, task: Task, role: str, content: str) -> TaskTurn:
+    turn = TaskTurn(
+        session_id=session_id_for_task(task),
+        task_id=task.id,
+        role=role,
+        content=content,
+    )
+    db.add(turn)
+    db.commit()
+    db.refresh(turn)
+    return turn
+
+
+def list_turns(db: Session, task_id: str) -> list[TaskTurn]:
+    stmt = select(TaskTurn).where(TaskTurn.task_id == task_id).order_by(TaskTurn.created_at.asc())
+    return list(db.scalars(stmt))
+
+
+def get_latest_run(db: Session, task_id: str) -> TaskRun | None:
+    stmt = select(TaskRun).where(TaskRun.task_id == task_id).order_by(TaskRun.created_at.desc())
+    return db.scalars(stmt).first()
+
+
+def create_run(db: Session, task: Task, input_text: str, parent_run_id: str | None = None) -> TaskRun:
+    run = TaskRun(
+        session_id=session_id_for_task(task),
+        task_id=task.id,
+        parent_run_id=parent_run_id,
+        status="running",
+        input=input_text,
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def update_latest_run_status(db: Session, task: Task, task_status: str) -> None:
+    latest = get_latest_run(db, task.id)
+    if latest is None:
+        return
+    if task_status == "completed":
+        latest.status = "completed"
+    elif task_status in {"failed", "stopped"}:
+        latest.status = "failed"
+    else:
+        latest.status = "running"
+    db.add(latest)
 
 
 def set_task_status(
@@ -176,6 +246,7 @@ def append_event(db: Session, task: Task, event: RuntimeEvent) -> TaskEvent:
         files = event.payload.get("files_changed", [])
         task.latest_diff_files_json = json.dumps(files)
         task.latest_diff_raw = event.payload.get("raw_diff")
+    update_latest_run_status(db, task, task.status)
     db.add(task)
     db.commit()
     db.refresh(record)
@@ -300,6 +371,9 @@ def serialize_task_detail(task: Task) -> TaskDetail:
     return TaskDetail(
         **serialize_task_summary(task).model_dump(),
         prompt=task.prompt,
+        session_id=session_id_for_task(task),
+        turns=[serialize_turn(item) for item in sorted(task.turns, key=lambda turn: turn.created_at)],
+        runs=[serialize_run(item) for item in sorted(task.runs, key=lambda run: run.created_at)],
         project=serialize_project(task.project),
         approvals=[
             TaskApprovalResponse(action=item.action, actor=item.actor, created_at=item.created_at)
@@ -310,6 +384,27 @@ def serialize_task_detail(task: Task) -> TaskDetail:
         pending_request_id=task.pending_request_id,
         pending_request_payload_json=pending_payload,
         pending_questions=_serialize_pending_questions(pending_payload),
+    )
+
+
+def serialize_turn(turn: TaskTurn) -> SessionTurn:
+    return SessionTurn(
+        id=turn.id,
+        session_id=turn.session_id,
+        role=turn.role,  # type: ignore[arg-type]
+        content=turn.content,
+        created_at=turn.created_at,
+    )
+
+
+def serialize_run(run: TaskRun) -> SessionRun:
+    return SessionRun(
+        id=run.id,
+        session_id=run.session_id,
+        parent_run_id=run.parent_run_id,
+        status=run.status,  # type: ignore[arg-type]
+        input=run.input,
+        created_at=run.created_at,
     )
 
 
