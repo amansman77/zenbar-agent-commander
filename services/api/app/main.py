@@ -13,18 +13,25 @@ from .app_server_manager import ManagedAppServer
 from .model_catalog import RuntimeModelCatalog
 from .repository import (
     add_approval,
+    add_conversation_message,
     can_approve,
     can_retry,
     can_stop,
+    create_conversation,
     create_project,
     create_task,
+    get_conversation,
     get_project_any,
     get_project,
     get_task,
     get_task_by_session_id,
+    list_conversations,
     list_events,
     list_projects,
     list_tasks,
+    serialize_conversation_detail,
+    serialize_conversation_message,
+    serialize_conversation_summary,
     serialize_diff,
     serialize_event,
     serialize_project,
@@ -40,6 +47,11 @@ from .repo_discovery import (
 )
 from .runtime import create_runtime_adapter
 from .schemas import (
+    AddConversationMessageRequest,
+    ConversationDetail,
+    ConversationMessageItem,
+    ConversationSummary,
+    CreateConversationRequest,
     CreateProjectRequest,
     TaskCommitRequest,
     CreateTaskRequest,
@@ -200,6 +212,40 @@ def post_project_discovery(payload: DiscoverProjectRequest | None = None):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryDiscoveryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/conversations", response_model=list[ConversationSummary])
+def get_conversations(db: Session = Depends(get_db)):
+    convs = list_conversations(db)
+    return [serialize_conversation_summary(c) for c in convs]
+
+
+@app.post("/conversations", response_model=ConversationDetail, status_code=201)
+def post_conversation(payload: CreateConversationRequest = CreateConversationRequest(), db: Session = Depends(get_db)):
+    conv = create_conversation(db, payload)
+    conv_with_messages = get_conversation(db, conv.id)
+    return serialize_conversation_detail(conv_with_messages)
+
+
+@app.get("/conversations/{conversation_id}", response_model=ConversationDetail)
+def get_conversation_detail(conversation_id: str, db: Session = Depends(get_db)):
+    conv = get_conversation(db, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return serialize_conversation_detail(conv)
+
+
+@app.post("/conversations/{conversation_id}/messages", response_model=ConversationMessageItem, status_code=201)
+def post_conversation_message(
+    conversation_id: str,
+    payload: AddConversationMessageRequest,
+    db: Session = Depends(get_db),
+):
+    conv = get_conversation(db, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    msg = add_conversation_message(db, conversation_id, payload)
+    return serialize_conversation_message(msg)
 
 
 @app.get("/fs/browse", response_model=FsBrowseResponse)

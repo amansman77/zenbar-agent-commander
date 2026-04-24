@@ -1,6 +1,11 @@
 import type {
+  AddConversationMessageRequest,
   ApproveTaskRequest,
   CommitTaskRequest,
+  ConversationDetail,
+  ConversationMessageItem,
+  ConversationSummary,
+  CreateConversationRequest,
   CreateProjectRequest,
   DiscoverProjectRequest,
   DiscoverProjectResponse,
@@ -51,6 +56,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  listConversations: () => request<ConversationSummary[]>("/conversations"),
+  createConversation: (payload: CreateConversationRequest = {}) =>
+    request<ConversationDetail>("/conversations", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getConversation: (id: string) => request<ConversationDetail>(`/conversations/${id}`),
+  addConversationMessage: (id: string, payload: AddConversationMessageRequest) =>
+    request<ConversationMessageItem>(`/conversations/${id}/messages`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   browseFs: (path?: string) => {
     const params = path ? `?path=${encodeURIComponent(path)}` : "";
     return request<FsBrowseResponse>(`/fs/browse${params}`);

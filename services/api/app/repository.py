@@ -7,8 +7,13 @@ from uuid import uuid4
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from .models import Project, Task, TaskApproval, TaskEvent, TaskRun, TaskTurn
+from .models import Conversation, ConversationMessage, Project, Task, TaskApproval, TaskEvent, TaskRun, TaskTurn
 from .schemas import (
+    AddConversationMessageRequest,
+    ConversationDetail,
+    ConversationMessageItem,
+    ConversationSummary,
+    CreateConversationRequest,
     CreateProjectRequest,
     CreateTaskRequest,
     PendingInteractionType,
@@ -363,6 +368,81 @@ def serialize_diff(task: Task) -> TaskDiff:
         files_changed=json.loads(task.latest_diff_files_json or "[]"),
         summary=task.latest_diff_summary or "",
         raw_diff=task.latest_diff_raw,
+    )
+
+
+def create_conversation(db: Session, payload: CreateConversationRequest) -> Conversation:
+    conv = Conversation(title=payload.title)
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+    return conv
+
+
+def list_conversations(db: Session) -> list[Conversation]:
+    stmt = select(Conversation).order_by(Conversation.updated_at.desc())
+    return list(db.scalars(stmt))
+
+
+def get_conversation(db: Session, conversation_id: str) -> Conversation | None:
+    stmt = (
+        select(Conversation)
+        .where(Conversation.id == conversation_id)
+        .options(selectinload(Conversation.messages))
+    )
+    return db.scalars(stmt).first()
+
+
+def add_conversation_message(
+    db: Session, conversation_id: str, payload: AddConversationMessageRequest
+) -> ConversationMessage:
+    msg = ConversationMessage(
+        conversation_id=conversation_id,
+        role=payload.role,
+        content=payload.content,
+    )
+    db.add(msg)
+    conv = db.get(Conversation, conversation_id)
+    if conv:
+        if not conv.messages and conv.title == "New Conversation":
+            conv.title = payload.content[:50].strip() or "New Conversation"
+        db.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(updated_at=func.current_timestamp(), title=conv.title)
+        )
+    db.commit()
+    db.refresh(msg)
+    return msg
+
+
+def serialize_conversation_message(msg: ConversationMessage) -> ConversationMessageItem:
+    return ConversationMessageItem(
+        id=msg.id,
+        conversation_id=msg.conversation_id,
+        role=msg.role,
+        content=msg.content,
+        created_at=msg.created_at,
+    )
+
+
+def serialize_conversation_summary(conv: Conversation) -> ConversationSummary:
+    last_message = conv.messages[-1].content if conv.messages else None
+    return ConversationSummary(
+        id=conv.id,
+        title=conv.title,
+        last_message=last_message,
+        updated_at=conv.updated_at,
+    )
+
+
+def serialize_conversation_detail(conv: Conversation) -> ConversationDetail:
+    return ConversationDetail(
+        id=conv.id,
+        title=conv.title,
+        messages=[serialize_conversation_message(msg) for msg in conv.messages],
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
     )
 
 

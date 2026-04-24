@@ -1,6 +1,9 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  AddConversationMessageRequest,
+  ConversationDetail,
+  ConversationSummary,
   CreateProjectRequest,
   CreateTaskRequest,
   DiscoverProjectResponse,
@@ -37,7 +40,7 @@ function defaultAnswers(questions: TaskQuestion[]): Record<string, string> {
 
 type PlanStep = { step: string; status: string };
 type PlanSnapshot = { explanation: string | null; steps: PlanStep[]; text: string | null };
-type MobileScreen = "projects" | "tasks" | "detail";
+type MobileScreen = "conversations" | "conversation-detail" | "projects" | "tasks" | "detail";
 type RunStatus = "running" | "waiting_approval" | "completed" | "failed";
 type LogType = "conversation" | "execution" | "system";
 type SystemImportance = "high" | "low";
@@ -800,6 +803,174 @@ function SessionComposer({
   );
 }
 
+function ConversationListScreen({
+  conversations,
+  isLoading,
+  onSelect,
+  onCreate,
+  onShowProjects,
+}: {
+  conversations: ConversationSummary[];
+  isLoading: boolean;
+  onSelect: (id: string) => void;
+  onCreate: () => void;
+  onShowProjects: () => void;
+}) {
+  return (
+    <section className="panel mobile-screen">
+      <div className="panel-header">
+        <div className="row-header">
+          <h2>Conversations</h2>
+          <div className="inline-actions">
+            <button type="button" className="secondary" onClick={onShowProjects} style={{ fontSize: "0.8rem" }}>
+              Tasks
+            </button>
+            <button type="button" onClick={onCreate}>+</button>
+          </div>
+        </div>
+      </div>
+      <div className="panel-scroll">
+        {isLoading && <p className="empty-state">Loading...</p>}
+        {!isLoading && conversations.length === 0 && (
+          <p className="empty-state">No conversations yet. Tap + to start.</p>
+        )}
+        {conversations.map((conv) => (
+          <button key={conv.id} className="list-item" onClick={() => onSelect(conv.id)}>
+            <strong className="truncate">{conv.title}</strong>
+            {conv.last_message && (
+              <span className="item-secondary truncate">{conv.last_message}</span>
+            )}
+            <span className="item-secondary" style={{ fontSize: "0.75rem" }}>
+              {new Date(conv.updated_at).toLocaleString()}
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ConversationDetailScreen({
+  conversationId,
+  onBack,
+}: {
+  conversationId: string;
+  onBack: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [input, setInput] = useState("");
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const { data: conversation, isLoading } = useQuery<ConversationDetail>({
+    queryKey: ["conversation", conversationId],
+    queryFn: () => api.getConversation(conversationId),
+    refetchInterval: 3000,
+  });
+
+  const addMessageMutation = useMutation({
+    mutationFn: (content: string) =>
+      api.addConversationMessage(conversationId, { content }),
+    onSuccess: () => {
+      setInput("");
+      queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    },
+  });
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [conversation?.messages.length]);
+
+  const handleSend = () => {
+    const trimmed = input.trim();
+    if (trimmed && !addMessageMutation.isPending) {
+      addMessageMutation.mutate(trimmed);
+    }
+  };
+
+  return (
+    <section
+      className="panel mobile-screen"
+      style={{ display: "flex", flexDirection: "column", padding: 0, overflow: "hidden" }}
+    >
+      <div className="mobile-detail-control">
+        <div className="mobile-detail-control-top">
+          <button type="button" className="secondary mobile-back" onClick={onBack}>Back</button>
+          <strong className="truncate">{conversation?.title ?? "Conversation"}</strong>
+          <div style={{ width: 44 }} />
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflowY: "auto", padding: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
+        {isLoading && <p className="empty-state">Loading...</p>}
+        {!isLoading && conversation?.messages.length === 0 && (
+          <p className="empty-state" style={{ textAlign: "center", marginTop: "2rem" }}>
+            Start typing below to begin the conversation.
+          </p>
+        )}
+        {conversation?.messages.map((msg) => (
+          <div
+            key={msg.id}
+            style={{
+              display: "flex",
+              justifyContent: msg.role === "user" ? "flex-end" : "flex-start",
+            }}
+          >
+            <div
+              style={{
+                maxWidth: "85%",
+                padding: "0.55rem 0.75rem",
+                borderRadius: msg.role === "user" ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
+                background: msg.role === "user" ? "#0f3158" : "#f0f4fa",
+                color: msg.role === "user" ? "#fff" : "#16253a",
+                fontSize: "0.93rem",
+                lineHeight: "1.45",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {msg.content}
+            </div>
+          </div>
+        ))}
+        <div ref={messagesEndRef} />
+      </div>
+
+      <div
+        style={{
+          borderTop: "1px solid var(--line)",
+          padding: "8px 12px",
+          paddingBottom: "calc(8px + env(safe-area-inset-bottom))",
+          display: "flex",
+          gap: "8px",
+          background: "rgba(255,255,255,0.98)",
+        }}
+      >
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="메시지를 입력하세요..."
+          style={{ flex: 1, minHeight: "44px", maxHeight: "120px", resize: "none" }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleSend();
+            }
+          }}
+          autoFocus
+        />
+        <button
+          onClick={handleSend}
+          disabled={!input.trim() || addMessageMutation.isPending}
+          style={{ alignSelf: "flex-end", minHeight: "44px", padding: "0 16px" }}
+        >
+          {addMessageMutation.isPending ? "..." : "Send"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function FolderBrowser({
   onSelect,
   onClose,
@@ -1521,7 +1692,8 @@ export function App() {
   const [responseDraft, setResponseDraft] = useState<Record<string, string>>({});
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
-  const [mobileScreen, setMobileScreen] = useState<MobileScreen>("projects");
+  const [mobileScreen, setMobileScreen] = useState<MobileScreen>("conversations");
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [mobileDetailTab, setMobileDetailTab] = useState<"log" | "diff">("log");
   const [mobilePromptExpanded, setMobilePromptExpanded] = useState(false);
   const [expandedDiffFiles, setExpandedDiffFiles] = useState<Record<string, boolean>>({});
@@ -1577,6 +1749,21 @@ export function App() {
   });
 
   useTaskStream(selectedTaskId);
+
+  const conversationsQuery = useQuery({
+    queryKey: ["conversations"],
+    queryFn: api.listConversations,
+    refetchInterval: 5000,
+  });
+
+  const createConversationMutation = useMutation({
+    mutationFn: () => api.createConversation(),
+    onSuccess: (conv) => {
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      setSelectedConversationId(conv.id);
+      setMobileScreen("conversation-detail");
+    },
+  });
 
   const createProjectMutation = useMutation({
     mutationFn: api.createProject,
@@ -2357,13 +2544,37 @@ export function App() {
 
       {isMobile ? (
         <main className="mobile-shell">
+          {mobileScreen === "conversations" ? (
+            <ConversationListScreen
+              conversations={conversationsQuery.data ?? []}
+              isLoading={conversationsQuery.isLoading}
+              onSelect={(id) => {
+                setSelectedConversationId(id);
+                setMobileScreen("conversation-detail");
+              }}
+              onCreate={() => createConversationMutation.mutate()}
+              onShowProjects={() => setMobileScreen("projects")}
+            />
+          ) : null}
+
+          {mobileScreen === "conversation-detail" && selectedConversationId ? (
+            <ConversationDetailScreen
+              conversationId={selectedConversationId}
+              onBack={() => setMobileScreen("conversations")}
+            />
+          ) : null}
+
           {mobileScreen === "projects" ? (
             <section className="panel mobile-screen">
               <div className="panel-header">
                 <div className="row-header">
                   <div>
-                    <h2>Projects</h2>
-                    <p>Tap a project to open tasks</p>
+                    <div className="mobile-title-row">
+                      <button type="button" className="secondary mobile-back" onClick={() => setMobileScreen("conversations")}>
+                        Back
+                      </button>
+                      <h2>Projects</h2>
+                    </div>
                   </div>
                   <div className="inline-actions">
                     <button type="button" onClick={() => setProjectModalOpen(true)}>
@@ -2375,7 +2586,7 @@ export function App() {
                       onClick={handleDeleteProject}
                       disabled={!selectedProject || deleteProjectMutation.isPending}
                     >
-                      {deleteProjectMutation.isPending ? "Deleting..." : "Delete Project"}
+                      {deleteProjectMutation.isPending ? "Deleting..." : "Delete"}
                     </button>
                   </div>
                 </div>
@@ -2398,7 +2609,7 @@ export function App() {
                     </button>
                   ))
                 ) : (
-                  <p className="empty-state">No projects yet. Use + to create one.</p>
+                  <p className="empty-state">No projects yet.</p>
                 )}
               </div>
             </section>

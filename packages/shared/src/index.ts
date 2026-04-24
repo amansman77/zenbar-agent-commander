@@ -184,6 +184,38 @@ export interface PushTaskRequest {
   set_upstream?: boolean;
 }
 
+export interface ConversationMessageItem {
+  id: string;
+  conversation_id: string;
+  role: string;
+  content: string;
+  created_at: string;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  last_message: string | null;
+  updated_at: string;
+}
+
+export interface ConversationDetail {
+  id: string;
+  title: string;
+  messages: ConversationMessageItem[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateConversationRequest {
+  title?: string;
+}
+
+export interface AddConversationMessageRequest {
+  content: string;
+  role?: string;
+}
+
 export interface FsBrowseEntry {
   name: string;
   path: string;

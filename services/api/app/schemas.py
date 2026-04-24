@@ -227,6 +227,38 @@ class TaskGitActionResponse(BaseModel):
     output: str | None = None
 
 
+class ConversationMessageItem(BaseModel):
+    id: str
+    conversation_id: str
+    role: str
+    content: str
+    created_at: datetime
+
+
+class ConversationSummary(BaseModel):
+    id: str
+    title: str
+    last_message: str | None
+    updated_at: datetime
+
+
+class ConversationDetail(BaseModel):
+    id: str
+    title: str
+    messages: list[ConversationMessageItem]
+    created_at: datetime
+    updated_at: datetime
+
+
+class CreateConversationRequest(BaseModel):
+    title: str = "New Conversation"
+
+
+class AddConversationMessageRequest(BaseModel):
+    content: str
+    role: str = "user"
+
+
 class FsBrowseEntry(BaseModel):
     name: str
     path: str
