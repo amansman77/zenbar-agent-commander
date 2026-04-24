@@ -45,6 +45,8 @@ from .schemas import (
     CreateTaskRequest,
     DiscoverProjectRequest,
     DiscoverProjectResponse,
+    FsBrowseEntry,
+    FsBrowseResponse,
     ProjectSummary,
     RespondTaskRequest,
     RuntimeModelOption,
@@ -198,6 +200,28 @@ def post_project_discovery(payload: DiscoverProjectRequest | None = None):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryDiscoveryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/fs/browse", response_model=FsBrowseResponse)
+def get_fs_browse(path: str | None = None):
+    from pathlib import Path
+
+    browse_path = Path(path).expanduser().resolve() if path else Path.home()
+    if not browse_path.is_dir():
+        raise HTTPException(status_code=400, detail="Path is not a directory")
+    try:
+        entries = sorted(
+            [
+                FsBrowseEntry(name=entry.name, path=str(entry))
+                for entry in browse_path.iterdir()
+                if entry.is_dir() and not entry.name.startswith(".")
+            ],
+            key=lambda e: e.name.lower(),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="Permission denied") from exc
+    parent = str(browse_path.parent) if browse_path != browse_path.parent else None
+    return FsBrowseResponse(path=str(browse_path), parent=parent, entries=entries)
 
 
 @app.get("/projects/{project_id}/tasks", response_model=list[TaskSummary])

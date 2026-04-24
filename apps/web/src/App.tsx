@@ -5,6 +5,7 @@ import type {
   CreateTaskRequest,
   DiscoverProjectResponse,
   ExecutionMode,
+  FsBrowseResponse,
   ReasoningEffort,
   RuntimeModelOption,
   ProjectSummary,
@@ -799,6 +800,83 @@ function SessionComposer({
   );
 }
 
+function FolderBrowser({
+  onSelect,
+  onClose,
+}: {
+  onSelect: (path: string) => void;
+  onClose: () => void;
+}) {
+  const isMobile = useIsMobileBreakpoint();
+  const [currentPath, setCurrentPath] = useState<string | undefined>(undefined);
+
+  const { data, isLoading, error } = useQuery<FsBrowseResponse>({
+    queryKey: ["fs-browse", currentPath],
+    queryFn: () => api.browseFs(currentPath),
+  });
+
+  const cardClass = isMobile ? "modal-card modal-card-mobile-full" : "modal-card";
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className={cardClass} style={isMobile ? {} : { maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header" style={isMobile ? { padding: "8px 16px" } : { marginBottom: "0.75rem" }}>
+          <h2 style={{ fontSize: "1rem" }}>폴더 선택</h2>
+          <button className="modal-close-button secondary" onClick={onClose}>✕</button>
+        </div>
+
+        <div style={isMobile ? { padding: "12px 16px" } : {}}>
+          {data && (
+            <div style={{ marginBottom: "0.5rem", fontSize: "0.82rem", color: "var(--text-soft)", wordBreak: "break-all" }}>
+              {data.path}
+            </div>
+          )}
+
+          {isLoading && <p style={{ color: "var(--text-soft)", fontSize: "0.88rem" }}>로딩 중...</p>}
+          {error && <p style={{ color: "#b12a34", fontSize: "0.88rem" }}>오류: {(error as Error).message}</p>}
+
+          {data && (
+            <div style={{ display: "grid", gap: "0.4rem", maxHeight: isMobile ? "calc(100vh - 240px)" : "340px", overflowY: "auto" }}>
+              {data.parent !== null && (
+                <button
+                  className="list-item"
+                  style={{ textAlign: "left" }}
+                  onClick={() => setCurrentPath(data.parent!)}
+                >
+                  ↑ 상위 폴더
+                </button>
+              )}
+              {data.entries.length === 0 && (
+                <p className="empty-state">하위 폴더가 없습니다.</p>
+              )}
+              {data.entries.map((entry) => (
+                <button
+                  key={entry.path}
+                  className="list-item"
+                  style={{ textAlign: "left" }}
+                  onClick={() => setCurrentPath(entry.path)}
+                >
+                  📁 {entry.name}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem" }}>
+            <button
+              disabled={!data}
+              onClick={() => data && onSelect(data.path)}
+            >
+              이 폴더 선택
+            </button>
+            <button className="secondary" onClick={onClose}>취소</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProjectForm({
   onCreate,
   onClose
@@ -811,11 +889,7 @@ function ProjectForm({
   const [defaultBranch, setDefaultBranch] = useState("main");
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [lastDiscovered, setLastDiscovered] = useState<DiscoverProjectResponse | null>(null);
-  const [fieldOrigin, setFieldOrigin] = useState({
-    name: "manual",
-    repoPath: "manual",
-    defaultBranch: "manual"
-  });
+  const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
 
   const discoverProjectMutation = useMutation({
     mutationFn: api.discoverProject,
@@ -825,11 +899,6 @@ function ProjectForm({
       setName(project.name);
       setRepoPath(project.repo_path);
       setDefaultBranch(project.default_branch);
-      setFieldOrigin({
-        name: "discovered",
-        repoPath: "discovered",
-        defaultBranch: "discovered"
-      });
     },
     onError: (error: Error) => {
       setDiscoveryError(error.message);
@@ -839,64 +908,65 @@ function ProjectForm({
   const canSubmit = Boolean(name.trim() && repoPath.trim() && defaultBranch.trim());
 
   return (
-    <form
-      className="panel form-panel"
-      onSubmit={(event) => {
-        event.preventDefault();
-        onCreate({ name, repo_path: repoPath, default_branch: defaultBranch });
-      }}
-    >
-      <div className="panel-header">
-        <h2>Web Commander</h2>
-        <p>Create a project record for the Orchestration API.</p>
-      </div>
-      <button
-        type="button"
-        onClick={() => discoverProjectMutation.mutate({})}
-        disabled={discoverProjectMutation.isPending}
+    <>
+      {folderBrowserOpen && (
+        <FolderBrowser
+          onSelect={(path) => {
+            setFolderBrowserOpen(false);
+            discoverProjectMutation.mutate({ path });
+          }}
+          onClose={() => setFolderBrowserOpen(false)}
+        />
+      )}
+      <form
+        className="panel form-panel"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onCreate({ name, repo_path: repoPath, default_branch: defaultBranch });
+        }}
       >
-        {discoverProjectMutation.isPending ? "Choosing folder..." : "Choose folder"}
-      </button>
-      {discoveryError ? <p role="alert">{discoveryError}</p> : null}
-      {lastDiscovered ? <p>Selected Task Workspace source: {lastDiscovered.repo_path}</p> : null}
-      <label>
-        Project name
-        <input
-          value={name}
-          onChange={(event) => {
-            setName(event.target.value);
-            setFieldOrigin((previous) => ({ ...previous, name: "edited" }));
-          }}
-        />
-      </label>
-      <label>
-        Repository path
-        <input
-          value={repoPath}
-          onChange={(event) => {
-            setRepoPath(event.target.value);
-            setFieldOrigin((previous) => ({ ...previous, repoPath: "edited" }));
-          }}
-        />
-      </label>
-      <label>
-        Default branch
-        <input
-          value={defaultBranch}
-          onChange={(event) => {
-            setDefaultBranch(event.target.value);
-            setFieldOrigin((previous) => ({ ...previous, defaultBranch: "edited" }));
-          }}
-        />
-      </label>
-      <button type="submit" disabled={!canSubmit}>
-        Create project
-      </button>
-      <button type="button" className="secondary" onClick={onClose}>
-        Close
-      </button>
-      <p>Mode: {lastDiscovered ? "discovered" : "manual"} / name {fieldOrigin.name} / path {fieldOrigin.repoPath}</p>
-    </form>
+        <div className="panel-header">
+          <h2>Web Commander</h2>
+          <p>Create a project record for the Orchestration API.</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setFolderBrowserOpen(true)}
+          disabled={discoverProjectMutation.isPending}
+        >
+          {discoverProjectMutation.isPending ? "Checking folder..." : "Browse folder"}
+        </button>
+        {discoveryError ? <p role="alert">{discoveryError}</p> : null}
+        {lastDiscovered ? <p>Selected: {lastDiscovered.repo_path}</p> : null}
+        <label>
+          Project name
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </label>
+        <label>
+          Repository path
+          <input
+            value={repoPath}
+            onChange={(event) => setRepoPath(event.target.value)}
+          />
+        </label>
+        <label>
+          Default branch
+          <input
+            value={defaultBranch}
+            onChange={(event) => setDefaultBranch(event.target.value)}
+          />
+        </label>
+        <button type="submit" disabled={!canSubmit}>
+          Create project
+        </button>
+        <button type="button" className="secondary" onClick={onClose}>
+          Close
+        </button>
+      </form>
+    </>
   );
 }
 

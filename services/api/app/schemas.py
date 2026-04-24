@@ -225,3 +225,14 @@ class TaskGitActionResponse(BaseModel):
     remote: str | None = None
     message: str
     output: str | None = None
+
+
+class FsBrowseEntry(BaseModel):
+    name: str
+    path: str
+
+
+class FsBrowseResponse(BaseModel):
+    path: str
+    parent: str | None
+    entries: list[FsBrowseEntry]

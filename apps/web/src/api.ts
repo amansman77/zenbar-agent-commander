@@ -4,6 +4,7 @@ import type {
   CreateProjectRequest,
   DiscoverProjectRequest,
   DiscoverProjectResponse,
+  FsBrowseResponse,
   FollowupTurnRequest,
   ListRuntimeModelsResponse,
   CreateTaskRequest,
@@ -50,6 +51,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  browseFs: (path?: string) => {
+    const params = path ? `?path=${encodeURIComponent(path)}` : "";
+    return request<FsBrowseResponse>(`/fs/browse${params}`);
+  },
   listProjects: () => request<ProjectSummary[]>("/projects"),
   discoverProject: (payload: DiscoverProjectRequest = {}) =>
     request<DiscoverProjectResponse>("/projects/discover", {

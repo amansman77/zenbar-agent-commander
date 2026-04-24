@@ -184,6 +184,17 @@ export interface PushTaskRequest {
   set_upstream?: boolean;
 }
 
+export interface FsBrowseEntry {
+  name: string;
+  path: string;
+}
+
+export interface FsBrowseResponse {
+  path: string;
+  parent: string | null;
+  entries: FsBrowseEntry[];
+}
+
 export interface TaskGitActionResult {
   ok: boolean;
   branch: string | null;
