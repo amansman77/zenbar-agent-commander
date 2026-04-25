@@ -932,6 +932,17 @@ function ConversationDetailScreen({
   });
 
   const isTaskActive = conversation?.task_status != null && ACTIVE_TASK_STATUSES.includes(conversation.task_status);
+  const isWaitingApproval = conversation?.task_status === "waiting_result_approval";
+
+  const approveTaskMutation = useMutation({
+    mutationFn: () => api.approveTask(conversation!.task_id!, { actor: "user" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
+    },
+    onError: (err: Error) => {
+      alert(`승인 실패: ${err.message}`);
+    },
+  });
 
   const addMessageMutation = useMutation({
     mutationFn: (content: string) =>
@@ -1027,10 +1038,22 @@ function ConversationDetailScreen({
                 background: "#f0f4fa",
                 color: "#16253a",
                 fontSize: "0.88rem",
-                opacity: 0.7,
               }}
             >
-              Codex is thinking...
+              {isWaitingApproval ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <span>Codex가 변경 사항 승인을 요청하고 있습니다.</span>
+                  <button
+                    onClick={() => approveTaskMutation.mutate()}
+                    disabled={approveTaskMutation.isPending}
+                    style={{ alignSelf: "flex-start", fontSize: "0.85rem" }}
+                  >
+                    {approveTaskMutation.isPending ? "승인 중..." : "승인"}
+                  </button>
+                </div>
+              ) : (
+                <span style={{ opacity: 0.7 }}>Codex is thinking...</span>
+              )}
             </div>
           </div>
         )}
