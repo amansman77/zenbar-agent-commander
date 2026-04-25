@@ -196,12 +196,20 @@ export interface ConversationSummary {
   id: string;
   title: string;
   last_message: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  task_id: string | null;
+  task_status: TaskStatus | null;
   updated_at: string;
 }
 
 export interface ConversationDetail {
   id: string;
   title: string;
+  project_id: string | null;
+  project_name: string | null;
+  task_id: string | null;
+  task_status: TaskStatus | null;
   messages: ConversationMessageItem[];
   created_at: string;
   updated_at: string;
@@ -209,6 +217,7 @@ export interface ConversationDetail {
 
 export interface CreateConversationRequest {
   title?: string;
+  project_id?: string;
 }
 
 export interface AddConversationMessageRequest {

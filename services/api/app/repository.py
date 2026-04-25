@@ -251,6 +251,25 @@ def append_event(db: Session, task: Task, event: RuntimeEvent) -> TaskEvent:
         files = event.payload.get("files_changed", [])
         task.latest_diff_files_json = json.dumps(files)
         task.latest_diff_raw = event.payload.get("raw_diff")
+    if (
+        record.type == "agent_status"
+        and event.payload
+        and event.payload.get("source") == "agent_message"
+    ):
+        conv = db.scalars(select(Conversation).where(Conversation.task_id == task.id)).first()
+        if conv:
+            full_content = event.payload.get("full_content") or event.message
+            assistant_msg = ConversationMessage(
+                conversation_id=conv.id,
+                role="assistant",
+                content=full_content,
+            )
+            db.add(assistant_msg)
+            db.execute(
+                update(Conversation)
+                .where(Conversation.id == conv.id)
+                .values(updated_at=func.current_timestamp())
+            )
     update_latest_run_status(db, task, task.status)
     db.add(task)
     db.commit()
@@ -372,7 +391,7 @@ def serialize_diff(task: Task) -> TaskDiff:
 
 
 def create_conversation(db: Session, payload: CreateConversationRequest) -> Conversation:
-    conv = Conversation(title=payload.title)
+    conv = Conversation(title=payload.title, project_id=payload.project_id)
     db.add(conv)
     db.commit()
     db.refresh(conv)
@@ -380,7 +399,15 @@ def create_conversation(db: Session, payload: CreateConversationRequest) -> Conv
 
 
 def list_conversations(db: Session) -> list[Conversation]:
-    stmt = select(Conversation).order_by(Conversation.updated_at.desc())
+    stmt = (
+        select(Conversation)
+        .options(
+            selectinload(Conversation.project),
+            selectinload(Conversation.messages),
+            selectinload(Conversation.task),
+        )
+        .order_by(Conversation.updated_at.desc())
+    )
     return list(db.scalars(stmt))
 
 
@@ -388,9 +415,25 @@ def get_conversation(db: Session, conversation_id: str) -> Conversation | None:
     stmt = (
         select(Conversation)
         .where(Conversation.id == conversation_id)
-        .options(selectinload(Conversation.messages))
+        .options(
+            selectinload(Conversation.messages),
+            selectinload(Conversation.project),
+            selectinload(Conversation.task),
+        )
     )
     return db.scalars(stmt).first()
+
+
+def delete_conversation(db: Session, conversation_id: str) -> None:
+    conv = db.get(Conversation, conversation_id)
+    if conv:
+        db.delete(conv)
+        db.commit()
+
+
+def set_conversation_task_id(db: Session, conversation_id: str, task_id: str) -> None:
+    db.execute(update(Conversation).where(Conversation.id == conversation_id).values(task_id=task_id))
+    db.commit()
 
 
 def add_conversation_message(
@@ -428,18 +471,28 @@ def serialize_conversation_message(msg: ConversationMessage) -> ConversationMess
 
 def serialize_conversation_summary(conv: Conversation) -> ConversationSummary:
     last_message = conv.messages[-1].content if conv.messages else None
+    task_status = conv.task.status if conv.task else None
     return ConversationSummary(
         id=conv.id,
         title=conv.title,
         last_message=last_message,
+        project_id=conv.project_id,
+        project_name=conv.project.name if conv.project else None,
+        task_id=conv.task_id,
+        task_status=task_status,  # type: ignore[arg-type]
         updated_at=conv.updated_at,
     )
 
 
 def serialize_conversation_detail(conv: Conversation) -> ConversationDetail:
+    task_status = conv.task.status if conv.task else None
     return ConversationDetail(
         id=conv.id,
         title=conv.title,
+        project_id=conv.project_id,
+        project_name=conv.project.name if conv.project else None,
+        task_id=conv.task_id,
+        task_status=task_status,  # type: ignore[arg-type]
         messages=[serialize_conversation_message(msg) for msg in conv.messages],
         created_at=conv.created_at,
         updated_at=conv.updated_at,

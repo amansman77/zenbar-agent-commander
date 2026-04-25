@@ -99,6 +99,31 @@ def _extract_diff_payload(payload: dict[str, Any]) -> TaskDiff | None:
     return None
 
 
+def _extract_assistant_text_from_items(items: list[Any]) -> str:
+    parts: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type", "")
+        item_role = item.get("role", "")
+        is_assistant = (
+            item_type in {"message", "assistantMessage", "assistant_message", "agentMessage"}
+            or item_role == "assistant"
+        )
+        if not is_assistant:
+            continue
+        content = item.get("content") or []
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") in {"text", "output_text"}:
+                    text = block.get("text", "")
+                    if text:
+                        parts.append(text)
+    return "\n".join(parts).strip()
+
+
 def _prompt_with_workspace(request: RuntimeStartRequest) -> str:
     operation = (
         "Produce an implementation plan without modifying files or accepting final code changes."
@@ -143,6 +168,7 @@ class SessionState:
     latest_diff: TaskDiff = field(default_factory=TaskDiff)
     pending_requests: dict[int | str, PendingRequest] = field(default_factory=dict)
     start_request: RuntimeStartRequest | None = None
+    agent_message_buffer: str = ""
 
 
 class RuntimeAdapter(ABC):
@@ -560,6 +586,15 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             if turn.get("error"):
                 await state.queue.put(RuntimeEvent(type="failed", message=json.dumps(turn["error"])))
             else:
+                # Extract assistant text from turn items (for models that don't emit agent_message events)
+                items = turn.get("items") or []
+                assistant_text = _extract_assistant_text_from_items(items)
+                if assistant_text:
+                    await state.queue.put(RuntimeEvent(
+                        type="agent_status",
+                        message=assistant_text[:500],
+                        payload={"source": "agent_message", "full_content": assistant_text},
+                    ))
                 await state.queue.put(RuntimeEvent(type="completed", message="Turn completed"))
             return
 
@@ -616,6 +651,35 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                     payload={"request_id": request_id, "cleanup_pending_snapshot": True},
                 )
             )
+            return
+
+        if method == "item/agentMessage/delta":
+            delta = params.get("delta", "")
+            if delta:
+                state.agent_message_buffer += delta
+            return
+
+        if method == "item/completed":
+            item = params.get("item", {})
+            item_type = item.get("type", "")
+            item_role = item.get("role", "")
+            is_assistant = (
+                item_type in {"message", "assistantMessage", "assistant_message", "agentMessage"}
+                or item_role == "assistant"
+            )
+            if is_assistant:
+                text = _extract_assistant_text_from_items([item])
+                if not text:
+                    text = state.agent_message_buffer
+                state.agent_message_buffer = ""
+                if text:
+                    await state.queue.put(RuntimeEvent(
+                        type="agent_status",
+                        message=text[:500],
+                        payload={"source": "agent_message", "full_content": text},
+                    ))
+            else:
+                state.agent_message_buffer = ""
             return
 
         if method == "item/commandExecution/outputDelta":
@@ -677,7 +741,11 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         elif event_type == "agent_message":
             message = event.get("message")
             if message:
-                await state.queue.put(RuntimeEvent(type="agent_status", message=str(message)[:200]))
+                await state.queue.put(RuntimeEvent(
+                    type="agent_status",
+                    message=str(message)[:500],
+                    payload={"source": "agent_message", "full_content": str(message)},
+                ))
 
     def _approval_result_for(self, pending: PendingRequest) -> dict[str, Any]:
         if pending.method == "item/commandExecution/requestApproval":

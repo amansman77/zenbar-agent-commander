@@ -55,7 +55,10 @@ def prepare_workspace(repo_path: str, default_branch: str, workspace_type: str, 
     root.mkdir(parents=True, exist_ok=True)
     workspace_path = root / workspace_ref.replace("/", "__")
 
-    _run_git(["fetch", "--all", "--prune"], str(repo))
+    try:
+        _run_git(["fetch", "--all", "--prune"], str(repo))
+    except RuntimeError:
+        pass
 
     if workspace_type == "worktree":
         if workspace_path.exists():

@@ -3,7 +3,6 @@ import type {
   ApproveTaskRequest,
   CommitTaskRequest,
   ConversationDetail,
-  ConversationMessageItem,
   ConversationSummary,
   CreateConversationRequest,
   CreateProjectRequest,
@@ -63,8 +62,10 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   getConversation: (id: string) => request<ConversationDetail>(`/conversations/${id}`),
+  deleteConversation: (id: string) =>
+    request<void>(`/conversations/${id}`, { method: "DELETE" }),
   addConversationMessage: (id: string, payload: AddConversationMessageRequest) =>
-    request<ConversationMessageItem>(`/conversations/${id}/messages`, {
+    request<ConversationDetail>(`/conversations/${id}/messages`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),

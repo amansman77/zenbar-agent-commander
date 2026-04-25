@@ -18,6 +18,7 @@ from .repository import (
     can_retry,
     can_stop,
     create_conversation,
+    delete_conversation,
     create_project,
     create_task,
     get_conversation,
@@ -37,6 +38,7 @@ from .repository import (
     serialize_project,
     serialize_task_detail,
     serialize_task_summary,
+    set_conversation_task_id,
     soft_delete_project,
     set_task_status,
 )
@@ -235,8 +237,16 @@ def get_conversation_detail(conversation_id: str, db: Session = Depends(get_db))
     return serialize_conversation_detail(conv)
 
 
-@app.post("/conversations/{conversation_id}/messages", response_model=ConversationMessageItem, status_code=201)
-def post_conversation_message(
+@app.delete("/conversations/{conversation_id}", status_code=204)
+def delete_conversation_endpoint(conversation_id: str, db: Session = Depends(get_db)):
+    if get_conversation(db, conversation_id) is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    delete_conversation(db, conversation_id)
+    return Response(status_code=204)
+
+
+@app.post("/conversations/{conversation_id}/messages", response_model=ConversationDetail, status_code=201)
+async def post_conversation_message(
     conversation_id: str,
     payload: AddConversationMessageRequest,
     db: Session = Depends(get_db),
@@ -244,8 +254,78 @@ def post_conversation_message(
     conv = get_conversation(db, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    msg = add_conversation_message(db, conversation_id, payload)
-    return serialize_conversation_message(msg)
+
+    add_conversation_message(db, conversation_id, payload)
+
+    if payload.role == "user":
+        conv = get_conversation(db, conversation_id)
+        if conv.task_id is None:
+            project = get_project(db, conv.project_id) if conv.project_id else None
+            if project is None:
+                raise HTTPException(status_code=400, detail="Conversation has no associated project")
+            allowed_models, _ = await model_catalog.list_models()
+            default_model = allowed_models[0] if allowed_models else "default"
+            task_request = CreateTaskRequest(
+                project_id=project.id,
+                title=payload.content[:50].strip() or "Conversation",
+                prompt=payload.content,
+                model=default_model,
+                reasoning_effort="medium",
+                execution_mode="execute",
+                workspace_type="branch",
+            )
+            task = create_task(db, task_request)
+            task = get_task(db, task.id)
+            set_conversation_task_id(db, conversation_id, task.id)
+            db.expire_all()
+            try:
+                await orchestrator.start_task(db, task, project)
+            except Exception as exc:
+                set_task_status(db, task, "failed")
+                detail = _safe_runtime_error_detail("Failed to start Codex session", exc)
+                raise HTTPException(status_code=502, detail=detail) from exc
+        else:
+            task = get_task(db, conv.task_id)
+            if task is not None and task.status in {"completed", "stopped", "failed"}:
+                try:
+                    await orchestrator.followup_task(db, task, payload.content)
+                except Exception as exc:
+                    exc_msg = str(exc)
+                    session_expired = (
+                        "Unknown Codex App Server session" in exc_msg
+                        or "Task has no runtime session" in exc_msg
+                    )
+                    if not session_expired:
+                        detail = _safe_runtime_error_detail("Follow-up failed", exc)
+                        raise HTTPException(status_code=409, detail=detail) from exc
+                    # Session expired — start a fresh Codex session for this conversation
+                    project = get_project(db, conv.project_id) if conv.project_id else None
+                    if project is None:
+                        raise HTTPException(status_code=400, detail="Conversation has no associated project") from exc
+                    allowed_models, _ = await model_catalog.list_models()
+                    default_model = allowed_models[0] if allowed_models else "default"
+                    task_request = CreateTaskRequest(
+                        project_id=project.id,
+                        title=payload.content[:50].strip() or "Conversation",
+                        prompt=payload.content,
+                        model=default_model,
+                        reasoning_effort="medium",
+                        execution_mode="execute",
+                        workspace_type="branch",
+                    )
+                    new_task = create_task(db, task_request)
+                    new_task = get_task(db, new_task.id)
+                    set_conversation_task_id(db, conversation_id, new_task.id)
+                    db.expire_all()
+                    try:
+                        await orchestrator.start_task(db, new_task, project)
+                    except Exception as start_exc:
+                        set_task_status(db, new_task, "failed")
+                        detail = _safe_runtime_error_detail("Failed to restart Codex session", start_exc)
+                        raise HTTPException(status_code=502, detail=detail) from start_exc
+
+    conv = get_conversation(db, conversation_id)
+    return serialize_conversation_detail(conv)
 
 
 @app.get("/fs/browse", response_model=FsBrowseResponse)

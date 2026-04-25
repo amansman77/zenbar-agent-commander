@@ -805,27 +805,31 @@ function SessionComposer({
 
 function ConversationListScreen({
   conversations,
+  projects,
   isLoading,
   onSelect,
   onCreate,
-  onShowProjects,
+  onDelete,
+  onManageProjects,
 }: {
   conversations: ConversationSummary[];
+  projects: ProjectSummary[];
   isLoading: boolean;
   onSelect: (id: string) => void;
-  onCreate: () => void;
-  onShowProjects: () => void;
+  onCreate: (projectId: string) => void;
+  onDelete: (id: string) => void;
+  onManageProjects: () => void;
 }) {
+  const [projectSheetOpen, setProjectSheetOpen] = useState(false);
+
   return (
     <section className="panel mobile-screen">
       <div className="panel-header">
         <div className="row-header">
           <h2>Conversations</h2>
-          <div className="inline-actions">
-            <button type="button" className="secondary" onClick={onShowProjects} style={{ fontSize: "0.8rem" }}>
-              Tasks
-            </button>
-            <button type="button" onClick={onCreate}>+</button>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button type="button" className="secondary" onClick={onManageProjects} style={{ fontSize: "0.8rem", padding: "4px 10px" }}>Projects</button>
+            <button type="button" onClick={() => setProjectSheetOpen(true)}>+</button>
           </div>
         </div>
       </div>
@@ -835,20 +839,68 @@ function ConversationListScreen({
           <p className="empty-state">No conversations yet. Tap + to start.</p>
         )}
         {conversations.map((conv) => (
-          <button key={conv.id} className="list-item" onClick={() => onSelect(conv.id)}>
-            <strong className="truncate">{conv.title}</strong>
-            {conv.last_message && (
-              <span className="item-secondary truncate">{conv.last_message}</span>
-            )}
-            <span className="item-secondary" style={{ fontSize: "0.75rem" }}>
-              {new Date(conv.updated_at).toLocaleString()}
-            </span>
-          </button>
+          <div key={conv.id} style={{ display: "flex", alignItems: "stretch", gap: "4px" }}>
+            <button className="list-item" style={{ flex: 1, minWidth: 0 }} onClick={() => onSelect(conv.id)}>
+              <div className="list-row">
+                <strong className="truncate">{conv.title}</strong>
+                {conv.project_name && (
+                  <span className="status status-slate" style={{ fontSize: "0.7rem" }}>{conv.project_name}</span>
+                )}
+              </div>
+              {conv.last_message && (
+                <span className="item-secondary truncate">{conv.last_message}</span>
+              )}
+              <span className="item-secondary" style={{ fontSize: "0.75rem" }}>
+                {new Date(conv.updated_at).toLocaleString()}
+              </span>
+            </button>
+            <button
+              className="secondary"
+              style={{ padding: "0 10px", fontSize: "0.8rem", flexShrink: 0, alignSelf: "center" }}
+              onClick={() => onDelete(conv.id)}
+              title="대화 삭제"
+            >
+              ✕
+            </button>
+          </div>
         ))}
       </div>
+
+      {projectSheetOpen && (
+        <div className="bottom-sheet-backdrop" onClick={() => setProjectSheetOpen(false)}>
+          <div className="bottom-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="bottom-sheet-header">
+              <h3>프로젝트 선택</h3>
+              <button className="secondary" onClick={() => setProjectSheetOpen(false)}>✕</button>
+            </div>
+            <div className="bottom-sheet-list">
+              {projects.length === 0 && (
+                <p className="empty-state">No projects yet. Add a project first.</p>
+              )}
+              {projects.map((project) => (
+                <button
+                  key={project.id}
+                  className="bottom-sheet-option"
+                  onClick={() => {
+                    setProjectSheetOpen(false);
+                    onCreate(project.id);
+                  }}
+                >
+                  <strong>{project.name}</strong>
+                  <span style={{ display: "block", fontSize: "0.78rem", opacity: 0.7, marginTop: "2px" }}>
+                    {project.repo_path}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
+
+const ACTIVE_TASK_STATUSES: TaskStatus[] = ["queued", "starting", "running", "waiting_user_input", "waiting_result_approval"];
 
 function ConversationDetailScreen({
   conversationId,
@@ -861,19 +913,36 @@ function ConversationDetailScreen({
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const deleteConversationMutation = useMutation({
+    mutationFn: () => api.deleteConversation(conversationId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      onBack();
+    },
+  });
+
   const { data: conversation, isLoading } = useQuery<ConversationDetail>({
     queryKey: ["conversation", conversationId],
     queryFn: () => api.getConversation(conversationId),
-    refetchInterval: 3000,
+    refetchInterval: (query) => {
+      const data = query.state.data as ConversationDetail | undefined;
+      const taskStatus = data?.task_status ?? null;
+      return taskStatus && ACTIVE_TASK_STATUSES.includes(taskStatus) ? 1500 : 3000;
+    },
   });
+
+  const isTaskActive = conversation?.task_status != null && ACTIVE_TASK_STATUSES.includes(conversation.task_status);
 
   const addMessageMutation = useMutation({
     mutationFn: (content: string) =>
       api.addConversationMessage(conversationId, { content }),
-    onSuccess: () => {
+    onSuccess: (updated) => {
       setInput("");
-      queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
+      queryClient.setQueryData(["conversation", conversationId], updated);
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    },
+    onError: (err: Error) => {
+      alert(`메시지 전송 실패: ${err.message}`);
     },
   });
 
@@ -881,9 +950,11 @@ function ConversationDetailScreen({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [conversation?.messages.length]);
 
+  const isSendDisabled = !input.trim() || addMessageMutation.isPending || isTaskActive;
+
   const handleSend = () => {
     const trimmed = input.trim();
-    if (trimmed && !addMessageMutation.isPending) {
+    if (trimmed && !isSendDisabled) {
       addMessageMutation.mutate(trimmed);
     }
   };
@@ -896,8 +967,22 @@ function ConversationDetailScreen({
       <div className="mobile-detail-control">
         <div className="mobile-detail-control-top">
           <button type="button" className="secondary mobile-back" onClick={onBack}>Back</button>
-          <strong className="truncate">{conversation?.title ?? "Conversation"}</strong>
-          <div style={{ width: 44 }} />
+          <div style={{ minWidth: 0 }}>
+            <strong className="truncate" style={{ display: "block" }}>{conversation?.title ?? "Conversation"}</strong>
+            {conversation?.project_name && (
+              <span style={{ fontSize: "0.75rem", color: "var(--text-soft)" }}>{conversation.project_name}</span>
+            )}
+          </div>
+          <button
+            type="button"
+            className="secondary"
+            style={{ fontSize: "0.8rem", padding: "4px 10px", flexShrink: 0 }}
+            disabled={deleteConversationMutation.isPending}
+            onClick={() => deleteConversationMutation.mutate()}
+            title="대화 삭제"
+          >
+            삭제
+          </button>
         </div>
       </div>
 
@@ -933,6 +1018,22 @@ function ConversationDetailScreen({
             </div>
           </div>
         ))}
+        {isTaskActive && (
+          <div style={{ display: "flex", justifyContent: "flex-start" }}>
+            <div
+              style={{
+                padding: "0.55rem 0.75rem",
+                borderRadius: "14px 14px 14px 4px",
+                background: "#f0f4fa",
+                color: "#16253a",
+                fontSize: "0.88rem",
+                opacity: 0.7,
+              }}
+            >
+              Codex is thinking...
+            </div>
+          </div>
+        )}
         <div ref={messagesEndRef} />
       </div>
 
@@ -949,8 +1050,9 @@ function ConversationDetailScreen({
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="메시지를 입력하세요..."
-          style={{ flex: 1, minHeight: "44px", maxHeight: "120px", resize: "none" }}
+          placeholder={isTaskActive ? "Codex is working..." : "메시지를 입력하세요..."}
+          disabled={isTaskActive}
+          style={{ flex: 1, minHeight: "44px", maxHeight: "120px", resize: "none", opacity: isTaskActive ? 0.5 : 1 }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -961,7 +1063,7 @@ function ConversationDetailScreen({
         />
         <button
           onClick={handleSend}
-          disabled={!input.trim() || addMessageMutation.isPending}
+          disabled={isSendDisabled}
           style={{ alignSelf: "flex-end", minHeight: "44px", padding: "0 16px" }}
         >
           {addMessageMutation.isPending ? "..." : "Send"}
@@ -1757,11 +1859,22 @@ export function App() {
   });
 
   const createConversationMutation = useMutation({
-    mutationFn: () => api.createConversation(),
+    mutationFn: (projectId: string) => api.createConversation({ project_id: projectId }),
     onSuccess: (conv) => {
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
       setSelectedConversationId(conv.id);
       setMobileScreen("conversation-detail");
+    },
+  });
+
+  const deleteConversationMutation = useMutation({
+    mutationFn: api.deleteConversation,
+    onSuccess: (_, deletedId) => {
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      if (selectedConversationId === deletedId) {
+        setSelectedConversationId(null);
+        setMobileScreen("conversations");
+      }
     },
   });
 
@@ -1943,7 +2056,7 @@ export function App() {
 
   useEffect(() => {
     if (!isMobile) {
-      setMobileScreen("projects");
+      setMobileScreen("conversations");
     }
   }, [isMobile]);
 
@@ -2547,13 +2660,15 @@ export function App() {
           {mobileScreen === "conversations" ? (
             <ConversationListScreen
               conversations={conversationsQuery.data ?? []}
+              projects={projectsQuery.data ?? []}
               isLoading={conversationsQuery.isLoading}
               onSelect={(id) => {
                 setSelectedConversationId(id);
                 setMobileScreen("conversation-detail");
               }}
-              onCreate={() => createConversationMutation.mutate()}
-              onShowProjects={() => setMobileScreen("projects")}
+              onCreate={(projectId) => createConversationMutation.mutate(projectId)}
+              onDelete={(id) => deleteConversationMutation.mutate(id)}
+              onManageProjects={() => setMobileScreen("projects")}
             />
           ) : null}
 

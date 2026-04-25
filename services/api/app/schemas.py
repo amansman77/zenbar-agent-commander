@@ -239,12 +239,20 @@ class ConversationSummary(BaseModel):
     id: str
     title: str
     last_message: str | None
+    project_id: str | None
+    project_name: str | None
+    task_id: str | None
+    task_status: TaskStatus | None
     updated_at: datetime
 
 
 class ConversationDetail(BaseModel):
     id: str
     title: str
+    project_id: str | None
+    project_name: str | None
+    task_id: str | None
+    task_status: TaskStatus | None
     messages: list[ConversationMessageItem]
     created_at: datetime
     updated_at: datetime
@@ -252,6 +260,7 @@ class ConversationDetail(BaseModel):
 
 class CreateConversationRequest(BaseModel):
     title: str = "New Conversation"
+    project_id: str | None = None
 
 
 class AddConversationMessageRequest(BaseModel):
