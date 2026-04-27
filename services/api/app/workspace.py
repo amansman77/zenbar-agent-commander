@@ -60,10 +60,24 @@ def prepare_workspace(repo_path: str, default_branch: str, workspace_type: str, 
     except RuntimeError:
         pass
 
+    # Determine the best base ref: prefer origin/default_branch (latest remote),
+    # fall back to local default_branch if remote tracking ref doesn't exist.
+    def _resolve_remote_ref(branch: str) -> str:
+        for ref in [f"origin/{branch}", branch]:
+            result = subprocess.run(
+                ["git", "rev-parse", "--verify", ref],
+                cwd=str(repo), capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                return ref
+        return branch
+
+    base_ref = _resolve_remote_ref(default_branch)
+
     if workspace_type == "worktree":
         if workspace_path.exists():
             shutil.rmtree(workspace_path)
-        _run_git(["worktree", "add", "-b", workspace_ref, str(workspace_path), default_branch], str(repo))
+        _run_git(["worktree", "add", "-b", workspace_ref, str(workspace_path), base_ref], str(repo))
         return PreparedWorkspace(str(workspace_path), workspace_ref, workspace_type)
 
     if workspace_path.exists():
@@ -76,7 +90,14 @@ def prepare_workspace(repo_path: str, default_branch: str, workspace_type: str, 
     if upstream_origin:
         _run_git(["remote", "set-url", "origin", upstream_origin], str(workspace_path))
         _run_git(["remote", "set-url", "--push", "origin", upstream_origin], str(workspace_path))
-    _run_git(["checkout", default_branch], str(workspace_path))
+        try:
+            _run_git(["fetch", "origin"], str(workspace_path))
+            _run_git(["checkout", default_branch], str(workspace_path))
+            _run_git(["reset", "--hard", f"origin/{default_branch}"], str(workspace_path))
+        except RuntimeError:
+            _run_git(["checkout", default_branch], str(workspace_path))
+    else:
+        _run_git(["checkout", default_branch], str(workspace_path))
     _run_git(["checkout", "-b", workspace_ref], str(workspace_path))
     return PreparedWorkspace(str(workspace_path), workspace_ref, workspace_type)
 
