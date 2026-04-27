@@ -59,6 +59,17 @@ export interface ListRuntimeModelsResponse {
   source: "runtime" | "fallback";
 }
 
+export interface RuntimeSkill {
+  id: string;
+  name: string;
+  description: string | null;
+}
+
+export interface ListRuntimeSkillsResponse {
+  skills: RuntimeSkill[];
+  source: "runtime" | "fallback";
+}
+
 export interface TaskSummary {
   id: string;
   project_id: string;
@@ -210,6 +221,9 @@ export interface ConversationDetail {
   project_name: string | null;
   task_id: string | null;
   task_status: TaskStatus | null;
+  task_workspace_ref: string | null;
+  task_base_branch: string | null;
+  task_model: string | null;
   messages: ConversationMessageItem[];
   created_at: string;
   updated_at: string;
@@ -223,6 +237,8 @@ export interface CreateConversationRequest {
 export interface AddConversationMessageRequest {
   content: string;
   role?: string;
+  selected_skill?: string | null;
+  model?: string | null;
 }
 
 export interface FsBrowseEntry {

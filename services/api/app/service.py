@@ -91,7 +91,7 @@ class TaskOrchestrator:
 
         runner.add_done_callback(_cleanup)
 
-    async def start_task(self, db: Session, task: Task, project: Project) -> Task:
+    async def start_task(self, db: Session, task: Task, project: Project, selected_skill: str | None = None) -> Task:
         parent_run = get_latest_run(db, task.id)
         create_run(db, task, input_text=task.prompt, parent_run_id=parent_run.id if parent_run else None)
         set_task_status(db, task, "starting")
@@ -117,13 +117,19 @@ class TaskOrchestrator:
                 raise RuntimeError("Plan mode is not supported by this Codex App Server")
             else:
                 append_event(db, task, RuntimeEvent(type="agent_status", message="Codex runtime supports plan mode"))
-        prepared = await asyncio.to_thread(
-            prepare_workspace,
-            project.repo_path,
-            project.default_branch,
-            task.workspace_type,
-            task.workspace_ref,
-        )
+        from pathlib import Path
+        existing_workspace = task.workspace_path and Path(task.workspace_path).exists()
+        if existing_workspace:
+            from .workspace import PreparedWorkspace
+            prepared = PreparedWorkspace(task.workspace_path, task.workspace_ref, task.workspace_type)
+        else:
+            prepared = await asyncio.to_thread(
+                prepare_workspace,
+                project.repo_path,
+                project.default_branch,
+                task.workspace_type,
+                task.workspace_ref,
+            )
         refreshed = self._require_task(db, task.id, "preparing workspace")
         resolved_model, was_defaulted = self._resolve_task_model(db, refreshed)
         resolved_reasoning_effort = self._resolve_reasoning_effort(db, refreshed)
@@ -142,6 +148,7 @@ class TaskOrchestrator:
             execution_mode=refreshed.execution_mode,  # type: ignore[arg-type]
             workspace_type=refreshed.workspace_type,  # type: ignore[arg-type]
             workspace_ref=refreshed.workspace_ref,
+            selected_skill=selected_skill,
         )
         session = await self.adapter.start_task(request)
         refreshed = self._require_task(db, refreshed.id, "starting runtime session")
@@ -267,7 +274,7 @@ class TaskOrchestrator:
             await self._consume_events(task.id, session.session_id)
         return refreshed
 
-    async def followup_task(self, db: Session, task: Task, content: str) -> Task:
+    async def followup_task(self, db: Session, task: Task, content: str, selected_skill: str | None = None) -> Task:
         if task.status in {"starting", "running", "waiting_user_input", "waiting_result_approval"}:
             raise RuntimeError(f"Task cannot accept follow-up from status '{task.status}'")
         if not task.runtime_session_id:
@@ -284,7 +291,7 @@ class TaskOrchestrator:
         )
         parent_run = get_latest_run(db, task.id)
         create_run(db, task, input_text=content, parent_run_id=parent_run.id if parent_run else None)
-        session = await self.adapter.followup_task(task.runtime_session_id, content)
+        session = await self.adapter.followup_task(task.runtime_session_id, content, selected_skill=selected_skill)
         refreshed = self._require_task(db, task.id, "starting follow-up turn")
         refreshed = set_task_status(
             db,
@@ -307,11 +314,9 @@ class TaskOrchestrator:
                     raise
 
         fallback_diff = await asyncio.to_thread(self._compute_workspace_diff, task)
-        chosen = runtime_diff
-        if not self._has_diff_content(chosen) and self._has_diff_content(fallback_diff):
-            chosen = fallback_diff
-        if chosen is None:
-            return task
+        # Workspace git diff is ground truth (staged/unstaged only — empty after commit).
+        # If workspace is clean, clear any stale diff in the DB.
+        chosen = fallback_diff if fallback_diff is not None else TaskDiff()
 
         updated = replace_diff(db, task, chosen)
         db.expire_all()
@@ -551,6 +556,16 @@ class TaskOrchestrator:
         )
         return completed.stdout.strip()
 
+    def _run_git_noquote(self, cwd: str, args: list[str]) -> str:
+        """Like _run_git but with core.quotepath=false so non-ASCII paths are not octal-escaped."""
+        completed = subprocess.run(
+            ["git", "-C", cwd, "-c", "core.quotepath=false", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return completed.stdout.strip()
+
     def _run_git_full(self, cwd: str, args: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["git", "-C", cwd, *args],
@@ -621,30 +636,60 @@ class TaskOrchestrator:
                 if value:
                     files.append(value)
 
-        commands: list[tuple[list[str], bool]] = [
-            (["diff", "--name-only"], False),
-            (["diff", "--cached", "--name-only"], False),
-            (["ls-files", "--others", "--exclude-standard"], False),
-            (["diff", default_branch, "--name-only"], False),
-            (["diff"], True),
-            (["diff", "--cached"], True),
-            (["diff", default_branch], True),
+        # Show only uncommitted changes: staged + unstaged (not vs base branch).
+        # After a commit the diff will be empty — matching user expectation.
+        name_only_cmds = [
+            ["diff", "--cached", "--name-only"],
+            ["diff", "--name-only"],
         ]
-
-        for args, is_raw in commands:
+        for args in name_only_cmds:
             try:
-                output = self._run_git(workspace, args)
+                output = self._run_git_noquote(workspace, args)
+                if output:
+                    add_files(output)
             except Exception:
                 continue
-            if not output:
+
+        raw_priority = [
+            ["diff", "--cached"],
+            ["diff"],
+        ]
+        for args in raw_priority:
+            try:
+                output = self._run_git_noquote(workspace, args)
+                if output and output.strip():
+                    raw_candidates.append(output)
+            except Exception:
                 continue
-            if is_raw:
-                raw_candidates.append(output)
-            else:
-                add_files(output)
+
+        # Generate diffs for untracked (new) files via --no-index
+        # Use core.quotepath=false so non-ASCII (Korean) paths are not octal-escaped.
+        # git diff --no-index always exits 1 when files differ, so use check=False.
+        untracked_diffs: list[str] = []
+        try:
+            untracked_out = subprocess.run(
+                ["git", "-C", workspace, "-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            for rel_path in (untracked_out or "").splitlines():
+                rel_path = rel_path.strip()
+                if not rel_path:
+                    continue
+                files.append(rel_path)
+                result = subprocess.run(
+                    ["git", "-C", workspace, "-c", "core.quotepath=false", "diff", "--no-index", "/dev/null", rel_path],
+                    check=False, capture_output=True, text=True,
+                )
+                # exit 0 = identical (shouldn't happen vs /dev/null), 1 = differs (normal), 2+ = error
+                if result.returncode <= 1 and result.stdout.strip():
+                    untracked_diffs.append(result.stdout.strip())
+        except Exception:
+            pass
 
         deduped_files = list(dict.fromkeys(files))
-        raw_diff = next((item for item in raw_candidates if item.strip()), None)
+        base_diff = raw_candidates[0] if raw_candidates else ""
+        combined = "\n".join(filter(None, [base_diff] + untracked_diffs))
+        raw_diff = combined.strip() or None
         if not deduped_files and not raw_diff:
             return None
         summary = f"Updated {len(deduped_files)} file(s) in the Task Workspace."

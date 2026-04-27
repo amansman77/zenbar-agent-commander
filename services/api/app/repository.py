@@ -114,6 +114,13 @@ def get_task(db: Session, task_id: str) -> Task | None:
     return db.scalars(stmt).first()
 
 
+def delete_task(db: Session, task_id: str) -> None:
+    task = db.get(Task, task_id)
+    if task:
+        db.delete(task)
+        db.commit()
+
+
 def session_id_for_task(task: Task) -> str:
     return task.id
 
@@ -418,7 +425,7 @@ def get_conversation(db: Session, conversation_id: str) -> Conversation | None:
         .options(
             selectinload(Conversation.messages),
             selectinload(Conversation.project),
-            selectinload(Conversation.task),
+            selectinload(Conversation.task).selectinload(Task.project),
         )
     )
     return db.scalars(stmt).first()
@@ -485,14 +492,17 @@ def serialize_conversation_summary(conv: Conversation) -> ConversationSummary:
 
 
 def serialize_conversation_detail(conv: Conversation) -> ConversationDetail:
-    task_status = conv.task.status if conv.task else None
+    task = conv.task
     return ConversationDetail(
         id=conv.id,
         title=conv.title,
         project_id=conv.project_id,
         project_name=conv.project.name if conv.project else None,
         task_id=conv.task_id,
-        task_status=task_status,  # type: ignore[arg-type]
+        task_status=task.status if task else None,  # type: ignore[arg-type]
+        task_workspace_ref=task.workspace_ref if task else None,
+        task_base_branch=task.project.default_branch if task and task.project else None,
+        task_model=task.effective_model or task.model if task else None,
         messages=[serialize_conversation_message(msg) for msg in conv.messages],
         created_at=conv.created_at,
         updated_at=conv.updated_at,

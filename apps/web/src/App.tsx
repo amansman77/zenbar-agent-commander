@@ -11,6 +11,7 @@ import type {
   FsBrowseResponse,
   ReasoningEffort,
   RuntimeModelOption,
+  RuntimeSkill,
   ProjectSummary,
   TaskDetail,
   TaskDiff,
@@ -910,7 +911,14 @@ function ConversationDetailScreen({
   onBack: () => void;
 }) {
   const queryClient = useQueryClient();
+  const isMobile = useIsMobileBreakpoint();
+  const [activeTab, setActiveTab] = useState<"chat" | "diff">("chat");
+  const [diffExpanded, setDiffExpanded] = useState<Record<string, boolean>>({});
   const [input, setInput] = useState("");
+  const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
+  const [skillSearch, setSkillSearch] = useState("");
+  const [skillMenuOpen, setSkillMenuOpen] = useState(false);
+  const skillMenuRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const deleteConversationMutation = useMutation({
@@ -931,6 +939,33 @@ function ConversationDetailScreen({
     },
   });
 
+  const { data: skillsData } = useQuery({
+    queryKey: ["runtime-skills"],
+    queryFn: () => api.listRuntimeSkills(),
+    staleTime: 5 * 60 * 1000,
+  });
+  const skills: RuntimeSkill[] = skillsData?.skills ?? [];
+
+  const taskId = conversation?.task_id ?? null;
+  const { data: diffData, refetch: refetchDiff } = useQuery({
+    queryKey: ["conv-diff", taskId],
+    queryFn: () => api.getDiff(taskId!),
+    enabled: Boolean(taskId),
+    staleTime: 10_000,
+  });
+
+  const { data: modelsData } = useQuery({
+    queryKey: ["runtime-models"],
+    queryFn: () => api.listRuntimeModels(),
+    staleTime: 0,
+  });
+  const availableModels: string[] = (modelsData?.models ?? [])
+    .map((m) => (typeof m === "string" ? m : m.id))
+    .filter((id) => id !== "default");
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const effectiveModel = conversation?.task_model ?? selectedModel ?? availableModels[0] ?? null;
+  const taskStarted = conversation?.task_id != null;
+
   const isTaskActive = conversation?.task_status != null && ACTIVE_TASK_STATUSES.includes(conversation.task_status);
   const isWaitingApproval = conversation?.task_status === "waiting_result_approval";
 
@@ -944,11 +979,22 @@ function ConversationDetailScreen({
     },
   });
 
+  const stopTaskMutation = useMutation({
+    mutationFn: () => api.stopTask(conversation!.task_id!, { actor: "user" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
+    },
+    onError: (err: Error) => {
+      alert(`중지 실패: ${err.message}`);
+    },
+  });
+
   const addMessageMutation = useMutation({
-    mutationFn: (content: string) =>
-      api.addConversationMessage(conversationId, { content }),
+    mutationFn: (payload: { content: string; selected_skill?: string | null; model?: string | null }) =>
+      api.addConversationMessage(conversationId, payload),
     onSuccess: (updated) => {
       setInput("");
+      setSelectedSkill(null);
       queryClient.setQueryData(["conversation", conversationId], updated);
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
@@ -961,12 +1007,30 @@ function ConversationDetailScreen({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [conversation?.messages.length]);
 
+  useEffect(() => {
+    if (!skillMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (skillMenuRef.current && !skillMenuRef.current.contains(e.target as Node)) {
+        setSkillMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [skillMenuOpen]);
+
+  const selectedSkillName = skills.find((s) => s.id === selectedSkill)?.name ?? null;
+  const filteredSkills = skills.filter((s) =>
+    s.name.toLowerCase().includes(skillSearch.toLowerCase()) ||
+    s.id.toLowerCase().includes(skillSearch.toLowerCase())
+  );
+
   const isSendDisabled = !input.trim() || addMessageMutation.isPending || isTaskActive;
 
   const handleSend = () => {
     const trimmed = input.trim();
     if (trimmed && !isSendDisabled) {
-      addMessageMutation.mutate(trimmed);
+      const modelToUse = taskStarted ? null : (selectedModel || availableModels[0] || null);
+      addMessageMutation.mutate({ content: trimmed, selected_skill: selectedSkill, model: modelToUse });
     }
   };
 
@@ -999,12 +1063,24 @@ function ConversationDetailScreen({
 
       <div style={{ flex: 1, overflowY: "auto", padding: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
         {isLoading && <p className="empty-state">Loading...</p>}
-        {!isLoading && conversation?.messages.length === 0 && (
+        {!isLoading && conversation?.messages.length === 0 && activeTab === "chat" && (
           <p className="empty-state" style={{ textAlign: "center", marginTop: "2rem" }}>
             Start typing below to begin the conversation.
           </p>
         )}
-        {conversation?.messages.map((msg) => (
+        {activeTab === "diff" && (
+          diffData?.raw_diff ? (
+            <GroupedDiff
+              rawDiff={diffData.raw_diff}
+              filesChanged={diffData.files_changed ?? []}
+              expanded={diffExpanded}
+              onToggle={(id) => setDiffExpanded((prev) => ({ ...prev, [id]: !prev[id] }))}
+            />
+          ) : (
+            <p className="empty-state">변경된 파일이 없습니다.</p>
+          )
+        )}
+        {activeTab === "chat" && conversation?.messages.map((msg) => (
           <div
             key={msg.id}
             style={{
@@ -1029,7 +1105,7 @@ function ConversationDetailScreen({
             </div>
           </div>
         ))}
-        {isTaskActive && (
+        {activeTab === "chat" && isTaskActive && (
           <div style={{ display: "flex", justifyContent: "flex-start" }}>
             <div
               style={{
@@ -1043,16 +1119,34 @@ function ConversationDetailScreen({
               {isWaitingApproval ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                   <span>Codex가 변경 사항 승인을 요청하고 있습니다.</span>
-                  <button
-                    onClick={() => approveTaskMutation.mutate()}
-                    disabled={approveTaskMutation.isPending}
-                    style={{ alignSelf: "flex-start", fontSize: "0.85rem" }}
-                  >
-                    {approveTaskMutation.isPending ? "승인 중..." : "승인"}
-                  </button>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button
+                      onClick={() => approveTaskMutation.mutate()}
+                      disabled={approveTaskMutation.isPending || stopTaskMutation.isPending}
+                      style={{ fontSize: "0.85rem" }}
+                    >
+                      {approveTaskMutation.isPending ? "승인 중..." : "승인"}
+                    </button>
+                    <button
+                      onClick={() => stopTaskMutation.mutate()}
+                      disabled={approveTaskMutation.isPending || stopTaskMutation.isPending}
+                      style={{ fontSize: "0.85rem", background: "#e53935", color: "#fff" }}
+                    >
+                      {stopTaskMutation.isPending ? "거절 중..." : "거절"}
+                    </button>
+                  </div>
                 </div>
               ) : (
-                <span style={{ opacity: 0.7 }}>Codex is thinking...</span>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                  <span style={{ opacity: 0.7 }}>Codex is thinking...</span>
+                  <button
+                    onClick={() => stopTaskMutation.mutate()}
+                    disabled={stopTaskMutation.isPending}
+                    style={{ fontSize: "0.78rem", padding: "4px 12px", background: "#e53935", color: "#fff", flexShrink: 0 }}
+                  >
+                    {stopTaskMutation.isPending ? "중지 중..." : "중지"}
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -1063,34 +1157,201 @@ function ConversationDetailScreen({
       <div
         style={{
           borderTop: "1px solid var(--line)",
-          padding: "8px 12px",
-          paddingBottom: "calc(8px + env(safe-area-inset-bottom))",
-          display: "flex",
-          gap: "8px",
           background: "rgba(255,255,255,0.98)",
+          paddingBottom: "calc(0px + env(safe-area-inset-bottom))",
         }}
       >
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={isTaskActive ? "Codex is working..." : "메시지를 입력하세요..."}
-          disabled={isTaskActive}
-          style={{ flex: 1, minHeight: "44px", maxHeight: "120px", resize: "none", opacity: isTaskActive ? 0.5 : 1 }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleSend();
-            }
-          }}
-          autoFocus
-        />
-        <button
-          onClick={handleSend}
-          disabled={isSendDisabled}
-          style={{ alignSelf: "flex-end", minHeight: "44px", padding: "0 16px" }}
-        >
-          {addMessageMutation.isPending ? "..." : "Send"}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px 0", flexWrap: "wrap" }}>
+          {conversation?.task_workspace_ref ? (
+            <span
+              title={`기본 브랜치: ${conversation.task_base_branch ?? "unknown"}`}
+              style={{ fontSize: "0.73rem", color: "var(--text-soft)", whiteSpace: "nowrap" }}
+            >
+              ⎇ {conversation.task_workspace_ref}
+              {conversation.task_base_branch && (
+                <span style={{ opacity: 0.55 }}> ← {conversation.task_base_branch}</span>
+              )}
+            </span>
+          ) : null}
+          {taskStarted ? (
+            effectiveModel ? (
+              <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }}>◎ {effectiveModel}</span>
+            ) : null
+          ) : (
+            availableModels.length > 0 && (
+              <label style={{ display: "flex", alignItems: "center", gap: "3px", fontSize: "0.73rem", color: "var(--text-soft)" }}>
+                <span>◎</span>
+                <select
+                  value={selectedModel ?? availableModels[0]}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  style={{
+                    fontSize: "0.73rem",
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--text-soft)",
+                    cursor: "pointer",
+                    padding: 0,
+                    outline: "none",
+                    maxWidth: "140px",
+                  }}
+                >
+                  {availableModels.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </label>
+            )
+          )}
+          {taskId && (
+            <button
+              type="button"
+              onClick={() => { setActiveTab((t) => t === "chat" ? "diff" : "chat"); if (activeTab === "chat") refetchDiff(); }}
+              style={{
+                marginLeft: skills.length > 0 ? "0" : "auto",
+                padding: "4px 12px",
+                borderRadius: "14px",
+                fontSize: "0.78rem",
+                fontWeight: activeTab === "diff" ? 600 : 400,
+                border: activeTab === "diff" ? "1.5px solid #0f3158" : "1.5px solid var(--line)",
+                background: activeTab === "diff" ? "#0f3158" : "transparent",
+                color: activeTab === "diff" ? "#fff" : "var(--text-soft)",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {activeTab === "diff" ? "💬 대화" : "📄 변경사항"}
+            </button>
+          )}
+          {skills.length > 0 && (
+            <div ref={skillMenuRef} style={{ position: "relative", marginLeft: taskId ? "0" : "auto" }}>
+              <button
+                type="button"
+                onClick={() => { setSkillMenuOpen((o) => !o); setSkillSearch(""); }}
+              style={{
+                padding: "4px 12px",
+                borderRadius: "14px",
+                fontSize: "0.78rem",
+                fontWeight: selectedSkill ? 600 : 400,
+                border: selectedSkill ? "1.5px solid #0f3158" : "1.5px solid var(--line)",
+                background: selectedSkill ? "#0f3158" : "transparent",
+                color: selectedSkill ? "#fff" : "var(--text-soft)",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {selectedSkillName ? `⚡ ${selectedSkillName}` : "⚡ Auto"}
+            </button>
+            {skillMenuOpen && (
+              <div style={{
+                position: "absolute",
+                bottom: "calc(100% + 6px)",
+                left: 0,
+                zIndex: 200,
+                background: "var(--panel)",
+                border: "1px solid var(--line)",
+                borderRadius: "10px",
+                boxShadow: "var(--shadow)",
+                width: "260px",
+                overflow: "hidden",
+              }}>
+                <div style={{ padding: "8px" }}>
+                  <input
+                    autoFocus
+                    type="text"
+                    placeholder="스킬 검색..."
+                    value={skillSearch}
+                    onChange={(e) => setSkillSearch(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "6px 10px",
+                      borderRadius: "8px",
+                      border: "1px solid var(--line)",
+                      fontSize: "0.82rem",
+                      background: "var(--panel-soft)",
+                      color: "var(--text)",
+                      outline: "none",
+                    }}
+                  />
+                </div>
+                <div style={{ maxHeight: "220px", overflowY: "auto" }}>
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedSkill(null); setSkillMenuOpen(false); }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      padding: "8px 14px",
+                      fontSize: "0.82rem",
+                      background: !selectedSkill ? "var(--panel-soft)" : "transparent",
+                      color: !selectedSkill ? "var(--primary)" : "var(--text)",
+                      fontWeight: !selectedSkill ? 600 : 400,
+                      border: "none",
+                      borderRadius: 0,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Auto
+                  </button>
+                  {filteredSkills.map((skill) => (
+                    <button
+                      key={skill.id}
+                      type="button"
+                      onClick={() => { setSelectedSkill(skill.id); setSkillMenuOpen(false); }}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "8px 14px",
+                        fontSize: "0.82rem",
+                        background: selectedSkill === skill.id ? "var(--panel-soft)" : "transparent",
+                        color: selectedSkill === skill.id ? "var(--primary)" : "var(--text)",
+                        fontWeight: selectedSkill === skill.id ? 600 : 400,
+                        border: "none",
+                        borderRadius: 0,
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {skill.name}
+                    </button>
+                  ))}
+                  {filteredSkills.length === 0 && (
+                    <p style={{ padding: "8px 14px", fontSize: "0.8rem", color: "var(--text-soft)", margin: 0 }}>
+                      검색 결과 없음
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: "8px", padding: "8px 12px" }}>
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={isTaskActive ? "Codex is working..." : "메시지를 입력하세요..."}
+            disabled={isTaskActive}
+            style={{ flex: 1, minHeight: "44px", maxHeight: "120px", resize: "none", opacity: isTaskActive ? 0.5 : 1 }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !isMobile) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
+            autoFocus
+          />
+          <button
+            onClick={handleSend}
+            disabled={isSendDisabled}
+            style={{ alignSelf: "flex-end", minHeight: "44px", padding: "0 16px" }}
+          >
+            {addMessageMutation.isPending ? "..." : "Send"}
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -1841,7 +2102,7 @@ export function App() {
   const runtimeModelsQuery = useQuery({
     queryKey: ["runtime-models"],
     queryFn: api.listRuntimeModels,
-    staleTime: 60_000
+    staleTime: 0
   });
 
   const selectedProject = useMemo(
@@ -1933,6 +2194,19 @@ export function App() {
       queryClient.removeQueries({ queryKey: ["tasks", projectId] });
       if (selectedProjectId === projectId) {
         setSelectedProjectId(null);
+        setSelectedTaskId(null);
+      }
+    }
+  });
+
+  const deleteTaskMutation = useMutation({
+    mutationFn: api.deleteTask,
+    onSuccess: (_, taskId) => {
+      queryClient.invalidateQueries({ queryKey: ["tasks", selectedProjectId] });
+      queryClient.removeQueries({ queryKey: ["task", taskId] });
+      queryClient.removeQueries({ queryKey: ["task-events", taskId] });
+      queryClient.removeQueries({ queryKey: ["task-diff", taskId] });
+      if (selectedTaskId === taskId) {
         setSelectedTaskId(null);
       }
     }
@@ -2082,6 +2356,37 @@ export function App() {
       setMobileScreen("conversations");
     }
   }, [isMobile]);
+
+  const isHandlingPopState = useRef(false);
+
+  // Push a history entry each time the mobile screen changes
+  useEffect(() => {
+    if (!isMobile) return;
+    if (isHandlingPopState.current) {
+      isHandlingPopState.current = false;
+      return;
+    }
+    window.history.pushState({ mobileScreen }, "");
+  }, [mobileScreen, isMobile]);
+
+  // Handle browser back button on mobile
+  useEffect(() => {
+    if (!isMobile) return;
+    const BACK_MAP: Partial<Record<MobileScreen, MobileScreen>> = {
+      "conversation-detail": "conversations",
+      "projects": "conversations",
+      "tasks": "projects",
+      "detail": "tasks",
+    };
+    const handlePopState = (e: PopStateEvent) => {
+      const prevScreen = (e.state as { mobileScreen?: MobileScreen } | null)?.mobileScreen;
+      const target = prevScreen ?? BACK_MAP[mobileScreen] ?? "conversations";
+      isHandlingPopState.current = true;
+      setMobileScreen(target);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [isMobile, mobileScreen]);
 
   useEffect(() => {
     setMobileDetailTab("log");
@@ -2854,9 +3159,23 @@ export function App() {
                   <h2>Tasks</h2>
                   <p>{selectedProject ? selectedProject.name : "Select a project first"}</p>
                 </div>
-                <button type="button" onClick={() => setTaskModalOpen(true)} disabled={!selectedProject}>
-                  + New Task
-                </button>
+                <div className="row-header-actions">
+                  <button
+                    type="button"
+                    className="btn-danger-sm"
+                    disabled={!selectedTaskId}
+                    onClick={() => {
+                      if (selectedTaskId && window.confirm("Delete this task?")) {
+                        deleteTaskMutation.mutate(selectedTaskId);
+                      }
+                    }}
+                  >
+                    Delete
+                  </button>
+                  <button type="button" onClick={() => setTaskModalOpen(true)} disabled={!selectedProject}>
+                    + New Task
+                  </button>
+                </div>
               </div>
             </div>
             <div className="panel-scroll">
@@ -2897,7 +3216,9 @@ export function App() {
               </div>
               {task ? <StatusBadge status={task.status} /> : null}
             </div>
-            {renderTaskDetailContent(false)}
+            <div className="detail-scroll">
+              {renderTaskDetailContent(false)}
+            </div>
           </section>
         </main>
       )}

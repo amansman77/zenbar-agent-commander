@@ -7,8 +7,6 @@ VENV_PYTHON="$ROOT_DIR/.venv/bin/python"
 API_HOST="${ZENBAR_API_HOST:-0.0.0.0}"
 API_PORT="${ZENBAR_API_PORT:-18000}"
 WEB_PORT="${ZENBAR_WEB_PORT:-15173}"
-ALLOW_REMOTE="${ZENBAR_ALLOW_UNAUTHENTICATED_REMOTE:-false}"
-DEFAULT_CORS_ORIGINS="${ZENBAR_CORS_ORIGINS:-}"
 API_RELOAD="${ZENBAR_API_RELOAD:-false}"
 
 load_env_file() {
@@ -23,6 +21,10 @@ load_env_file() {
 
 load_env_file "$ROOT_DIR/.env.local"
 load_env_file "$API_DIR/.env.local"
+
+# Capture after loading env files so .env.local values take effect
+ALLOW_REMOTE="${ZENBAR_ALLOW_UNAUTHENTICATED_REMOTE:-false}"
+DEFAULT_CORS_ORIGINS="${ZENBAR_CORS_ORIGINS:-}"
 
 resolve_public_host() {
   if [ -n "${ZENBAR_PUBLIC_HOST:-}" ]; then

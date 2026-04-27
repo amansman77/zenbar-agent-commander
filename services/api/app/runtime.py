@@ -12,7 +12,7 @@ from typing import Any
 import websockets
 from websockets.asyncio.client import ClientConnection
 
-from .schemas import RuntimeEvent, RuntimeSession, RuntimeStartRequest, TaskDiff
+from .schemas import RuntimeEvent, RuntimeSession, RuntimeSkill, RuntimeStartRequest, TaskDiff
 
 
 def _extract_files_from_diff(diff: str) -> list[str]:
@@ -130,12 +130,13 @@ def _prompt_with_workspace(request: RuntimeStartRequest) -> str:
         if request.execution_mode == "plan"
         else "Operate inside the current repository working directory."
     )
+    skill_line = f"\nRequested skill: {request.selected_skill}" if request.selected_skill else ""
     return (
         f"Task title: {request.title}\n"
         f"Task workspace: {request.workspace_ref}\n"
         f"Task working directory: {request.working_directory}\n"
         f"Default branch: {request.default_branch}\n\n"
-        f"{request.prompt}\n\n"
+        f"{request.prompt}{skill_line}\n\n"
         f"{operation} "
         "Human approval is required before the task result is accepted as final."
     )
@@ -183,6 +184,10 @@ class RuntimeAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_skills(self) -> list[RuntimeSkill] | None:
+        raise NotImplementedError
+
+    @abstractmethod
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
         raise NotImplementedError
 
@@ -203,7 +208,7 @@ class RuntimeAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def followup_task(self, session_id: str, message: str) -> RuntimeSession:
+    async def followup_task(self, session_id: str, message: str, selected_skill: str | None = None) -> RuntimeSession:
         raise NotImplementedError
 
     @abstractmethod
@@ -296,21 +301,52 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             if "method not found" in message or "unknown method" in message or "not supported" in message:
                 return None
             raise
-        raw_models = result.get("models")
-        if not isinstance(raw_models, list):
-            return None
+        # Response: {"data": [{"id": "...", "hidden": bool, ...}], "nextCursor": ...}
+        raw_items = result.get("data", [])
+        if not isinstance(raw_items, list):
+            raw_items = []
         models: list[str] = []
-        for item in raw_models:
+        for item in raw_items:
             if isinstance(item, str) and item.strip():
                 models.append(item.strip())
                 continue
             if isinstance(item, dict):
-                model_id = item.get("id")
+                if item.get("hidden"):
+                    continue
+                model_id = item.get("id") or item.get("model")
                 if isinstance(model_id, str) and model_id.strip():
                     models.append(model_id.strip())
-        if not models:
+        return list(dict.fromkeys(models)) or None
+
+    async def list_skills(self) -> list[RuntimeSkill] | None:
+        try:
+            result = await self._rpc("skills/list", {})
+        except RuntimeError as exc:
+            message = str(exc).lower()
+            if "method not found" in message or "unknown method" in message or "not supported" in message:
+                return None
+            raise
+        # Response: {"data": [{"cwd": "...", "skills": [...], "errors": [...]}]}
+        raw_items: list[Any] = []
+        for entry in result.get("data", []):
+            if isinstance(entry, dict):
+                raw_items.extend(entry.get("skills", []))
+        if not raw_items:
             return None
-        return list(dict.fromkeys(models))
+        skills: list[RuntimeSkill] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            if not item.get("enabled", True):
+                continue
+            skill_id = item.get("name", "").strip()
+            if not skill_id:
+                continue
+            iface = item.get("interface") or {}
+            display_name = iface.get("displayName") or skill_id
+            description = item.get("description")
+            skills.append(RuntimeSkill(id=skill_id, name=display_name, description=description))
+        return skills or None
 
     async def stop_task(self, session_id: str) -> None:
         state = self._require_session(session_id)
@@ -368,13 +404,14 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         requested = state.start_request.model if state.start_request else None
         return RuntimeSession(session_id=session_id, effective_model=requested)
 
-    async def followup_task(self, session_id: str, message: str) -> RuntimeSession:
+    async def followup_task(self, session_id: str, message: str, selected_skill: str | None = None) -> RuntimeSession:
         state = self._require_session(session_id)
         request = state.start_request
         if request is None:
             raise RuntimeError("Follow-up unavailable because original task request is missing")
         params = self._build_turn_start_params(session_id, request)
-        params["input"] = [{"type": "text", "text": message, "text_elements": []}]
+        full_message = f"[Skill: {selected_skill}]\n{message}" if selected_skill else message
+        params["input"] = [{"type": "text", "text": full_message, "text_elements": []}]
         turn = await self._rpc("turn/start", params)
         state.current_turn_id = turn["turn"]["id"]
         state.pending_requests.clear()
@@ -785,6 +822,9 @@ class MockRuntimeAdapter(RuntimeAdapter):
     async def list_models(self) -> list[str] | None:
         return ["GPT-5.4", "GPT-5.3-Codex"]
 
+    async def list_skills(self) -> list[RuntimeSkill] | None:
+        return None
+
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
         session_id = f"mock-{request.task_id}"
         self._requests[session_id] = request
@@ -878,7 +918,7 @@ class MockRuntimeAdapter(RuntimeAdapter):
             )
         return await self.start_task(request)
 
-    async def followup_task(self, session_id: str, message: str) -> RuntimeSession:
+    async def followup_task(self, session_id: str, message: str, selected_skill: str | None = None) -> RuntimeSession:
         if session_id not in self._events:
             raise RuntimeError("Unknown Codex App Server session")
         request = self._requests.get(session_id)

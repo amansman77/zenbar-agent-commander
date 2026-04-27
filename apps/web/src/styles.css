@@ -166,6 +166,28 @@ textarea {
   gap: 0.8rem;
 }
 
+.row-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.btn-danger-sm {
+  background: #e53935;
+  color: #fff;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.btn-danger-sm:hover:not(:disabled) {
+  background: #b71c1c;
+}
+
+.btn-danger-sm:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .inline-actions {
   display: inline-flex;
   gap: 0.5rem;
@@ -348,6 +370,12 @@ textarea {
 
 .detail-panel {
   min-height: 0;
+}
+
+.detail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 .mobile-detail-screen {
@@ -805,6 +833,8 @@ textarea {
   line-height: 1.35;
   font-size: 0.93rem;
   font-weight: 600;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .event-message-agent-status {
@@ -832,6 +862,8 @@ textarea {
   border-radius: 10px;
   background: #fff;
   padding: 0.65rem;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .timeline-conversation {

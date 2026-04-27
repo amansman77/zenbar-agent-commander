@@ -19,6 +19,7 @@ from .repository import (
     can_stop,
     create_conversation,
     delete_conversation,
+    delete_task,
     create_project,
     create_task,
     get_conversation,
@@ -48,6 +49,7 @@ from .repo_discovery import (
     discover_repository,
 )
 from .runtime import create_runtime_adapter
+from .workspace import cleanup_workspace
 from .schemas import (
     AddConversationMessageRequest,
     ConversationDetail,
@@ -65,6 +67,8 @@ from .schemas import (
     RespondTaskRequest,
     RuntimeModelOption,
     RuntimeModelsResponse,
+    RuntimeSkill,
+    RuntimeSkillsResponse,
     FollowupTurnRequest,
     TaskApprovalRequest,
     TaskDetail,
@@ -239,8 +243,13 @@ def get_conversation_detail(conversation_id: str, db: Session = Depends(get_db))
 
 @app.delete("/conversations/{conversation_id}", status_code=204)
 def delete_conversation_endpoint(conversation_id: str, db: Session = Depends(get_db)):
-    if get_conversation(db, conversation_id) is None:
+    conv = get_conversation(db, conversation_id)
+    if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    if conv.task:
+        repo_path = conv.task.project.repo_path if conv.task.project else None
+        cleanup_workspace(conv.task.workspace_path, conv.task.workspace_type, repo_path)
+        delete_task(db, conv.task.id)
     delete_conversation(db, conversation_id)
     return Response(status_code=204)
 
@@ -259,6 +268,7 @@ async def post_conversation_message(
 
     if payload.role == "user":
         conv = get_conversation(db, conversation_id)
+        selected_skill = payload.selected_skill or None
         if conv.task_id is None:
             project = get_project(db, conv.project_id) if conv.project_id else None
             if project is None:
@@ -269,7 +279,7 @@ async def post_conversation_message(
                 project_id=project.id,
                 title=payload.content[:50].strip() or "Conversation",
                 prompt=payload.content,
-                model=default_model,
+                model=payload.model or default_model,
                 reasoning_effort="medium",
                 execution_mode="execute",
                 workspace_type="branch",
@@ -279,7 +289,7 @@ async def post_conversation_message(
             set_conversation_task_id(db, conversation_id, task.id)
             db.expire_all()
             try:
-                await orchestrator.start_task(db, task, project)
+                await orchestrator.start_task(db, task, project, selected_skill=selected_skill)
             except Exception as exc:
                 set_task_status(db, task, "failed")
                 detail = _safe_runtime_error_detail("Failed to start Codex session", exc)
@@ -288,7 +298,7 @@ async def post_conversation_message(
             task = get_task(db, conv.task_id)
             if task is not None and task.status in {"completed", "stopped", "failed"}:
                 try:
-                    await orchestrator.followup_task(db, task, payload.content)
+                    await orchestrator.followup_task(db, task, payload.content, selected_skill=selected_skill)
                 except Exception as exc:
                     exc_msg = str(exc)
                     session_expired = (
@@ -298,29 +308,16 @@ async def post_conversation_message(
                     if not session_expired:
                         detail = _safe_runtime_error_detail("Follow-up failed", exc)
                         raise HTTPException(status_code=409, detail=detail) from exc
-                    # Session expired — start a fresh Codex session for this conversation
+                    # Session expired — restart Codex in the same task workspace
                     project = get_project(db, conv.project_id) if conv.project_id else None
                     if project is None:
                         raise HTTPException(status_code=400, detail="Conversation has no associated project") from exc
-                    allowed_models, _ = await model_catalog.list_models()
-                    default_model = allowed_models[0] if allowed_models else "default"
-                    task_request = CreateTaskRequest(
-                        project_id=project.id,
-                        title=payload.content[:50].strip() or "Conversation",
-                        prompt=payload.content,
-                        model=default_model,
-                        reasoning_effort="medium",
-                        execution_mode="execute",
-                        workspace_type="branch",
-                    )
-                    new_task = create_task(db, task_request)
-                    new_task = get_task(db, new_task.id)
-                    set_conversation_task_id(db, conversation_id, new_task.id)
+                    task = get_task(db, conv.task_id)
                     db.expire_all()
                     try:
-                        await orchestrator.start_task(db, new_task, project)
+                        await orchestrator.start_task(db, task, project, selected_skill=selected_skill)
                     except Exception as start_exc:
-                        set_task_status(db, new_task, "failed")
+                        set_task_status(db, task, "failed")
                         detail = _safe_runtime_error_detail("Failed to restart Codex session", start_exc)
                         raise HTTPException(status_code=502, detail=detail) from start_exc
 
@@ -363,6 +360,14 @@ async def get_runtime_models():
     return RuntimeModelsResponse(models=[RuntimeModelOption(id=item) for item in models], source=source)
 
 
+@app.get("/runtime/skills", response_model=RuntimeSkillsResponse)
+async def get_runtime_skills():
+    skills = await orchestrator.adapter.list_skills()
+    if skills is None:
+        return RuntimeSkillsResponse(skills=[], source="fallback")
+    return RuntimeSkillsResponse(skills=skills, source="runtime")
+
+
 @app.post("/tasks", response_model=TaskDetail)
 async def post_task(payload: CreateTaskRequest, db: Session = Depends(get_db)):
     project = get_project(db, payload.project_id)
@@ -381,6 +386,17 @@ async def post_task(payload: CreateTaskRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=502, detail=detail) from exc
     task = _require_task(get_task(db, task.id))
     return serialize_task_detail(task)
+
+
+@app.delete("/tasks/{task_id}", status_code=204)
+def delete_task_endpoint(task_id: str, db: Session = Depends(get_db)):
+    task = get_task(db, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    repo_path = task.project.repo_path if task.project else None
+    cleanup_workspace(task.workspace_path, task.workspace_type, repo_path)
+    delete_task(db, task_id)
+    return Response(status_code=204)
 
 
 @app.get("/tasks/{task_id}", response_model=TaskDetail)

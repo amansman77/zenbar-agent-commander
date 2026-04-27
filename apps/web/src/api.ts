@@ -11,6 +11,7 @@ import type {
   FsBrowseResponse,
   FollowupTurnRequest,
   ListRuntimeModelsResponse,
+  ListRuntimeSkillsResponse,
   CreateTaskRequest,
   ProjectSummary,
   PushTaskRequest,
@@ -91,12 +92,15 @@ export const api = {
   listTasks: (projectId: string) =>
     request<TaskSummary[]>(`/projects/${projectId}/tasks`),
   listRuntimeModels: () => request<ListRuntimeModelsResponse>("/runtime/models"),
+  listRuntimeSkills: () => request<ListRuntimeSkillsResponse>("/runtime/skills"),
   createTask: (payload: CreateTaskRequest) =>
     request<TaskDetail>("/tasks", {
       method: "POST",
       body: JSON.stringify(payload)
     }),
   getTask: (taskId: string) => request<TaskDetail>(`/tasks/${taskId}`),
+  deleteTask: (taskId: string) =>
+    request<void>(`/tasks/${taskId}`, { method: "DELETE" }),
   getEvents: (taskId: string) => request<TaskEvent[]>(`/tasks/${taskId}/events`),
   getDiff: (taskId: string) => request<TaskDiff>(`/tasks/${taskId}/diff`),
   approveTask: (taskId: string, payload: ApproveTaskRequest) =>

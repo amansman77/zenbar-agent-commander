@@ -67,6 +67,17 @@ class RuntimeModelsResponse(BaseModel):
     source: Literal["runtime", "fallback"]
 
 
+class RuntimeSkill(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+
+
+class RuntimeSkillsResponse(BaseModel):
+    skills: list[RuntimeSkill]
+    source: Literal["runtime", "fallback"]
+
+
 class ProjectSummary(BaseModel):
     id: str
     name: str
@@ -200,6 +211,7 @@ class RuntimeStartRequest(BaseModel):
     execution_mode: ExecutionMode = "execute"
     workspace_type: WorkspaceType
     workspace_ref: str
+    selected_skill: str | None = None
 
 
 class RuntimeEvent(BaseModel):
@@ -253,6 +265,9 @@ class ConversationDetail(BaseModel):
     project_name: str | None
     task_id: str | None
     task_status: TaskStatus | None
+    task_workspace_ref: str | None
+    task_base_branch: str | None
+    task_model: str | None
     messages: list[ConversationMessageItem]
     created_at: datetime
     updated_at: datetime
@@ -266,6 +281,8 @@ class CreateConversationRequest(BaseModel):
 class AddConversationMessageRequest(BaseModel):
     content: str
     role: str = "user"
+    selected_skill: str | None = None
+    model: str | None = None
 
 
 class FsBrowseEntry(BaseModel):

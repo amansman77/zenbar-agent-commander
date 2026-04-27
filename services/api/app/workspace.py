@@ -79,3 +79,19 @@ def prepare_workspace(repo_path: str, default_branch: str, workspace_type: str, 
     _run_git(["checkout", default_branch], str(workspace_path))
     _run_git(["checkout", "-b", workspace_ref], str(workspace_path))
     return PreparedWorkspace(str(workspace_path), workspace_ref, workspace_type)
+
+
+def cleanup_workspace(workspace_path: str | None, workspace_type: str | None, repo_path: str | None) -> None:
+    if not workspace_path:
+        return
+    path = Path(workspace_path)
+    if not path.exists():
+        return
+    if workspace_type == "worktree" and repo_path:
+        repo = Path(repo_path).expanduser().resolve()
+        try:
+            _run_git(["worktree", "remove", "--force", str(path)], str(repo))
+        except RuntimeError:
+            pass
+    if path.exists():
+        shutil.rmtree(path, ignore_errors=True)
