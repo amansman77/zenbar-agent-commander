@@ -1008,6 +1008,12 @@ function ConversationDetailScreen({
   }, [conversation?.messages.length]);
 
   useEffect(() => {
+    if (activeTab === "chat") {
+      messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
     if (!skillMenuOpen) return;
     const handler = (e: MouseEvent) => {
       if (skillMenuRef.current && !skillMenuRef.current.contains(e.target as Node)) {
