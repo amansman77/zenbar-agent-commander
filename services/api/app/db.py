@@ -43,6 +43,8 @@ def ensure_schema() -> None:
             connection.execute(text("ALTER TABLE tasks ADD COLUMN model VARCHAR(255)"))
         if "effective_model" not in columns:
             connection.execute(text("ALTER TABLE tasks ADD COLUMN effective_model VARCHAR(255)"))
+        if "profile" not in columns:
+            connection.execute(text("ALTER TABLE tasks ADD COLUMN profile VARCHAR(255)"))
         if "reasoning_effort" not in columns:
             connection.execute(text("ALTER TABLE tasks ADD COLUMN reasoning_effort VARCHAR(16)"))
         if "pending_interaction_type" not in columns:

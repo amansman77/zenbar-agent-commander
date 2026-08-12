@@ -59,6 +59,15 @@ export interface ListRuntimeModelsResponse {
   source: "runtime" | "fallback";
 }
 
+export interface RuntimeProfileOption {
+  id: string;
+  description: string | null;
+}
+
+export interface ListRuntimeProfilesResponse {
+  profiles: RuntimeProfileOption[];
+}
+
 export interface RuntimeSkill {
   id: string;
   name: string;
@@ -78,6 +87,7 @@ export interface TaskSummary {
   execution_mode: ExecutionMode;
   model: string | null;
   effective_model: string | null;
+  profile: string | null;
   reasoning_effort: ReasoningEffort | null;
   workspace_type: WorkspaceType;
   workspace_ref: string;
@@ -165,6 +175,7 @@ export interface CreateTaskRequest {
   title: string;
   prompt: string;
   model: string;
+  profile?: string | null;
   reasoning_effort?: ReasoningEffort;
   execution_mode?: ExecutionMode;
   workspace_type?: WorkspaceType;
@@ -173,6 +184,7 @@ export interface CreateTaskRequest {
 export interface ApproveTaskRequest {
   actor?: string;
   model?: string;
+  profile?: string;
 }
 
 export interface RespondTaskRequest {
@@ -224,6 +236,7 @@ export interface ConversationDetail {
   task_workspace_ref: string | null;
   task_base_branch: string | null;
   task_model: string | null;
+  task_profile: string | null;
   messages: ConversationMessageItem[];
   created_at: string;
   updated_at: string;
@@ -239,6 +252,7 @@ export interface AddConversationMessageRequest {
   role?: string;
   selected_skill?: string | null;
   model?: string | null;
+  profile?: string | null;
 }
 
 export interface FsBrowseEntry {

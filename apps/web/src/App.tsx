@@ -11,6 +11,7 @@ import type {
   FsBrowseResponse,
   ReasoningEffort,
   RuntimeModelOption,
+  RuntimeProfileOption,
   RuntimeSkill,
   ProjectSummary,
   TaskDetail,
@@ -963,6 +964,14 @@ function ConversationDetailScreen({
     .map((m) => (typeof m === "string" ? m : m.id))
     .filter((id) => id !== "default");
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+
+  const { data: profilesData } = useQuery({
+    queryKey: ["runtime-profiles"],
+    queryFn: () => api.listRuntimeProfiles(),
+    staleTime: 5 * 60 * 1000,
+  });
+  const availableProfiles: RuntimeProfileOption[] = profilesData?.profiles ?? [];
+  const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
   const effectiveModel = conversation?.task_model ?? selectedModel ?? availableModels[0] ?? null;
   const taskStarted = conversation?.task_id != null;
 
@@ -990,7 +999,7 @@ function ConversationDetailScreen({
   });
 
   const addMessageMutation = useMutation({
-    mutationFn: (payload: { content: string; selected_skill?: string | null; model?: string | null }) =>
+    mutationFn: (payload: { content: string; selected_skill?: string | null; model?: string | null; profile?: string | null }) =>
       api.addConversationMessage(conversationId, payload),
     onSuccess: (updated) => {
       setInput("");
@@ -1036,7 +1045,8 @@ function ConversationDetailScreen({
     const trimmed = input.trim();
     if (trimmed && !isSendDisabled) {
       const modelToUse = taskStarted ? null : (selectedModel || availableModels[0] || null);
-      addMessageMutation.mutate({ content: trimmed, selected_skill: selectedSkill, model: modelToUse });
+      const profileToUse = taskStarted ? null : selectedProfile;
+      addMessageMutation.mutate({ content: trimmed, selected_skill: selectedSkill, model: modelToUse, profile: profileToUse });
     }
   };
 
@@ -1203,6 +1213,37 @@ function ConversationDetailScreen({
                 >
                   {availableModels.map((m) => (
                     <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </label>
+            )
+          )}
+          {taskStarted ? (
+            conversation?.task_profile ? (
+              <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }}>▤ {conversation.task_profile}</span>
+            ) : null
+          ) : (
+            availableProfiles.length > 0 && (
+              <label style={{ display: "flex", alignItems: "center", gap: "3px", fontSize: "0.73rem", color: "var(--text-soft)" }}>
+                <span>▤</span>
+                <select
+                  value={selectedProfile ?? ""}
+                  onChange={(e) => setSelectedProfile(e.target.value || null)}
+                  title="Codex profile"
+                  style={{
+                    fontSize: "0.73rem",
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--text-soft)",
+                    cursor: "pointer",
+                    padding: 0,
+                    outline: "none",
+                    maxWidth: "140px",
+                  }}
+                >
+                  <option value="">No profile</option>
+                  {availableProfiles.map((p) => (
+                    <option key={p.id} value={p.id}>{p.id}</option>
                   ))}
                 </select>
               </label>
@@ -1538,6 +1579,7 @@ function TaskForm({
   models,
   modelsLoading,
   modelsError,
+  profiles,
   isMobile,
   onCreate,
   onClose
@@ -1546,6 +1588,7 @@ function TaskForm({
   models: RuntimeModelOption[];
   modelsLoading: boolean;
   modelsError: string | null;
+  profiles: RuntimeProfileOption[];
   isMobile: boolean;
   onCreate: (payload: CreateTaskRequest) => void;
   onClose: () => void;
@@ -1556,6 +1599,7 @@ function TaskForm({
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("execute");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [model, setModel] = useState("");
+  const [profile, setProfile] = useState("");
   const [modelSheetOpen, setModelSheetOpen] = useState(false);
   const [promptExpanded, setPromptExpanded] = useState(false);
   const [viewportInset, setViewportInset] = useState(0);
@@ -1621,6 +1665,7 @@ function TaskForm({
       title,
       prompt,
       model,
+      profile: profile || null,
       reasoning_effort: reasoningEffort,
       execution_mode: executionMode,
       workspace_type: "branch"
@@ -1771,6 +1816,24 @@ function TaskForm({
                   {model || (modelsLoading ? "Loading runtime models..." : "Select model")}
                 </button>
               </label>
+              {profiles.length > 0 ? (
+                <label>
+                  Profile
+                  <select
+                    aria-label="Profile"
+                    value={profile}
+                    onChange={(event) => setProfile(event.target.value)}
+                    disabled={!project}
+                  >
+                    <option value="">No profile</option>
+                    {profiles.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               {modelsError ? <p role="alert">{modelsError}</p> : null}
               {executionMode === "plan" ? (
                 <p>Plan mode checks Codex runtime collaboration capability and streams planning steps into the event log.</p>
@@ -1807,6 +1870,12 @@ function TaskForm({
                 <span className="meta-label">Model</span>
                 <strong className="break-value mono">{model || "-"}</strong>
               </div>
+              {profiles.length > 0 ? (
+                <div className="review-field">
+                  <span className="meta-label">Profile</span>
+                  <strong className="break-value mono">{profile || "-"}</strong>
+                </div>
+              ) : null}
             </section>
           ) : null}
         </div>
@@ -1939,6 +2008,19 @@ function TaskForm({
           ))}
         </select>
       </label>
+      {profiles.length > 0 ? (
+        <label>
+          Profile
+          <select aria-label="Profile" value={profile} onChange={(event) => setProfile(event.target.value)} disabled={!project}>
+            <option value="">No profile</option>
+            {profiles.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.id}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       {modelsLoading ? <p>Loading runtime models...</p> : null}
       {modelsError ? <p role="alert">{modelsError}</p> : null}
       {executionMode === "plan" ? (
@@ -2109,6 +2191,12 @@ export function App() {
     queryKey: ["runtime-models"],
     queryFn: api.listRuntimeModels,
     staleTime: 0
+  });
+
+  const runtimeProfilesQuery = useQuery({
+    queryKey: ["runtime-profiles"],
+    queryFn: api.listRuntimeProfiles,
+    staleTime: 5 * 60 * 1000
   });
 
   const selectedProject = useMemo(
@@ -2584,6 +2672,12 @@ export function App() {
                 <span className="meta-label">Model (effective)</span>
                 <strong className="break-value mono">{task.effective_model ?? task.model ?? "Unknown"}</strong>
               </div>
+              {task.profile ? (
+                <div>
+                  <span className="meta-label">Profile</span>
+                  <strong className="break-value mono">{task.profile}</strong>
+                </div>
+              ) : null}
               <div>
                 <span className="meta-label">Execution mode</span>
                 <strong className="break-value">{task.execution_mode}</strong>
@@ -2758,6 +2852,12 @@ export function App() {
             <span className="meta-label">Effective model</span>
             <strong className="break-value mono">{task.effective_model ?? "Unknown"}</strong>
           </div>
+          {task.profile ? (
+            <div>
+              <span className="meta-label">Profile</span>
+              <strong className="break-value mono">{task.profile}</strong>
+            </div>
+          ) : null}
           <div>
             <span className="meta-label">Reasoning effort</span>
             <strong className="break-value">{task.reasoning_effort ?? "medium"}</strong>
@@ -3258,6 +3358,7 @@ export function App() {
           models={runtimeModelsQuery.data?.models ?? []}
           modelsLoading={runtimeModelsQuery.isLoading}
           modelsError={runtimeModelsQuery.error instanceof Error ? runtimeModelsQuery.error.message : null}
+          profiles={runtimeProfilesQuery.data?.profiles ?? []}
           isMobile={isMobile}
           onCreate={(payload) => createTaskMutation.mutate(payload)}
           onClose={() => setTaskModalOpen(false)}

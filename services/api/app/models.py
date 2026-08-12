@@ -37,6 +37,7 @@ class Task(Base):
     execution_mode: Mapped[str] = mapped_column(String(32), default="execute")
     model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     effective_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    profile: Mapped[str | None] = mapped_column(String(255), nullable=True)
     reasoning_effort: Mapped[str | None] = mapped_column(String(16), nullable=True)
     workspace_type: Mapped[str] = mapped_column(String(32), default="branch")
     workspace_ref: Mapped[str] = mapped_column(String(255))

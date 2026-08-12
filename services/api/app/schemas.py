@@ -67,6 +67,15 @@ class RuntimeModelsResponse(BaseModel):
     source: Literal["runtime", "fallback"]
 
 
+class RuntimeProfileOption(BaseModel):
+    id: str
+    description: str | None = None
+
+
+class RuntimeProfilesResponse(BaseModel):
+    profiles: list[RuntimeProfileOption]
+
+
 class RuntimeSkill(BaseModel):
     id: str
     name: str
@@ -91,6 +100,7 @@ class CreateTaskRequest(BaseModel):
     title: str
     prompt: str
     model: str = Field(min_length=1)
+    profile: str | None = None
     reasoning_effort: ReasoningEffort = "medium"
     execution_mode: ExecutionMode = "execute"
     workspace_type: WorkspaceType = "branch"
@@ -99,6 +109,7 @@ class CreateTaskRequest(BaseModel):
 class TaskApprovalRequest(BaseModel):
     actor: str = "system"
     model: str | None = Field(default=None, min_length=1)
+    profile: str | None = Field(default=None, min_length=1)
 
 
 class TaskApprovalResponse(BaseModel):
@@ -154,6 +165,7 @@ class TaskSummary(BaseModel):
     execution_mode: ExecutionMode
     model: str | None
     effective_model: str | None
+    profile: str | None
     reasoning_effort: ReasoningEffort | None
     workspace_type: WorkspaceType
     workspace_ref: str
@@ -204,6 +216,7 @@ class RuntimeStartRequest(BaseModel):
     title: str
     prompt: str
     model: str
+    profile: str | None = None
     reasoning_effort: ReasoningEffort = "medium"
     repo_path: str
     working_directory: str
@@ -268,6 +281,7 @@ class ConversationDetail(BaseModel):
     task_workspace_ref: str | None
     task_base_branch: str | None
     task_model: str | None
+    task_profile: str | None
     messages: list[ConversationMessageItem]
     created_at: datetime
     updated_at: datetime
@@ -283,6 +297,7 @@ class AddConversationMessageRequest(BaseModel):
     role: str = "user"
     selected_skill: str | None = None
     model: str | None = None
+    profile: str | None = None
 
 
 class FsBrowseEntry(BaseModel):

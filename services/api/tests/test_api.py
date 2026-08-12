@@ -1249,3 +1249,41 @@ def test_ensure_schema_migrates_waiting_approval_to_waiting_result_approval():
         task = get_task(db, "task-migrate")
         assert task is not None
         assert task.status == "waiting_result_approval"
+
+
+def test_get_runtime_profiles_reads_codex_home_config_profiles(tmp_path, monkeypatch):
+    (tmp_path / "azure-sqlgen.config.toml").write_text(
+        'model = "gpt-5.5"\nmodel_provider = "azure"\napproval_policy = "on-request"\nsandbox_mode = "workspace-write"\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    response = client.get("/runtime/profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["profiles"] == [
+        {
+            "id": "azure-sqlgen",
+            "description": "gpt-5.5, approval=on-request, sandbox=workspace-write",
+        }
+    ]
+
+
+def test_task_can_be_created_with_a_profile():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Profile Task", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={
+                "project_id": project["id"],
+                "title": "Profile task",
+                "prompt": "Do work",
+                "model": "default",
+                "profile": "azure-sqlgen",
+            },
+        ).json()
+        assert task["profile"] == "azure-sqlgen"

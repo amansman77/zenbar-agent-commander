@@ -141,6 +141,7 @@ class TaskOrchestrator:
             title=refreshed.title,
             prompt=refreshed.prompt,
             model=resolved_model,
+            profile=refreshed.profile,
             reasoning_effort=resolved_reasoning_effort,  # type: ignore[arg-type]
             repo_path=project.repo_path,
             working_directory=prepared.workspace_path,
@@ -229,9 +230,20 @@ class TaskOrchestrator:
         refreshed = self._require_task(db, task.id, "stopping task")
         return refreshed
 
-    async def retry_task(self, db: Session, task: Task, model_override: str | None = None) -> Task:
-        if model_override and model_override != task.model:
-            task.model = model_override
+    async def retry_task(
+        self,
+        db: Session,
+        task: Task,
+        model_override: str | None = None,
+        profile_override: str | None = None,
+    ) -> Task:
+        model_changed = bool(model_override and model_override != task.model)
+        profile_changed = profile_override is not None and profile_override != (task.profile or "")
+        if model_changed or profile_changed:
+            if model_changed:
+                task.model = model_override
+            if profile_changed:
+                task.profile = profile_override or None
             db.add(task)
             db.commit()
             append_event(
@@ -239,11 +251,23 @@ class TaskOrchestrator:
                 task,
                 RuntimeEvent(
                     type="agent_status",
-                    message=f"Retry requested with model override: {model_override}",
-                    payload={"type": "retry_model_override", "model": model_override},
+                    message="Retry requested with " + " and ".join(
+                        filter(
+                            None,
+                            [
+                                f"model override: {model_override}" if model_changed else None,
+                                f"profile override: {task.profile or 'none'}" if profile_changed else None,
+                            ],
+                        )
+                    ),
+                    payload={
+                        "type": "retry_override",
+                        "model": model_override if model_changed else None,
+                        "profile": task.profile if profile_changed else None,
+                    },
                 ),
             )
-            refreshed = self._require_task(db, task.id, "applying retry model override")
+            refreshed = self._require_task(db, task.id, "applying retry overrides")
             if refreshed.runtime_session_id:
                 refreshed = clear_runtime_session(db, refreshed, status=refreshed.status)
             return await self._restart_with_fresh_session(db, refreshed)

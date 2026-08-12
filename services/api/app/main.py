@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from .db import Base, engine, ensure_schema, get_db
 from .app_server_manager import ManagedAppServer
+from .codex_profiles import list_profiles as list_codex_profiles
 from .model_catalog import RuntimeModelCatalog
 from .repository import (
     add_approval,
@@ -67,6 +69,8 @@ from .schemas import (
     RespondTaskRequest,
     RuntimeModelOption,
     RuntimeModelsResponse,
+    RuntimeProfileOption,
+    RuntimeProfilesResponse,
     RuntimeSkill,
     RuntimeSkillsResponse,
     FollowupTurnRequest,
@@ -280,6 +284,7 @@ async def post_conversation_message(
                 title=payload.content[:50].strip() or "Conversation",
                 prompt=payload.content,
                 model=payload.model or default_model,
+                profile=payload.profile,
                 reasoning_effort="medium",
                 execution_mode="execute",
                 workspace_type="branch",
@@ -358,6 +363,14 @@ def get_project_tasks(project_id: str, db: Session = Depends(get_db)):
 async def get_runtime_models():
     models, source = await model_catalog.list_models()
     return RuntimeModelsResponse(models=[RuntimeModelOption(id=item) for item in models], source=source)
+
+
+@app.get("/runtime/profiles", response_model=RuntimeProfilesResponse)
+async def get_runtime_profiles():
+    profiles = await asyncio.to_thread(list_codex_profiles)
+    return RuntimeProfilesResponse(
+        profiles=[RuntimeProfileOption(id=item.id, description=item.description) for item in profiles]
+    )
 
 
 @app.get("/runtime/skills", response_model=RuntimeSkillsResponse)
@@ -492,7 +505,7 @@ async def retry_task(task_id: str, payload: TaskApprovalRequest, db: Session = D
             raise HTTPException(status_code=400, detail=f"Invalid model '{payload.model}'. Allowed models: {allowed}")
     add_approval(db, task, "retry", payload.actor)
     try:
-        await orchestrator.retry_task(db, task, model_override=payload.model)
+        await orchestrator.retry_task(db, task, model_override=payload.model, profile_override=payload.profile)
     except Exception as exc:
         detail = _safe_runtime_error_detail("Retry failed", exc)
         raise HTTPException(status_code=409, detail=detail) from exc

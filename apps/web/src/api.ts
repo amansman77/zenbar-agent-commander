@@ -11,6 +11,7 @@ import type {
   FsBrowseResponse,
   FollowupTurnRequest,
   ListRuntimeModelsResponse,
+  ListRuntimeProfilesResponse,
   ListRuntimeSkillsResponse,
   CreateTaskRequest,
   ProjectSummary,
@@ -92,6 +93,7 @@ export const api = {
   listTasks: (projectId: string) =>
     request<TaskSummary[]>(`/projects/${projectId}/tasks`),
   listRuntimeModels: () => request<ListRuntimeModelsResponse>("/runtime/models"),
+  listRuntimeProfiles: () => request<ListRuntimeProfilesResponse>("/runtime/profiles"),
   listRuntimeSkills: () => request<ListRuntimeSkillsResponse>("/runtime/skills"),
   createTask: (payload: CreateTaskRequest) =>
     request<TaskDetail>("/tasks", {

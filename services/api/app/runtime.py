@@ -12,7 +12,23 @@ from typing import Any
 import websockets
 from websockets.asyncio.client import ClientConnection
 
+from .codex_profiles import RuntimeProfile, get_profile
 from .schemas import RuntimeEvent, RuntimeSession, RuntimeSkill, RuntimeStartRequest, TaskDiff
+
+
+def _sandbox_policy_for_mode(mode: str, working_directory: str) -> dict[str, Any]:
+    if mode == "read-only":
+        return {"type": "readOnly", "networkAccess": False}
+    if mode == "danger-full-access":
+        return {"type": "dangerFullAccess"}
+    return {
+        "type": "workspaceWrite",
+        "writableRoots": [working_directory],
+        "readOnlyAccess": {"type": "fullAccess"},
+        "networkAccess": False,
+        "excludeTmpdirEnvVar": False,
+        "excludeSlashTmp": False,
+    }
 
 
 def _extract_files_from_diff(diff: str) -> list[str]:
@@ -236,14 +252,20 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         await self._ensure_connection()
         requested_model = request.model.strip()
         used_runtime_default = _is_default_model_alias(requested_model)
+        profile = get_profile(request.profile)
         thread_start_params: dict[str, Any] = {
             "cwd": request.working_directory,
-            "approvalPolicy": "on-request",
-            "sandbox": "workspace-write",
-            "personality": "pragmatic",
+            "approvalPolicy": (profile.approval_policy if profile else None) or "on-request",
+            "sandbox": (profile.sandbox_mode if profile else None) or "workspace-write",
+            "personality": (profile.personality if profile else None) or "pragmatic",
         }
+        if profile and profile.model_provider:
+            thread_start_params["modelProvider"] = profile.model_provider
         if not used_runtime_default:
             thread_start_params["model"] = requested_model
+        elif profile and profile.model:
+            thread_start_params["model"] = profile.model
+            used_runtime_default = False
         try:
             thread = await self._rpc("thread/start", thread_start_params)
         except RuntimeError as exc:
@@ -423,7 +445,9 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         thread_id: str,
         request: RuntimeStartRequest,
     ) -> dict[str, Any]:
-        return {
+        profile = get_profile(request.profile)
+        sandbox_mode = (profile.sandbox_mode if profile else None) or "workspace-write"
+        params: dict[str, Any] = {
             "threadId": thread_id,
             "input": [{"type": "text", "text": _prompt_with_workspace(request), "text_elements": []}],
             "collaborationMode": (
@@ -438,17 +462,15 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                 if request.execution_mode == "plan"
                 else None
             ),
-            "sandboxPolicy": {
-                "type": "workspaceWrite",
-                "writableRoots": [request.working_directory],
-                "readOnlyAccess": {"type": "fullAccess"},
-                "networkAccess": False,
-                "excludeTmpdirEnvVar": False,
-                "excludeSlashTmp": False,
-            },
-            "approvalPolicy": "on-request",
-            "personality": "pragmatic",
+            "sandboxPolicy": _sandbox_policy_for_mode(sandbox_mode, request.working_directory),
+            "approvalPolicy": (profile.approval_policy if profile else None) or "on-request",
+            "personality": (profile.personality if profile else None) or "pragmatic",
         }
+        if profile and profile.model and _is_default_model_alias(request.model):
+            params["model"] = profile.model
+        if profile and profile.reasoning_effort:
+            params["effort"] = profile.reasoning_effort
+        return params
 
     async def get_diff(self, session_id: str) -> TaskDiff:
         return self._require_session(session_id).latest_diff
