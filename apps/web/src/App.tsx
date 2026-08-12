@@ -3751,42 +3751,59 @@ export function App() {
                   <h2>Projects</h2>
                   <p>Connected repositories</p>
                 </div>
-                <div className="inline-actions">
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => setPromptsModalOpen(true)}
-                    disabled={!selectedProject}
-                  >
-                    Prompts
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={handleDeleteProject}
-                    disabled={!selectedProject || deleteProjectMutation.isPending}
-                  >
-                    {deleteProjectMutation.isPending ? "Deleting..." : "Delete Project"}
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={handleDeleteProject}
+                  disabled={!selectedProject || deleteProjectMutation.isPending}
+                >
+                  {deleteProjectMutation.isPending ? "Deleting..." : "Delete Project"}
+                </button>
               </div>
             </div>
             <div className="panel-scroll">
               {projectsQuery.data?.length ? (
                 projectsQuery.data.map((project) => (
-                  <button
+                  <div
                     key={project.id}
                     className={project.id === selectedProjectId ? "list-item active" : "list-item"}
-                    onClick={() => {
-                      setSelectedProjectId(project.id);
-                      setSelectedTaskId(null);
-                    }}
+                    style={{ display: "flex", alignItems: "center", gap: "8px" }}
                     title={project.repo_path}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedProjectId(project.id);
+                        setSelectedTaskId(null);
+                      }}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        textAlign: "left",
+                        background: "none",
+                        border: "none",
+                        padding: 0,
+                        color: "inherit",
+                        font: "inherit",
+                        cursor: "pointer",
+                      }}
                     >
                       <strong>{project.name}</strong>
                       <span className="item-secondary truncate">{project.repo_path}</span>
                     </button>
-                  ))
+                    <button
+                      type="button"
+                      className="secondary"
+                      style={{ flexShrink: 0, fontSize: "0.8rem", padding: "4px 10px" }}
+                      onClick={() => {
+                        setSelectedProjectId(project.id);
+                        setPromptsModalOpen(true);
+                      }}
+                    >
+                      Prompts
+                    </button>
+                  </div>
+                ))
               ) : (
                 <p className="empty-state">No projects yet. Create one from New Project.</p>
               )}
