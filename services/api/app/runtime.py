@@ -261,11 +261,13 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         }
         if profile and profile.model_provider:
             thread_start_params["modelProvider"] = profile.model_provider
-        if not used_runtime_default:
-            thread_start_params["model"] = requested_model
-        elif profile and profile.model:
+        if profile and profile.model:
+            # A profile owns the model it declares; it wins over an explicit
+            # model pick, matching what Codex CLI's --profile does.
             thread_start_params["model"] = profile.model
             used_runtime_default = False
+        elif not used_runtime_default:
+            thread_start_params["model"] = requested_model
         try:
             thread = await self._rpc("thread/start", thread_start_params)
         except RuntimeError as exc:
@@ -454,7 +456,9 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                 {
                     "mode": "plan",
                     "settings": {
-                        "model": None if _is_default_model_alias(request.model) else request.model,
+                        "model": (profile.model if profile and profile.model else None) or (
+                            None if _is_default_model_alias(request.model) else request.model
+                        ),
                         "developer_instructions": None,
                         "reasoning_effort": request.reasoning_effort,
                     },
@@ -466,7 +470,9 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             "approvalPolicy": (profile.approval_policy if profile else None) or "on-request",
             "personality": (profile.personality if profile else None) or "pragmatic",
         }
-        if profile and profile.model and _is_default_model_alias(request.model):
+        if profile and profile.model:
+            # A profile owns the model it declares; it wins over an explicit
+            # model pick, matching what Codex CLI's --profile does.
             params["model"] = profile.model
         if profile and profile.reasoning_effort:
             params["effort"] = profile.reasoning_effort

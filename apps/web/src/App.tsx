@@ -972,6 +972,8 @@ function ConversationDetailScreen({
   });
   const availableProfiles: RuntimeProfileOption[] = profilesData?.profiles ?? [];
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
+  const selectedProfileOption = availableProfiles.find((p) => p.id === selectedProfile) ?? null;
+  const profileControlsModel = Boolean(selectedProfileOption?.model);
   const effectiveModel = conversation?.task_model ?? selectedModel ?? availableModels[0] ?? null;
   const taskStarted = conversation?.task_id != null;
 
@@ -1044,7 +1046,7 @@ function ConversationDetailScreen({
   const handleSend = () => {
     const trimmed = input.trim();
     if (trimmed && !isSendDisabled) {
-      const modelToUse = taskStarted ? null : (selectedModel || availableModels[0] || null);
+      const modelToUse = taskStarted || profileControlsModel ? null : (selectedModel || availableModels[0] || null);
       const profileToUse = taskStarted ? null : selectedProfile;
       addMessageMutation.mutate({ content: trimmed, selected_skill: selectedSkill, model: modelToUse, profile: profileToUse });
     }
@@ -1193,6 +1195,10 @@ function ConversationDetailScreen({
             effectiveModel ? (
               <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }}>◎ {effectiveModel}</span>
             ) : null
+          ) : profileControlsModel ? (
+            <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }} title="Model is set by the selected profile">
+              ◎ {selectedProfileOption?.model}
+            </span>
           ) : (
             availableModels.length > 0 && (
               <label style={{ display: "flex", alignItems: "center", gap: "3px", fontSize: "0.73rem", color: "var(--text-soft)" }}>
@@ -1600,6 +1606,8 @@ function TaskForm({
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [model, setModel] = useState("");
   const [profile, setProfile] = useState("");
+  const selectedProfileOption = profiles.find((p) => p.id === profile) ?? null;
+  const profileControlsModel = Boolean(selectedProfileOption?.model);
   const [modelSheetOpen, setModelSheetOpen] = useState(false);
   const [promptExpanded, setPromptExpanded] = useState(false);
   const [viewportInset, setViewportInset] = useState(0);
@@ -1657,14 +1665,14 @@ function TaskForm({
     if (!project) {
       return;
     }
-    if (typeof window !== "undefined" && model) {
+    if (typeof window !== "undefined" && model && !profileControlsModel) {
       window.localStorage.setItem(LAST_TASK_MODEL_KEY, model);
     }
     onCreate({
       project_id: project.id,
       title,
       prompt,
-      model,
+      model: profileControlsModel ? (selectedProfileOption!.model as string) : model,
       profile: profile || null,
       reasoning_effort: reasoningEffort,
       execution_mode: executionMode,
@@ -1684,8 +1692,9 @@ function TaskForm({
 
   const requiredFieldsFilled = title.trim().length > 0 && prompt.trim().length > 0;
   const canProceedStep1 = Boolean(project && requiredFieldsFilled);
-  const canProceedStep2 = Boolean(project && model && models.length > 0 && !modelsLoading);
-  const canSubmit = Boolean(project && model && models.length > 0 && !modelsLoading);
+  const modelReady = profileControlsModel || Boolean(model && models.length > 0 && !modelsLoading);
+  const canProceedStep2 = Boolean(project && modelReady);
+  const canSubmit = Boolean(project && modelReady);
   const promptPreview =
     prompt.length > 140
       ? `${prompt.slice(0, 140).replace(/\s+/g, " ").trimEnd()}...`
@@ -1804,18 +1813,6 @@ function TaskForm({
                   </button>
                 </div>
               </label>
-              <label>
-                Model
-                <button
-                  type="button"
-                  className="model-picker-button"
-                  onClick={() => setModelSheetOpen(true)}
-                  disabled={!project || modelsLoading}
-                  aria-label="Model"
-                >
-                  {model || (modelsLoading ? "Loading runtime models..." : "Select model")}
-                </button>
-              </label>
               {profiles.length > 0 ? (
                 <label>
                   Profile
@@ -1834,6 +1831,27 @@ function TaskForm({
                   </select>
                 </label>
               ) : null}
+              {profileControlsModel ? (
+                <label>
+                  Model
+                  <div className="model-picker-button" aria-label="Model" title="Model is set by the selected profile">
+                    {selectedProfileOption?.model} (from profile)
+                  </div>
+                </label>
+              ) : (
+                <label>
+                  Model
+                  <button
+                    type="button"
+                    className="model-picker-button"
+                    onClick={() => setModelSheetOpen(true)}
+                    disabled={!project || modelsLoading}
+                    aria-label="Model"
+                  >
+                    {model || (modelsLoading ? "Loading runtime models..." : "Select model")}
+                  </button>
+                </label>
+              )}
               {modelsError ? <p role="alert">{modelsError}</p> : null}
               {executionMode === "plan" ? (
                 <p>Plan mode checks Codex runtime collaboration capability and streams planning steps into the event log.</p>
@@ -1868,7 +1886,9 @@ function TaskForm({
               </div>
               <div className="review-field">
                 <span className="meta-label">Model</span>
-                <strong className="break-value mono">{model || "-"}</strong>
+                <strong className="break-value mono">
+                  {(profileControlsModel ? selectedProfileOption?.model : model) || "-"}
+                </strong>
               </div>
               {profiles.length > 0 ? (
                 <div className="review-field">
@@ -1997,17 +2017,6 @@ function TaskForm({
           <option value="high">High</option>
         </select>
       </label>
-      <label>
-        Model
-        <select aria-label="Model" value={model} onChange={(event) => setModel(event.target.value)} disabled={!project || modelsLoading}>
-          <option value="">Select model</option>
-          {models.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.id}
-            </option>
-          ))}
-        </select>
-      </label>
       {profiles.length > 0 ? (
         <label>
           Profile
@@ -2021,6 +2030,24 @@ function TaskForm({
           </select>
         </label>
       ) : null}
+      {profileControlsModel ? (
+        <label>
+          Model
+          <input aria-label="Model" value={`${selectedProfileOption?.model} (from profile)`} disabled readOnly />
+        </label>
+      ) : (
+        <label>
+          Model
+          <select aria-label="Model" value={model} onChange={(event) => setModel(event.target.value)} disabled={!project || modelsLoading}>
+            <option value="">Select model</option>
+            {models.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.id}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       {modelsLoading ? <p>Loading runtime models...</p> : null}
       {modelsError ? <p role="alert">{modelsError}</p> : null}
       {executionMode === "plan" ? (

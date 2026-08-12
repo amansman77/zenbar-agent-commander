@@ -70,6 +70,7 @@ class RuntimeModelsResponse(BaseModel):
 class RuntimeProfileOption(BaseModel):
     id: str
     description: str | None = None
+    model: str | None = None
 
 
 class RuntimeProfilesResponse(BaseModel):

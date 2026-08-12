@@ -62,6 +62,7 @@ export interface ListRuntimeModelsResponse {
 export interface RuntimeProfileOption {
   id: string;
   description: string | null;
+  model: string | null;
 }
 
 export interface ListRuntimeProfilesResponse {

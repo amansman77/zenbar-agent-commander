@@ -1265,6 +1265,7 @@ def test_get_runtime_profiles_reads_codex_home_config_profiles(tmp_path, monkeyp
         {
             "id": "azure-sqlgen",
             "description": "gpt-5.5, approval=on-request, sandbox=workspace-write",
+            "model": "gpt-5.5",
         }
     ]
 

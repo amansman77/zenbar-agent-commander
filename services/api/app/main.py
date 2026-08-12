@@ -369,7 +369,10 @@ async def get_runtime_models():
 async def get_runtime_profiles():
     profiles = await asyncio.to_thread(list_codex_profiles)
     return RuntimeProfilesResponse(
-        profiles=[RuntimeProfileOption(id=item.id, description=item.description) for item in profiles]
+        profiles=[
+            RuntimeProfileOption(id=item.id, description=item.description, model=item.model)
+            for item in profiles
+        ]
     )
 
 
