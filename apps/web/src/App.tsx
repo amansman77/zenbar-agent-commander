@@ -1574,15 +1574,23 @@ function ProjectPromptsScreen({
   return (
     <section className="panel mobile-screen">
       <div className="panel-header">
-        <div className="mobile-title-row">
-          <button type="button" className="secondary mobile-back" onClick={onBack}>
-            Back
-          </button>
-          <h2>{project ? `${project.name} 프롬프트` : "Prompts"}</h2>
+        <div className="row-header">
+          <div>
+            <div className="mobile-title-row">
+              <button type="button" className="secondary mobile-back" onClick={onBack}>
+                Back
+              </button>
+              <h2 className="truncate" style={{ minWidth: 0 }}>
+                {project ? `${project.name} 프롬프트` : "Prompts"}
+              </h2>
+            </div>
+          </div>
+          <div className="inline-actions">
+            <button type="button" onClick={openCreateForm} disabled={!project}>
+              + Add
+            </button>
+          </div>
         </div>
-        <button type="button" onClick={openCreateForm} disabled={!project}>
-          + Add prompt
-        </button>
       </div>
       <div className="panel-scroll">
         {!project ? (
@@ -1591,14 +1599,14 @@ function ProjectPromptsScreen({
           <p className="empty-state">Loading...</p>
         ) : promptsQuery.data?.length ? (
           promptsQuery.data.map((prompt) => (
-            <div key={prompt.id} className="list-item" style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
+            <div key={prompt.id} className="list-item">
+              <div>
                 <strong>{prompt.title}</strong>
                 <p className="item-secondary" style={{ whiteSpace: "pre-wrap", marginTop: "4px" }}>
                   {prompt.content}
                 </p>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "6px", flexShrink: 0 }}>
+              <div className="inline-actions" style={{ marginTop: "8px" }}>
                 <button type="button" className="secondary" style={{ fontSize: "0.75rem", padding: "4px 10px" }} onClick={() => openEditForm(prompt)}>
                   편집
                 </button>
@@ -1619,7 +1627,7 @@ function ProjectPromptsScreen({
             </div>
           ))
         ) : (
-          <p className="empty-state">저장된 프롬프트가 없습니다. "+ Add prompt"로 추가하세요.</p>
+          <p className="empty-state">저장된 프롬프트가 없습니다. "+ Add"로 추가하세요.</p>
         )}
       </div>
 
