@@ -1213,6 +1213,15 @@ textarea {
   min-height: calc(100vh - var(--header-height) - 2.4rem);
 }
 
+/* The conversation screen keeps its compose bar pinned at the bottom of the
+   viewport: unlike other mobile-screen panels (which are fine growing with
+   their content), this one must never grow taller than the viewport or the
+   compose bar gets pushed below the fold, forcing the whole page to scroll
+   to reach it. Only the message list (flex: 1, overflow-y: auto) scrolls. */
+.chat-screen {
+  height: calc(100vh - var(--header-height) - 2.4rem);
+}
+
 .mobile-title-row {
   display: flex;
   align-items: center;

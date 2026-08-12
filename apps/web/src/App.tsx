@@ -1117,7 +1117,7 @@ function ConversationDetailScreen({
 
   return (
     <section
-      className="panel mobile-screen"
+      className="panel mobile-screen chat-screen"
       style={{ display: "flex", flexDirection: "column", padding: 0, overflow: "hidden" }}
     >
       <div className="mobile-detail-control">
