@@ -14,3 +14,11 @@ apps/web/.vite
 services/api/.mypy_cache
 services/api/.ruff_cache
 tmp
+.env
+.env.local
+.env.*.local
+!.env.example
+apps/web/.env
+apps/web/.env.local
+services/api/.env
+services/api/.env.local
