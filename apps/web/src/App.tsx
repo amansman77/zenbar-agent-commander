@@ -26,6 +26,42 @@ import { api } from "./api";
 
 const actor = "web-commander";
 const LAST_TASK_MODEL_KEY = "zenbar:lastTaskModel";
+const LAST_VIEW_KEY = "zenbar:lastView";
+
+type LastView = {
+  mobileScreen: MobileScreen;
+  selectedConversationId: string | null;
+  selectedProjectId: string | null;
+  selectedTaskId: string | null;
+};
+
+// Mobile browsers (iOS Safari especially) frequently discard a backgrounded
+// tab and reload it fresh when the user switches back — plain in-memory
+// React state (and history.pushState's state object) doesn't survive that,
+// so without this the app always lands back on the root screen instead of
+// wherever the user actually was.
+function loadLastView(): LastView | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(LAST_VIEW_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LastView;
+    // A screen that depends on an id it doesn't have is unrenderable — fall
+    // back to a safe default rather than restoring into a blank screen.
+    if (parsed.mobileScreen === "conversation-detail" && !parsed.selectedConversationId) {
+      return { ...parsed, mobileScreen: "conversations" };
+    }
+    if ((parsed.mobileScreen === "tasks" || parsed.mobileScreen === "project-prompts") && !parsed.selectedProjectId) {
+      return { ...parsed, mobileScreen: "projects" };
+    }
+    if (parsed.mobileScreen === "detail" && !parsed.selectedTaskId) {
+      return { ...parsed, mobileScreen: parsed.selectedProjectId ? "tasks" : "projects" };
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 
 const statusTone: Record<TaskStatus, string> = {
   queued: "slate",
@@ -2840,14 +2876,15 @@ function RunActionSheet({
 
 export function App() {
   const queryClient = useQueryClient();
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [lastView] = useState(loadLastView); // read once on mount, never re-read
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(lastView?.selectedProjectId ?? null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(lastView?.selectedTaskId ?? null);
   const [responseDraft, setResponseDraft] = useState<Record<string, string>>({});
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [promptsModalOpen, setPromptsModalOpen] = useState(false);
-  const [mobileScreen, setMobileScreen] = useState<MobileScreen>("conversations");
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const [mobileScreen, setMobileScreen] = useState<MobileScreen>(lastView?.mobileScreen ?? "conversations");
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(lastView?.selectedConversationId ?? null);
   const [mobileDetailTab, setMobileDetailTab] = useState<"log" | "diff">("log");
   const [mobilePromptExpanded, setMobilePromptExpanded] = useState(false);
   const [expandedDiffFiles, setExpandedDiffFiles] = useState<Record<string, boolean>>({});
@@ -3130,6 +3167,21 @@ export function App() {
       setMobileScreen("conversations");
     }
   }, [isMobile]);
+
+  // Remember the current screen so a reloaded tab (e.g. iOS Safari
+  // discarding a backgrounded tab) can reopen where the user left off
+  // instead of always landing back on the root screen.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        LAST_VIEW_KEY,
+        JSON.stringify({ mobileScreen, selectedConversationId, selectedProjectId, selectedTaskId })
+      );
+    } catch {
+      // Quota exceeded or private-mode storage — losing "resume where you left off" isn't worth surfacing an error for.
+    }
+  }, [mobileScreen, selectedConversationId, selectedProjectId, selectedTaskId]);
 
   const isHandlingPopState = useRef(false);
 
