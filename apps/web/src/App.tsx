@@ -1500,13 +1500,7 @@ function ConversationDetailScreen({
   );
 }
 
-function ProjectPromptsScreen({
-  project,
-  onBack,
-}: {
-  project: ProjectSummary | null;
-  onBack: () => void;
-}) {
+function useProjectPrompts(project: ProjectSummary | null) {
   const queryClient = useQueryClient();
   const [formOpen, setFormOpen] = useState(false);
   const [editingPrompt, setEditingPrompt] = useState<ProjectPrompt | null>(null);
@@ -1521,6 +1515,13 @@ function ProjectPromptsScreen({
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["project-prompts", project?.id ?? null] });
+
+  const closeForm = () => {
+    setFormOpen(false);
+    setEditingPrompt(null);
+    setTitle("");
+    setContent("");
+  };
 
   const createMutation = useMutation({
     mutationFn: (payload: { title: string; content: string }) => api.createProjectPrompt(project!.id, payload),
@@ -1561,15 +1562,148 @@ function ProjectPromptsScreen({
     setFormOpen(true);
   };
 
-  const closeForm = () => {
-    setFormOpen(false);
-    setEditingPrompt(null);
-    setTitle("");
-    setContent("");
-  };
-
   const canSubmit = Boolean(title.trim() && content.trim());
   const isSaving = createMutation.isPending || updateMutation.isPending;
+
+  const submitForm = () => {
+    if (!canSubmit) return;
+    if (editingPrompt) {
+      updateMutation.mutate({ id: editingPrompt.id, title: title.trim(), content: content.trim() });
+    } else {
+      createMutation.mutate({ title: title.trim(), content: content.trim() });
+    }
+  };
+
+  return {
+    promptsQuery,
+    deleteMutation,
+    formOpen,
+    editingPrompt,
+    title,
+    setTitle,
+    content,
+    setContent,
+    openCreateForm,
+    openEditForm,
+    closeForm,
+    canSubmit,
+    isSaving,
+    submitForm,
+  };
+}
+
+function ProjectPromptList({
+  prompts,
+  isLoading,
+  hasProject,
+  deletePending,
+  onEdit,
+  onDelete,
+}: {
+  prompts: ProjectPrompt[] | undefined;
+  isLoading: boolean;
+  hasProject: boolean;
+  deletePending: boolean;
+  onEdit: (prompt: ProjectPrompt) => void;
+  onDelete: (prompt: ProjectPrompt) => void;
+}) {
+  if (!hasProject) {
+    return <p className="empty-state">프로젝트를 먼저 선택하세요.</p>;
+  }
+  if (isLoading) {
+    return <p className="empty-state">Loading...</p>;
+  }
+  if (!prompts?.length) {
+    return <p className="empty-state">저장된 프롬프트가 없습니다. 위 버튼으로 추가하세요.</p>;
+  }
+  return (
+    <>
+      {prompts.map((prompt) => (
+        <div key={prompt.id} className="list-item">
+          <div>
+            <strong>{prompt.title}</strong>
+            <p className="item-secondary" style={{ whiteSpace: "pre-wrap", marginTop: "4px" }}>
+              {prompt.content}
+            </p>
+          </div>
+          <div className="inline-actions" style={{ marginTop: "8px" }}>
+            <button type="button" className="secondary" style={{ fontSize: "0.75rem", padding: "4px 10px" }} onClick={() => onEdit(prompt)}>
+              편집
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              style={{ fontSize: "0.75rem", padding: "4px 10px" }}
+              disabled={deletePending}
+              onClick={() => onDelete(prompt)}
+            >
+              삭제
+            </button>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function ProjectPromptForm({
+  title,
+  setTitle,
+  content,
+  setContent,
+  onSubmit,
+  onCancel,
+  canSubmit,
+  isSaving,
+}: {
+  title: string;
+  setTitle: (value: string) => void;
+  content: string;
+  setContent: (value: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+  canSubmit: boolean;
+  isSaving: boolean;
+}) {
+  return (
+    <form
+      className="panel form-panel"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit();
+      }}
+    >
+      <label>
+        Title
+        <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="예: 버그 트리아지" />
+      </label>
+      <label>
+        Prompt
+        <textarea
+          className="task-prompt-input"
+          value={content}
+          onChange={(event) => setContent(event.target.value)}
+          placeholder="자주 쓰는 프롬프트 내용을 입력하세요."
+        />
+      </label>
+      <button type="submit" disabled={!canSubmit || isSaving}>
+        {isSaving ? "저장 중..." : "저장"}
+      </button>
+      <button type="button" className="secondary" onClick={onCancel}>
+        취소
+      </button>
+    </form>
+  );
+}
+
+function ProjectPromptsScreen({
+  project,
+  onBack,
+}: {
+  project: ProjectSummary | null;
+  onBack: () => void;
+}) {
+  const pm = useProjectPrompts(project);
 
   return (
     <section className="panel mobile-screen">
@@ -1586,86 +1720,105 @@ function ProjectPromptsScreen({
             </div>
           </div>
           <div className="inline-actions">
-            <button type="button" onClick={openCreateForm} disabled={!project}>
+            <button type="button" onClick={pm.openCreateForm} disabled={!project}>
               + Add
             </button>
           </div>
         </div>
       </div>
       <div className="panel-scroll">
-        {!project ? (
-          <p className="empty-state">프로젝트를 먼저 선택하세요.</p>
-        ) : promptsQuery.isLoading ? (
-          <p className="empty-state">Loading...</p>
-        ) : promptsQuery.data?.length ? (
-          promptsQuery.data.map((prompt) => (
-            <div key={prompt.id} className="list-item">
-              <div>
-                <strong>{prompt.title}</strong>
-                <p className="item-secondary" style={{ whiteSpace: "pre-wrap", marginTop: "4px" }}>
-                  {prompt.content}
-                </p>
-              </div>
-              <div className="inline-actions" style={{ marginTop: "8px" }}>
-                <button type="button" className="secondary" style={{ fontSize: "0.75rem", padding: "4px 10px" }} onClick={() => openEditForm(prompt)}>
-                  편집
-                </button>
-                <button
-                  type="button"
-                  className="secondary"
-                  style={{ fontSize: "0.75rem", padding: "4px 10px" }}
-                  disabled={deleteMutation.isPending}
-                  onClick={() => {
-                    if (confirm(`"${prompt.title}" 프롬프트를 삭제할까요?`)) {
-                      deleteMutation.mutate(prompt.id);
-                    }
-                  }}
-                >
-                  삭제
-                </button>
-              </div>
-            </div>
-          ))
-        ) : (
-          <p className="empty-state">저장된 프롬프트가 없습니다. "+ Add"로 추가하세요.</p>
-        )}
-      </div>
-
-      <Modal title={editingPrompt ? "Edit prompt" : "New prompt"} open={formOpen} onClose={closeForm}>
-        <form
-          className="panel form-panel"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!canSubmit) return;
-            if (editingPrompt) {
-              updateMutation.mutate({ id: editingPrompt.id, title: title.trim(), content: content.trim() });
-            } else {
-              createMutation.mutate({ title: title.trim(), content: content.trim() });
+        <ProjectPromptList
+          prompts={pm.promptsQuery.data}
+          isLoading={pm.promptsQuery.isLoading}
+          hasProject={Boolean(project)}
+          deletePending={pm.deleteMutation.isPending}
+          onEdit={pm.openEditForm}
+          onDelete={(prompt) => {
+            if (confirm(`"${prompt.title}" 프롬프트를 삭제할까요?`)) {
+              pm.deleteMutation.mutate(prompt.id);
             }
           }}
-        >
-          <label>
-            Title
-            <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="예: 버그 트리아지" />
-          </label>
-          <label>
-            Prompt
-            <textarea
-              className="task-prompt-input"
-              value={content}
-              onChange={(event) => setContent(event.target.value)}
-              placeholder="자주 쓰는 프롬프트 내용을 입력하세요."
-            />
-          </label>
-          <button type="submit" disabled={!canSubmit || isSaving}>
-            {isSaving ? "저장 중..." : "저장"}
-          </button>
-          <button type="button" className="secondary" onClick={closeForm}>
-            취소
-          </button>
-        </form>
+        />
+      </div>
+
+      <Modal title={pm.editingPrompt ? "Edit prompt" : "New prompt"} open={pm.formOpen} onClose={pm.closeForm}>
+        <ProjectPromptForm
+          title={pm.title}
+          setTitle={pm.setTitle}
+          content={pm.content}
+          setContent={pm.setContent}
+          onSubmit={pm.submitForm}
+          onCancel={pm.closeForm}
+          canSubmit={pm.canSubmit}
+          isSaving={pm.isSaving}
+        />
       </Modal>
     </section>
+  );
+}
+
+function ProjectPromptsModal({
+  project,
+  open,
+  onClose,
+}: {
+  project: ProjectSummary | null;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const pm = useProjectPrompts(project);
+  const modalTitle = pm.formOpen
+    ? pm.editingPrompt
+      ? "Edit prompt"
+      : "New prompt"
+    : project
+      ? `${project.name} Prompts`
+      : "Prompts";
+
+  return (
+    <Modal
+      title={modalTitle}
+      open={open}
+      onClose={() => {
+        pm.closeForm();
+        onClose();
+      }}
+    >
+      {pm.formOpen ? (
+        <ProjectPromptForm
+          title={pm.title}
+          setTitle={pm.setTitle}
+          content={pm.content}
+          setContent={pm.setContent}
+          onSubmit={pm.submitForm}
+          onCancel={pm.closeForm}
+          canSubmit={pm.canSubmit}
+          isSaving={pm.isSaving}
+        />
+      ) : (
+        <>
+          <div className="inline-actions" style={{ marginBottom: "0.6rem" }}>
+            <button type="button" onClick={pm.openCreateForm} disabled={!project}>
+              + Add prompt
+            </button>
+          </div>
+          <div className="panel-scroll" style={{ maxHeight: "50vh" }}>
+            <ProjectPromptList
+              prompts={pm.promptsQuery.data}
+              isLoading={pm.promptsQuery.isLoading}
+              hasProject={Boolean(project)}
+              deletePending={pm.deleteMutation.isPending}
+              onEdit={pm.openEditForm}
+              onDelete={(prompt) => {
+                if (confirm(`"${prompt.title}" 프롬프트를 삭제할까요?`)) {
+                  pm.deleteMutation.mutate(prompt.id);
+                }
+              }}
+            />
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }
 
@@ -1873,6 +2026,14 @@ function TaskForm({
   const titleRef = useRef<HTMLInputElement | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
 
+  const savedPromptsQuery = useQuery({
+    queryKey: ["project-prompts", project?.id ?? null],
+    queryFn: () => api.listProjectPrompts(project!.id),
+    enabled: Boolean(project),
+    staleTime: 60_000,
+  });
+  const savedPrompts: ProjectPrompt[] = savedPromptsQuery.data ?? [];
+
   useEffect(() => {
     const available = models.map((item) => item.id);
     if (available.length === 0) {
@@ -2017,6 +2178,27 @@ function TaskForm({
                   disabled={!project}
                 />
               </label>
+              {savedPrompts.length > 0 ? (
+                <label>
+                  저장된 프롬프트
+                  <select
+                    aria-label="저장된 프롬프트"
+                    value=""
+                    onChange={(event) => {
+                      const selected = savedPrompts.find((item) => item.id === event.target.value);
+                      if (selected) setPrompt(selected.content);
+                    }}
+                    disabled={!project}
+                  >
+                    <option value="">불러오기...</option>
+                    {savedPrompts.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
             </section>
           ) : null}
 
@@ -2251,6 +2433,27 @@ function TaskForm({
           disabled={!project}
         />
       </label>
+      {savedPrompts.length > 0 ? (
+        <label>
+          저장된 프롬프트
+          <select
+            aria-label="저장된 프롬프트"
+            value=""
+            onChange={(event) => {
+              const selected = savedPrompts.find((item) => item.id === event.target.value);
+              if (selected) setPrompt(selected.content);
+            }}
+            disabled={!project}
+          >
+            <option value="">불러오기...</option>
+            {savedPrompts.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.title}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       <label>
         Execution mode
         <select
@@ -2452,6 +2655,7 @@ export function App() {
   const [responseDraft, setResponseDraft] = useState<Record<string, string>>({});
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
+  const [promptsModalOpen, setPromptsModalOpen] = useState(false);
   const [mobileScreen, setMobileScreen] = useState<MobileScreen>("conversations");
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [mobileDetailTab, setMobileDetailTab] = useState<"log" | "diff">("log");
@@ -3547,14 +3751,24 @@ export function App() {
                   <h2>Projects</h2>
                   <p>Connected repositories</p>
                 </div>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={handleDeleteProject}
-                  disabled={!selectedProject || deleteProjectMutation.isPending}
-                >
-                  {deleteProjectMutation.isPending ? "Deleting..." : "Delete Project"}
-                </button>
+                <div className="inline-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => setPromptsModalOpen(true)}
+                    disabled={!selectedProject}
+                  >
+                    Prompts
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={handleDeleteProject}
+                    disabled={!selectedProject || deleteProjectMutation.isPending}
+                  >
+                    {deleteProjectMutation.isPending ? "Deleting..." : "Delete Project"}
+                  </button>
+                </div>
               </div>
             </div>
             <div className="panel-scroll">
@@ -3666,6 +3880,12 @@ export function App() {
       <Modal title="New Project" open={projectModalOpen} onClose={() => setProjectModalOpen(false)} isMobile={isMobile}>
         <ProjectForm onCreate={(payload) => createProjectMutation.mutate(payload)} onClose={() => setProjectModalOpen(false)} />
       </Modal>
+
+      <ProjectPromptsModal
+        project={selectedProject}
+        open={promptsModalOpen}
+        onClose={() => setPromptsModalOpen(false)}
+      />
 
       <Modal
         title="New Task"
