@@ -9,6 +9,7 @@ import type {
   DiscoverProjectResponse,
   ExecutionMode,
   FsBrowseResponse,
+  ProjectPrompt,
   ReasoningEffort,
   RuntimeModelOption,
   RuntimeProfileOption,
@@ -42,7 +43,7 @@ function defaultAnswers(questions: TaskQuestion[]): Record<string, string> {
 
 type PlanStep = { step: string; status: string };
 type PlanSnapshot = { explanation: string | null; steps: PlanStep[]; text: string | null };
-type MobileScreen = "conversations" | "conversation-detail" | "projects" | "tasks" | "detail";
+type MobileScreen = "conversations" | "conversation-detail" | "projects" | "project-prompts" | "tasks" | "detail";
 type RunStatus = "running" | "waiting_approval" | "completed" | "failed";
 type LogType = "conversation" | "execution" | "system";
 type SystemImportance = "high" | "low";
@@ -920,6 +921,8 @@ function ConversationDetailScreen({
   const [skillSearch, setSkillSearch] = useState("");
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
   const skillMenuRef = useRef<HTMLDivElement>(null);
+  const [promptMenuOpen, setPromptMenuOpen] = useState(false);
+  const promptMenuRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const deleteConversationMutation = useMutation({
@@ -946,6 +949,15 @@ function ConversationDetailScreen({
     staleTime: 5 * 60 * 1000,
   });
   const skills: RuntimeSkill[] = skillsData?.skills ?? [];
+
+  const projectId = conversation?.project_id ?? null;
+  const { data: promptsData } = useQuery({
+    queryKey: ["project-prompts", projectId],
+    queryFn: () => api.listProjectPrompts(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: 60_000,
+  });
+  const savedPrompts: ProjectPrompt[] = promptsData ?? [];
 
   const taskId = conversation?.task_id ?? null;
   const { data: diffData, refetch: refetchDiff } = useQuery({
@@ -1034,6 +1046,17 @@ function ConversationDetailScreen({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [skillMenuOpen]);
+
+  useEffect(() => {
+    if (!promptMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (promptMenuRef.current && !promptMenuRef.current.contains(e.target as Node)) {
+        setPromptMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [promptMenuOpen]);
 
   const selectedSkillName = skills.find((s) => s.id === selectedSkill)?.name ?? null;
   const filteredSkills = skills.filter((s) =>
@@ -1381,6 +1404,73 @@ function ConversationDetailScreen({
             )}
             </div>
           )}
+          {savedPrompts.length > 0 && (
+            <div ref={promptMenuRef} style={{ position: "relative" }}>
+              <button
+                type="button"
+                onClick={() => setPromptMenuOpen((o) => !o)}
+                title="저장된 프롬프트"
+                style={{
+                  padding: "4px 12px",
+                  borderRadius: "14px",
+                  fontSize: "0.78rem",
+                  border: "1.5px solid var(--line)",
+                  background: "transparent",
+                  color: "var(--text-soft)",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                📋 프롬프트
+              </button>
+              {promptMenuOpen && (
+                <div style={{
+                  position: "absolute",
+                  bottom: "calc(100% + 6px)",
+                  left: 0,
+                  zIndex: 200,
+                  background: "var(--panel)",
+                  border: "1px solid var(--line)",
+                  borderRadius: "10px",
+                  boxShadow: "var(--shadow)",
+                  width: "260px",
+                  maxHeight: "260px",
+                  overflowY: "auto",
+                }}>
+                  {savedPrompts.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        setInput(item.content);
+                        setPromptMenuOpen(false);
+                      }}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "8px 14px",
+                        fontSize: "0.82rem",
+                        background: "transparent",
+                        color: "var(--text)",
+                        border: "none",
+                        borderRadius: 0,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <strong style={{ display: "block" }}>{item.title}</strong>
+                      <span
+                        className="item-secondary truncate"
+                        style={{ display: "block", fontSize: "0.75rem" }}
+                      >
+                        {item.content}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <div style={{ display: "flex", gap: "8px", padding: "8px 12px" }}>
           <textarea
@@ -1406,6 +1496,167 @@ function ConversationDetailScreen({
           </button>
         </div>
       </div>
+    </section>
+  );
+}
+
+function ProjectPromptsScreen({
+  project,
+  onBack,
+}: {
+  project: ProjectSummary | null;
+  onBack: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingPrompt, setEditingPrompt] = useState<ProjectPrompt | null>(null);
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+
+  const promptsQuery = useQuery({
+    queryKey: ["project-prompts", project?.id ?? null],
+    queryFn: () => api.listProjectPrompts(project!.id),
+    enabled: Boolean(project),
+  });
+
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["project-prompts", project?.id ?? null] });
+
+  const createMutation = useMutation({
+    mutationFn: (payload: { title: string; content: string }) => api.createProjectPrompt(project!.id, payload),
+    onSuccess: () => {
+      invalidate();
+      closeForm();
+    },
+    onError: (err: Error) => alert(`프롬프트 저장 실패: ${err.message}`),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: (payload: { id: string; title: string; content: string }) =>
+      api.updateProjectPrompt(project!.id, payload.id, { title: payload.title, content: payload.content }),
+    onSuccess: () => {
+      invalidate();
+      closeForm();
+    },
+    onError: (err: Error) => alert(`프롬프트 수정 실패: ${err.message}`),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (promptId: string) => api.deleteProjectPrompt(project!.id, promptId),
+    onSuccess: () => invalidate(),
+    onError: (err: Error) => alert(`프롬프트 삭제 실패: ${err.message}`),
+  });
+
+  const openCreateForm = () => {
+    setEditingPrompt(null);
+    setTitle("");
+    setContent("");
+    setFormOpen(true);
+  };
+
+  const openEditForm = (prompt: ProjectPrompt) => {
+    setEditingPrompt(prompt);
+    setTitle(prompt.title);
+    setContent(prompt.content);
+    setFormOpen(true);
+  };
+
+  const closeForm = () => {
+    setFormOpen(false);
+    setEditingPrompt(null);
+    setTitle("");
+    setContent("");
+  };
+
+  const canSubmit = Boolean(title.trim() && content.trim());
+  const isSaving = createMutation.isPending || updateMutation.isPending;
+
+  return (
+    <section className="panel mobile-screen">
+      <div className="panel-header">
+        <div className="mobile-title-row">
+          <button type="button" className="secondary mobile-back" onClick={onBack}>
+            Back
+          </button>
+          <h2>{project ? `${project.name} 프롬프트` : "Prompts"}</h2>
+        </div>
+        <button type="button" onClick={openCreateForm} disabled={!project}>
+          + Add prompt
+        </button>
+      </div>
+      <div className="panel-scroll">
+        {!project ? (
+          <p className="empty-state">프로젝트를 먼저 선택하세요.</p>
+        ) : promptsQuery.isLoading ? (
+          <p className="empty-state">Loading...</p>
+        ) : promptsQuery.data?.length ? (
+          promptsQuery.data.map((prompt) => (
+            <div key={prompt.id} className="list-item" style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <strong>{prompt.title}</strong>
+                <p className="item-secondary" style={{ whiteSpace: "pre-wrap", marginTop: "4px" }}>
+                  {prompt.content}
+                </p>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px", flexShrink: 0 }}>
+                <button type="button" className="secondary" style={{ fontSize: "0.75rem", padding: "4px 10px" }} onClick={() => openEditForm(prompt)}>
+                  편집
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  style={{ fontSize: "0.75rem", padding: "4px 10px" }}
+                  disabled={deleteMutation.isPending}
+                  onClick={() => {
+                    if (confirm(`"${prompt.title}" 프롬프트를 삭제할까요?`)) {
+                      deleteMutation.mutate(prompt.id);
+                    }
+                  }}
+                >
+                  삭제
+                </button>
+              </div>
+            </div>
+          ))
+        ) : (
+          <p className="empty-state">저장된 프롬프트가 없습니다. "+ Add prompt"로 추가하세요.</p>
+        )}
+      </div>
+
+      <Modal title={editingPrompt ? "Edit prompt" : "New prompt"} open={formOpen} onClose={closeForm}>
+        <form
+          className="panel form-panel"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!canSubmit) return;
+            if (editingPrompt) {
+              updateMutation.mutate({ id: editingPrompt.id, title: title.trim(), content: content.trim() });
+            } else {
+              createMutation.mutate({ title: title.trim(), content: content.trim() });
+            }
+          }}
+        >
+          <label>
+            Title
+            <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="예: 버그 트리아지" />
+          </label>
+          <label>
+            Prompt
+            <textarea
+              className="task-prompt-input"
+              value={content}
+              onChange={(event) => setContent(event.target.value)}
+              placeholder="자주 쓰는 프롬프트 내용을 입력하세요."
+            />
+          </label>
+          <button type="submit" disabled={!canSubmit || isSaving}>
+            {isSaving ? "저장 중..." : "저장"}
+          </button>
+          <button type="button" className="secondary" onClick={closeForm}>
+            취소
+          </button>
+        </form>
+      </Modal>
     </section>
   );
 }
@@ -2496,6 +2747,7 @@ export function App() {
     const BACK_MAP: Partial<Record<MobileScreen, MobileScreen>> = {
       "conversation-detail": "conversations",
       "projects": "conversations",
+      "project-prompts": "projects",
       "tasks": "projects",
       "detail": "tasks",
     };
@@ -3170,25 +3422,59 @@ export function App() {
               <div className="panel-scroll">
                 {projectsQuery.data?.length ? (
                   projectsQuery.data.map((project) => (
-                    <button
+                    <div
                       key={project.id}
                       className={project.id === selectedProjectId ? "list-item active" : "list-item"}
-                      onClick={() => {
-                        setSelectedProjectId(project.id);
-                        setSelectedTaskId(null);
-                        setMobileScreen("tasks");
-                      }}
+                      style={{ display: "flex", alignItems: "center", gap: "8px" }}
                       title={project.repo_path}
                     >
-                      <strong>{project.name}</strong>
-                      <span className="item-secondary truncate">{project.repo_path}</span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedProjectId(project.id);
+                          setSelectedTaskId(null);
+                          setMobileScreen("tasks");
+                        }}
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          textAlign: "left",
+                          background: "none",
+                          border: "none",
+                          padding: 0,
+                          color: "inherit",
+                          font: "inherit",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <strong>{project.name}</strong>
+                        <span className="item-secondary truncate">{project.repo_path}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        style={{ flexShrink: 0, fontSize: "0.78rem", padding: "4px 10px" }}
+                        onClick={() => {
+                          setSelectedProjectId(project.id);
+                          setMobileScreen("project-prompts");
+                        }}
+                      >
+                        Prompts
+                      </button>
+                    </div>
                   ))
                 ) : (
                   <p className="empty-state">No projects yet.</p>
                 )}
               </div>
             </section>
+          ) : null}
+
+          {mobileScreen === "project-prompts" ? (
+            <ProjectPromptsScreen
+              project={selectedProject}
+              onBack={() => setMobileScreen("projects")}
+            />
           ) : null}
 
           {mobileScreen === "tasks" ? (

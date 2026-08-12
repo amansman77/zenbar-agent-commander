@@ -171,6 +171,26 @@ export interface CreateProjectRequest {
   default_branch: string;
 }
 
+export interface ProjectPrompt {
+  id: string;
+  project_id: string;
+  title: string;
+  content: string;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateProjectPromptRequest {
+  title: string;
+  content: string;
+}
+
+export interface UpdateProjectPromptRequest {
+  title?: string;
+  content?: string;
+}
+
 export interface CreateTaskRequest {
   project_id: string;
   title: string;

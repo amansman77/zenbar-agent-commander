@@ -23,14 +23,18 @@ from .repository import (
     delete_conversation,
     delete_task,
     create_project,
+    create_project_prompt,
     create_task,
+    delete_project_prompt,
     get_conversation,
     get_project_any,
     get_project,
+    get_project_prompt,
     get_task,
     get_task_by_session_id,
     list_conversations,
     list_events,
+    list_project_prompts,
     list_projects,
     list_tasks,
     serialize_conversation_detail,
@@ -39,11 +43,13 @@ from .repository import (
     serialize_diff,
     serialize_event,
     serialize_project,
+    serialize_project_prompt,
     serialize_task_detail,
     serialize_task_summary,
     set_conversation_task_id,
     soft_delete_project,
     set_task_status,
+    update_project_prompt,
 )
 from .repo_discovery import (
     FolderSelectionCancelled,
@@ -58,6 +64,7 @@ from .schemas import (
     ConversationMessageItem,
     ConversationSummary,
     CreateConversationRequest,
+    CreateProjectPromptRequest,
     CreateProjectRequest,
     TaskCommitRequest,
     CreateTaskRequest,
@@ -65,6 +72,7 @@ from .schemas import (
     DiscoverProjectResponse,
     FsBrowseEntry,
     FsBrowseResponse,
+    ProjectPromptItem,
     ProjectSummary,
     RespondTaskRequest,
     RuntimeModelOption,
@@ -81,6 +89,7 @@ from .schemas import (
     TaskGitActionResponse,
     TaskPushRequest,
     TaskSummary,
+    UpdateProjectPromptRequest,
 )
 from .service import TaskOrchestrator, stream_task_events
 
@@ -211,6 +220,43 @@ def delete_project(project_id: str, db: Session = Depends(get_db)):
     if get_project_any(db, project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found")
     soft_delete_project(db, project_id)
+    return Response(status_code=204)
+
+
+@app.get("/projects/{project_id}/prompts", response_model=list[ProjectPromptItem])
+def get_project_prompts(project_id: str, db: Session = Depends(get_db)):
+    if get_project(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return [serialize_project_prompt(item) for item in list_project_prompts(db, project_id)]
+
+
+@app.post("/projects/{project_id}/prompts", response_model=ProjectPromptItem, status_code=201)
+def post_project_prompt(project_id: str, payload: CreateProjectPromptRequest, db: Session = Depends(get_db)):
+    if get_project(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return serialize_project_prompt(create_project_prompt(db, project_id, payload))
+
+
+@app.patch("/projects/{project_id}/prompts/{prompt_id}", response_model=ProjectPromptItem)
+def patch_project_prompt(
+    project_id: str, prompt_id: str, payload: UpdateProjectPromptRequest, db: Session = Depends(get_db)
+):
+    if get_project(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    prompt = get_project_prompt(db, prompt_id)
+    if prompt is None or prompt.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    return serialize_project_prompt(update_project_prompt(db, prompt, payload))
+
+
+@app.delete("/projects/{project_id}/prompts/{prompt_id}", status_code=204)
+def delete_project_prompt_endpoint(project_id: str, prompt_id: str, db: Session = Depends(get_db)):
+    if get_project(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    prompt = get_project_prompt(db, prompt_id)
+    if prompt is None or prompt.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    delete_project_prompt(db, prompt_id)
     return Response(status_code=204)
 
 

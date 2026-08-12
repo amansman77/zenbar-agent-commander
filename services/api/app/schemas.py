@@ -50,6 +50,26 @@ class DiscoverProjectRequest(BaseModel):
     path: str | None = None
 
 
+class ProjectPromptItem(BaseModel):
+    id: str
+    project_id: str
+    title: str
+    content: str
+    position: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class CreateProjectPromptRequest(BaseModel):
+    title: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+
+
+class UpdateProjectPromptRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1)
+    content: str | None = Field(default=None, min_length=1)
+
+
 class DiscoverProjectResponse(BaseModel):
     name: str
     repo_path: str

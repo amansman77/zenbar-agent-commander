@@ -5,6 +5,7 @@ import type {
   ConversationDetail,
   ConversationSummary,
   CreateConversationRequest,
+  CreateProjectPromptRequest,
   CreateProjectRequest,
   DiscoverProjectRequest,
   DiscoverProjectResponse,
@@ -14,6 +15,7 @@ import type {
   ListRuntimeProfilesResponse,
   ListRuntimeSkillsResponse,
   CreateTaskRequest,
+  ProjectPrompt,
   ProjectSummary,
   PushTaskRequest,
   RespondTaskRequest,
@@ -21,7 +23,8 @@ import type {
   TaskDiff,
   TaskEvent,
   TaskGitActionResult,
-  TaskSummary
+  TaskSummary,
+  UpdateProjectPromptRequest
 } from "@zenbar/shared";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
@@ -88,6 +91,22 @@ export const api = {
     }),
   deleteProject: (projectId: string) =>
     request<void>(`/projects/${projectId}`, {
+      method: "DELETE"
+    }),
+  listProjectPrompts: (projectId: string) =>
+    request<ProjectPrompt[]>(`/projects/${projectId}/prompts`),
+  createProjectPrompt: (projectId: string, payload: CreateProjectPromptRequest) =>
+    request<ProjectPrompt>(`/projects/${projectId}/prompts`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  updateProjectPrompt: (projectId: string, promptId: string, payload: UpdateProjectPromptRequest) =>
+    request<ProjectPrompt>(`/projects/${projectId}/prompts/${promptId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  deleteProjectPrompt: (projectId: string, promptId: string) =>
+    request<void>(`/projects/${projectId}/prompts/${promptId}`, {
       method: "DELETE"
     }),
   listTasks: (projectId: string) =>

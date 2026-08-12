@@ -1288,3 +1288,75 @@ def test_task_can_be_created_with_a_profile():
             },
         ).json()
         assert task["profile"] == "azure-sqlgen"
+
+
+def _create_project_for_prompts() -> dict:
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        return client.post(
+            "/projects",
+            json={"name": "Prompts Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+
+
+def test_project_prompts_crud_flow():
+    project = _create_project_for_prompts()
+
+    empty = client.get(f"/projects/{project['id']}/prompts")
+    assert empty.status_code == 200
+    assert empty.json() == []
+
+    created = client.post(
+        f"/projects/{project['id']}/prompts",
+        json={"title": "Bug triage", "content": "Look at open issues and triage them."},
+    )
+    assert created.status_code == 201
+    prompt = created.json()
+    assert prompt["title"] == "Bug triage"
+    assert prompt["content"] == "Look at open issues and triage them."
+    assert prompt["project_id"] == project["id"]
+
+    second = client.post(
+        f"/projects/{project['id']}/prompts",
+        json={"title": "Release notes", "content": "Draft release notes for the latest changes."},
+    ).json()
+    assert second["position"] > prompt["position"]
+
+    listed = client.get(f"/projects/{project['id']}/prompts").json()
+    assert [p["title"] for p in listed] == ["Bug triage", "Release notes"]
+
+    updated = client.patch(
+        f"/projects/{project['id']}/prompts/{prompt['id']}",
+        json={"title": "Bug triage (updated)"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["title"] == "Bug triage (updated)"
+    assert updated.json()["content"] == prompt["content"]
+
+    deleted = client.delete(f"/projects/{project['id']}/prompts/{prompt['id']}")
+    assert deleted.status_code == 204
+
+    remaining = client.get(f"/projects/{project['id']}/prompts").json()
+    assert [p["id"] for p in remaining] == [second["id"]]
+
+
+def test_project_prompts_404_for_unknown_project_or_prompt():
+    project = _create_project_for_prompts()
+
+    assert client.get("/projects/does-not-exist/prompts").status_code == 404
+    assert client.post(
+        "/projects/does-not-exist/prompts", json={"title": "x", "content": "y"}
+    ).status_code == 404
+
+    prompt = client.post(
+        f"/projects/{project['id']}/prompts", json={"title": "x", "content": "y"}
+    ).json()
+
+    other_project = _create_project_for_prompts()
+    assert client.patch(
+        f"/projects/{other_project['id']}/prompts/{prompt['id']}", json={"title": "z"}
+    ).status_code == 404
+    assert client.delete(f"/projects/{other_project['id']}/prompts/{prompt['id']}").status_code == 404
+    assert client.patch(
+        f"/projects/{project['id']}/prompts/does-not-exist", json={"title": "z"}
+    ).status_code == 404

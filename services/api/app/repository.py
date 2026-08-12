@@ -7,16 +7,18 @@ from uuid import uuid4
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from .models import Conversation, ConversationMessage, Project, Task, TaskApproval, TaskEvent, TaskRun, TaskTurn
+from .models import Conversation, ConversationMessage, Project, ProjectPrompt, Task, TaskApproval, TaskEvent, TaskRun, TaskTurn
 from .schemas import (
     AddConversationMessageRequest,
     ConversationDetail,
     ConversationMessageItem,
     ConversationSummary,
     CreateConversationRequest,
+    CreateProjectPromptRequest,
     CreateProjectRequest,
     CreateTaskRequest,
     PendingInteractionType,
+    ProjectPromptItem,
     ProjectSummary,
     RuntimeEvent,
     SessionRun,
@@ -26,6 +28,7 @@ from .schemas import (
     TaskDiff,
     TaskEventResponse,
     TaskSummary,
+    UpdateProjectPromptRequest,
 )
 
 
@@ -71,6 +74,53 @@ def soft_delete_project(db: Session, project_id: str) -> None:
         .values(deleted_at=func.current_timestamp())
     )
     db.commit()
+
+
+def list_project_prompts(db: Session, project_id: str) -> list[ProjectPrompt]:
+    stmt = (
+        select(ProjectPrompt)
+        .where(ProjectPrompt.project_id == project_id)
+        .order_by(ProjectPrompt.position, ProjectPrompt.created_at)
+    )
+    return list(db.scalars(stmt))
+
+
+def get_project_prompt(db: Session, prompt_id: str) -> ProjectPrompt | None:
+    return db.get(ProjectPrompt, prompt_id)
+
+
+def create_project_prompt(db: Session, project_id: str, payload: CreateProjectPromptRequest) -> ProjectPrompt:
+    next_position = db.scalar(
+        select(func.max(ProjectPrompt.position)).where(ProjectPrompt.project_id == project_id)
+    )
+    prompt = ProjectPrompt(
+        project_id=project_id,
+        title=payload.title,
+        content=payload.content,
+        position=(next_position or 0) + 1,
+    )
+    db.add(prompt)
+    db.commit()
+    db.refresh(prompt)
+    return prompt
+
+
+def update_project_prompt(db: Session, prompt: ProjectPrompt, payload: UpdateProjectPromptRequest) -> ProjectPrompt:
+    if payload.title is not None:
+        prompt.title = payload.title
+    if payload.content is not None:
+        prompt.content = payload.content
+    db.add(prompt)
+    db.commit()
+    db.refresh(prompt)
+    return prompt
+
+
+def delete_project_prompt(db: Session, prompt_id: str) -> None:
+    prompt = db.get(ProjectPrompt, prompt_id)
+    if prompt:
+        db.delete(prompt)
+        db.commit()
 
 
 def create_task(db: Session, payload: CreateTaskRequest) -> Task:
@@ -370,6 +420,10 @@ def can_retry(status: str) -> bool:
 
 def serialize_project(project: Project) -> ProjectSummary:
     return ProjectSummary.model_validate(project, from_attributes=True)
+
+
+def serialize_project_prompt(prompt: ProjectPrompt) -> ProjectPromptItem:
+    return ProjectPromptItem.model_validate(prompt, from_attributes=True)
 
 
 def serialize_task_summary(task: Task) -> TaskSummary:
