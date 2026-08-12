@@ -41,6 +41,26 @@ function defaultAnswers(questions: TaskQuestion[]): Record<string, string> {
   return Object.fromEntries(questions.map((question) => [question.id, ""]));
 }
 
+function extractFailureReason(events: TaskEvent[] | undefined): string | null {
+  if (!events?.length) {
+    return null;
+  }
+  const failedEvents = events.filter((event) => event.type === "failed");
+  if (failedEvents.length === 0) {
+    return null;
+  }
+  const last = failedEvents[failedEvents.length - 1];
+  try {
+    const parsed = JSON.parse(last.message);
+    if (parsed && typeof parsed === "object" && typeof parsed.message === "string") {
+      return parsed.message;
+    }
+  } catch {
+    // message isn't JSON, fall through to the raw text
+  }
+  return last.message;
+}
+
 type PlanStep = { step: string; status: string };
 type PlanSnapshot = { explanation: string | null; steps: PlanStep[]; text: string | null };
 type MobileScreen = "conversations" | "conversation-detail" | "projects" | "project-prompts" | "tasks" | "detail";
@@ -991,6 +1011,26 @@ function ConversationDetailScreen({
 
   const isTaskActive = conversation?.task_status != null && ACTIVE_TASK_STATUSES.includes(conversation.task_status);
   const isWaitingApproval = conversation?.task_status === "waiting_result_approval";
+  const isTaskFailed = conversation?.task_status === "failed";
+  const isTaskStopped = conversation?.task_status === "stopped";
+
+  const { data: taskEventsData } = useQuery({
+    queryKey: ["conv-task-events", taskId],
+    queryFn: () => api.getEvents(taskId!),
+    enabled: Boolean(taskId) && isTaskFailed,
+    staleTime: 10_000,
+  });
+  const failureReason = isTaskFailed ? extractFailureReason(taskEventsData) : null;
+
+  const retryTaskMutation = useMutation({
+    mutationFn: () => api.retryTask(taskId!, { actor: "user" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
+    },
+    onError: (err: Error) => {
+      alert(`재시도 실패: ${err.message}`);
+    },
+  });
 
   const approveTaskMutation = useMutation({
     mutationFn: () => api.approveTask(conversation!.task_id!, { actor: "user" }),
@@ -1189,6 +1229,36 @@ function ConversationDetailScreen({
                   </button>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+        {activeTab === "chat" && (isTaskFailed || isTaskStopped) && (
+          <div style={{ display: "flex", justifyContent: "flex-start" }}>
+            <div
+              style={{
+                padding: "0.55rem 0.75rem",
+                borderRadius: "14px 14px 14px 4px",
+                background: isTaskFailed ? "#fdecea" : "#f0f4fa",
+                color: isTaskFailed ? "#7a1f1f" : "#16253a",
+                fontSize: "0.88rem",
+                maxWidth: "85%",
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <span>
+                  {isTaskFailed ? "⚠️ 작업이 실패했습니다." : "⏹ 작업이 중지되었습니다."}
+                  {failureReason ? ` ${failureReason}` : ""}
+                </span>
+                {isTaskFailed && (
+                  <button
+                    onClick={() => retryTaskMutation.mutate()}
+                    disabled={retryTaskMutation.isPending}
+                    style={{ fontSize: "0.8rem", alignSelf: "flex-start" }}
+                  >
+                    {retryTaskMutation.isPending ? "재시도 중..." : "다시 시도"}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         )}
