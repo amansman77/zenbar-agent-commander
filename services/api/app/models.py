@@ -50,6 +50,7 @@ class Task(Base):
     prompt: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(64), default="queued")
     execution_mode: Mapped[str] = mapped_column(String(32), default="execute")
+    engine: Mapped[str | None] = mapped_column(String(32), nullable=True)
     model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     effective_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     profile: Mapped[str | None] = mapped_column(String(255), nullable=True)

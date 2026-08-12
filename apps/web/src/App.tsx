@@ -11,6 +11,7 @@ import type {
   FsBrowseResponse,
   ProjectPrompt,
   ReasoningEffort,
+  RuntimeEngineOption,
   RuntimeModelOption,
   RuntimeProfileOption,
   RuntimeSkill,
@@ -987,9 +988,21 @@ function ConversationDetailScreen({
     staleTime: 10_000,
   });
 
+  const { data: enginesData } = useQuery({
+    queryKey: ["runtime-engines"],
+    queryFn: () => api.listRuntimeEngines(),
+    staleTime: 5 * 60 * 1000,
+  });
+  const availableEngines: RuntimeEngineOption[] = enginesData?.engines ?? [];
+  const defaultEngine = enginesData?.default_engine ?? null;
+  const [selectedEngine, setSelectedEngine] = useState<string | null>(null);
+  const effectiveEngine = selectedEngine ?? defaultEngine;
+  // Profiles read ~/.codex/*.config.toml — a Codex-only concept, meaningless for other engines.
+  const engineSupportsProfiles = effectiveEngine == null || effectiveEngine === "codex";
+
   const { data: modelsData } = useQuery({
-    queryKey: ["runtime-models"],
-    queryFn: () => api.listRuntimeModels(),
+    queryKey: ["runtime-models", effectiveEngine],
+    queryFn: () => api.listRuntimeModels(effectiveEngine),
     staleTime: 0,
   });
   const availableModels: string[] = (modelsData?.models ?? [])
@@ -1000,9 +1013,10 @@ function ConversationDetailScreen({
   const { data: profilesData } = useQuery({
     queryKey: ["runtime-profiles"],
     queryFn: () => api.listRuntimeProfiles(),
+    enabled: engineSupportsProfiles,
     staleTime: 5 * 60 * 1000,
   });
-  const availableProfiles: RuntimeProfileOption[] = profilesData?.profiles ?? [];
+  const availableProfiles: RuntimeProfileOption[] = engineSupportsProfiles ? profilesData?.profiles ?? [] : [];
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
   const selectedProfileOption = availableProfiles.find((p) => p.id === selectedProfile) ?? null;
   const profileControlsModel = Boolean(selectedProfileOption?.model);
@@ -1053,7 +1067,7 @@ function ConversationDetailScreen({
   });
 
   const addMessageMutation = useMutation({
-    mutationFn: (payload: { content: string; selected_skill?: string | null; model?: string | null; profile?: string | null }) =>
+    mutationFn: (payload: { content: string; selected_skill?: string | null; engine?: string | null; model?: string | null; profile?: string | null }) =>
       api.addConversationMessage(conversationId, payload),
     onSuccess: (updated) => {
       setInput("");
@@ -1098,6 +1112,13 @@ function ConversationDetailScreen({
     return () => document.removeEventListener("mousedown", handler);
   }, [promptMenuOpen]);
 
+  useEffect(() => {
+    // Model/profile catalogs are engine-specific; a pick from the previous
+    // engine is meaningless (or invalid) after switching.
+    setSelectedModel(null);
+    setSelectedProfile(null);
+  }, [effectiveEngine]);
+
   const selectedSkillName = skills.find((s) => s.id === selectedSkill)?.name ?? null;
   const filteredSkills = skills.filter((s) =>
     s.name.toLowerCase().includes(skillSearch.toLowerCase()) ||
@@ -1111,7 +1132,8 @@ function ConversationDetailScreen({
     if (trimmed && !isSendDisabled) {
       const modelToUse = taskStarted || profileControlsModel ? null : (selectedModel || availableModels[0] || null);
       const profileToUse = taskStarted ? null : selectedProfile;
-      addMessageMutation.mutate({ content: trimmed, selected_skill: selectedSkill, model: modelToUse, profile: profileToUse });
+      const engineToUse = taskStarted ? null : selectedEngine;
+      addMessageMutation.mutate({ content: trimmed, selected_skill: selectedSkill, engine: engineToUse, model: modelToUse, profile: profileToUse });
     }
   };
 
@@ -1284,6 +1306,38 @@ function ConversationDetailScreen({
               )}
             </span>
           ) : null}
+          {taskStarted ? (
+            conversation?.task_engine ? (
+              <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }}>
+                🧠 {availableEngines.find((e) => e.id === conversation.task_engine)?.label ?? conversation.task_engine}
+              </span>
+            ) : null
+          ) : (
+            availableEngines.length > 1 && (
+              <label style={{ display: "flex", alignItems: "center", gap: "3px", fontSize: "0.73rem", color: "var(--text-soft)" }}>
+                <span>🧠</span>
+                <select
+                  value={effectiveEngine ?? ""}
+                  onChange={(e) => setSelectedEngine(e.target.value || null)}
+                  title="AI engine"
+                  style={{
+                    fontSize: "0.73rem",
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--text-soft)",
+                    cursor: "pointer",
+                    padding: 0,
+                    outline: "none",
+                    maxWidth: "140px",
+                  }}
+                >
+                  {availableEngines.map((eng) => (
+                    <option key={eng.id} value={eng.id}>{eng.label}</option>
+                  ))}
+                </select>
+              </label>
+            )
+          )}
           {taskStarted ? (
             effectiveModel ? (
               <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }}>◎ {effectiveModel}</span>
@@ -2064,19 +2118,11 @@ function ProjectForm({
 
 function TaskForm({
   project,
-  models,
-  modelsLoading,
-  modelsError,
-  profiles,
   isMobile,
   onCreate,
   onClose
 }: {
   project: ProjectSummary | null;
-  models: RuntimeModelOption[];
-  modelsLoading: boolean;
-  modelsError: string | null;
-  profiles: RuntimeProfileOption[];
   isMobile: boolean;
   onCreate: (payload: CreateTaskRequest) => void;
   onClose: () => void;
@@ -2086,6 +2132,35 @@ function TaskForm({
   const [prompt, setPrompt] = useState("");
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("execute");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
+  const [engine, setEngine] = useState("");
+
+  const enginesQuery = useQuery({
+    queryKey: ["runtime-engines"],
+    queryFn: () => api.listRuntimeEngines(),
+    staleTime: 5 * 60 * 1000,
+  });
+  const engines: RuntimeEngineOption[] = enginesQuery.data?.engines ?? [];
+  const defaultEngine = enginesQuery.data?.default_engine ?? null;
+  const effectiveEngine = engine || defaultEngine;
+  const engineSupportsProfiles = effectiveEngine == null || effectiveEngine === "codex";
+
+  const modelsQuery = useQuery({
+    queryKey: ["runtime-models", effectiveEngine],
+    queryFn: () => api.listRuntimeModels(effectiveEngine),
+    staleTime: 0,
+  });
+  const models: RuntimeModelOption[] = modelsQuery.data?.models ?? [];
+  const modelsLoading = modelsQuery.isLoading;
+  const modelsError = modelsQuery.error instanceof Error ? modelsQuery.error.message : null;
+
+  const profilesQuery = useQuery({
+    queryKey: ["runtime-profiles"],
+    queryFn: () => api.listRuntimeProfiles(),
+    enabled: engineSupportsProfiles,
+    staleTime: 5 * 60 * 1000,
+  });
+  const profiles: RuntimeProfileOption[] = engineSupportsProfiles ? profilesQuery.data?.profiles ?? [] : [];
+
   const [model, setModel] = useState("");
   const [profile, setProfile] = useState("");
   const selectedProfileOption = profiles.find((p) => p.id === profile) ?? null;
@@ -2103,6 +2178,10 @@ function TaskForm({
     staleTime: 60_000,
   });
   const savedPrompts: ProjectPrompt[] = savedPromptsQuery.data ?? [];
+
+  useEffect(() => {
+    setProfile("");
+  }, [effectiveEngine]);
 
   useEffect(() => {
     const available = models.map((item) => item.id);
@@ -2162,6 +2241,7 @@ function TaskForm({
       project_id: project.id,
       title,
       prompt,
+      engine: engine || null,
       model: profileControlsModel ? (selectedProfileOption!.model as string) : model,
       profile: profile || null,
       reasoning_effort: reasoningEffort,
@@ -2274,6 +2354,23 @@ function TaskForm({
 
           {step === 2 ? (
             <section className="mobile-task-section">
+              {engines.length > 1 ? (
+                <label>
+                  Engine
+                  <select
+                    aria-label="Engine"
+                    value={effectiveEngine ?? ""}
+                    onChange={(event) => setEngine(event.target.value)}
+                    disabled={!project}
+                  >
+                    {engines.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               <label>
                 Execution mode
                 <div className="segmented-control two-up" role="group" aria-label="Execution mode">
@@ -2387,6 +2484,12 @@ function TaskForm({
                   </button>
                 ) : null}
               </div>
+              {engines.length > 1 ? (
+                <div className="review-field">
+                  <span className="meta-label">Engine</span>
+                  <strong>{engines.find((item) => item.id === effectiveEngine)?.label ?? effectiveEngine}</strong>
+                </div>
+              ) : null}
               <div className="review-field">
                 <span className="meta-label">Execution mode</span>
                 <strong>{executionMode}</strong>
@@ -2484,6 +2587,23 @@ function TaskForm({
         <h2>Task Workspace</h2>
         <p>Create an isolated task workspace for the selected project.</p>
       </div>
+      {engines.length > 1 ? (
+        <label>
+          Engine
+          <select
+            aria-label="Engine"
+            value={effectiveEngine ?? ""}
+            onChange={(event) => setEngine(event.target.value)}
+            disabled={!project}
+          >
+            {engines.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       <label>
         Title
         <input
@@ -2749,7 +2869,7 @@ export function App() {
 
   const runtimeModelsQuery = useQuery({
     queryKey: ["runtime-models"],
-    queryFn: api.listRuntimeModels,
+    queryFn: () => api.listRuntimeModels(),
     staleTime: 0
   });
 
@@ -3983,10 +4103,6 @@ export function App() {
       >
         <TaskForm
           project={selectedProject}
-          models={runtimeModelsQuery.data?.models ?? []}
-          modelsLoading={runtimeModelsQuery.isLoading}
-          modelsError={runtimeModelsQuery.error instanceof Error ? runtimeModelsQuery.error.message : null}
-          profiles={runtimeProfilesQuery.data?.profiles ?? []}
           isMobile={isMobile}
           onCreate={(payload) => createTaskMutation.mutate(payload)}
           onClose={() => setTaskModalOpen(false)}

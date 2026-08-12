@@ -254,8 +254,15 @@ describe("App", () => {
     const createButton = await screen.findByRole("button", { name: "Create task" });
     expect(createButton).toBeDisabled();
 
+    // TaskForm fetches its own model list (per-engine) once it mounts, so
+    // wait for the option to actually be there before selecting it.
+    await waitFor(() => {
+      expect(screen.getByLabelText("Model")).toHaveTextContent("GPT-5.4");
+    });
     fireEvent.change(screen.getByLabelText("Model"), { target: { value: "GPT-5.4" } });
-    expect(createButton).toBeEnabled();
+    await waitFor(() => {
+      expect(createButton).toBeEnabled();
+    });
   });
 
   it("submits task through mobile 3-step creation flow", async () => {

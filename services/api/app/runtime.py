@@ -988,3 +988,34 @@ def create_runtime_adapter() -> RuntimeAdapter:
 
         return AntigravityCliAdapter()
     return AppServerWebSocketAdapter(os.getenv("ZENBAR_APP_SERVER_WS_URL", "ws://127.0.0.1:18765"))
+
+
+ENGINE_LABELS = {"codex": "Codex", "antigravity": "Antigravity"}
+
+
+def create_engine_adapters() -> tuple[dict[str, RuntimeAdapter], str]:
+    """Builds every available engine's adapter (not just the one
+    ZENBAR_RUNTIME_MODE picks), so a task can select its engine
+    independently — ZENBAR_RUNTIME_MODE only controls which one new tasks use
+    when no engine is explicitly chosen.
+
+    Returns (adapters_by_engine_id, default_engine_id). The default engine's
+    adapter instance is shared with its entry in the dict (never construct it
+    twice — two AppServerWebSocketAdapter instances would each keep their own
+    disconnected `_sessions` state, silently splitting a task's session
+    history depending on whether its `engine` field happens to be None vs the
+    literal default engine id).
+    """
+    mode = os.getenv("ZENBAR_RUNTIME_MODE", "app_server_ws")
+    if mode == "mock":
+        mock = MockRuntimeAdapter()
+        return {"codex": mock, "antigravity": mock}, "codex"
+
+    from .antigravity_adapter import AntigravityCliAdapter  # deferred: avoids a module-level circular import
+
+    adapters: dict[str, RuntimeAdapter] = {
+        "codex": AppServerWebSocketAdapter(os.getenv("ZENBAR_APP_SERVER_WS_URL", "ws://127.0.0.1:18765")),
+        "antigravity": AntigravityCliAdapter(),
+    }
+    default_engine = "antigravity" if mode == "antigravity_cli" else "codex"
+    return adapters, default_engine

@@ -42,10 +42,25 @@ from .workspace import prepare_workspace
 class TaskOrchestrator:
     ACTIVE_TASK_STATUSES = {"starting", "running", "waiting_user_input", "waiting_result_approval"}
 
-    def __init__(self, adapter: RuntimeAdapter) -> None:
-        self.adapter = adapter
+    def __init__(self, adapters: dict[str, RuntimeAdapter], default_engine: str = "codex") -> None:
+        self.adapters = adapters
+        self.default_engine = default_engine
+        # Back-compat alias: main.py's model_catalog and several tests reach
+        # into `orchestrator.adapter` directly, expecting "the" adapter. Keep
+        # it pointed at the default engine's (same object as adapters[...],
+        # not a second instance — see create_engine_adapters' docstring).
+        self.adapter = adapters[default_engine]
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._stream_tasks: dict[str, asyncio.Task[None]] = {}
+
+    def _adapter_for(self, task: Task | None) -> RuntimeAdapter:
+        engine = (task.engine if task is not None else None) or self.default_engine
+        return self.adapters.get(engine, self.adapter)
+
+    def _adapter_for_task_id(self, task_id: str) -> RuntimeAdapter:
+        with SessionLocal() as db:
+            task = get_task(db, task_id)
+        return self._adapter_for(task)
 
     def _require_task(self, db: Session, task_id: str, action: str) -> Task:
         refreshed = get_task(db, task_id)
@@ -54,7 +69,7 @@ class TaskOrchestrator:
         return refreshed
 
     def ensure_runtime_stream(self, task_id: str, session_id: str | None) -> None:
-        if not self.adapter.stream_in_background:
+        if not self._adapter_for_task_id(task_id).stream_in_background:
             return
         if not session_id:
             return
@@ -92,12 +107,13 @@ class TaskOrchestrator:
         runner.add_done_callback(_cleanup)
 
     async def start_task(self, db: Session, task: Task, project: Project, selected_skill: str | None = None) -> Task:
+        adapter = self._adapter_for(task)
         parent_run = get_latest_run(db, task.id)
         create_run(db, task, input_text=task.prompt, parent_run_id=parent_run.id if parent_run else None)
         set_task_status(db, task, "starting")
         if task.execution_mode == "plan":
             append_event(db, task, RuntimeEvent(type="agent_status", message="Checking Codex runtime plan capability"))
-            supported_modes = await self.adapter.list_collaboration_modes()
+            supported_modes = await adapter.list_collaboration_modes()
             if supported_modes is None:
                 append_event(
                     db,
@@ -140,6 +156,7 @@ class TaskOrchestrator:
             task_id=refreshed.id,
             title=refreshed.title,
             prompt=refreshed.prompt,
+            engine=refreshed.engine,
             model=resolved_model,
             profile=refreshed.profile,
             reasoning_effort=resolved_reasoning_effort,  # type: ignore[arg-type]
@@ -151,7 +168,7 @@ class TaskOrchestrator:
             workspace_ref=refreshed.workspace_ref,
             selected_skill=selected_skill,
         )
-        session = await self.adapter.start_task(request)
+        session = await adapter.start_task(request)
         refreshed = self._require_task(db, refreshed.id, "starting runtime session")
         refreshed = set_task_status(
             db,
@@ -160,7 +177,7 @@ class TaskOrchestrator:
             runtime_session_id=session.session_id,
             effective_model=session.effective_model or resolved_model,
         )
-        if self.adapter.stream_in_background:
+        if adapter.stream_in_background:
             self._start_background_consumer(task.id, session.session_id)
         else:
             await self._consume_events(task.id, session.session_id)
@@ -169,8 +186,9 @@ class TaskOrchestrator:
     async def approve_task(self, db: Session, task: Task) -> Task:
         if not task.runtime_session_id:
             raise RuntimeError("Task has no runtime session")
+        adapter = self._adapter_for(task)
         try:
-            await self.adapter.approve_task(task.runtime_session_id)
+            await adapter.approve_task(task.runtime_session_id)
         except RuntimeError as exc:
             if "Unknown Codex App Server session" not in str(exc):
                 raise
@@ -186,7 +204,7 @@ class TaskOrchestrator:
             refreshed = self._require_task(db, task.id, "clearing stale runtime session")
             refreshed = clear_runtime_session(db, refreshed)
             raise RuntimeError("Task runtime session is no longer available. Retry the task to continue.") from exc
-        if not self.adapter.stream_in_background:
+        if not adapter.stream_in_background:
             await self._consume_events(task.id, task.runtime_session_id)
         db.expire_all()
         refreshed = self._require_task(db, task.id, "refreshing approval state")
@@ -197,8 +215,9 @@ class TaskOrchestrator:
             raise RuntimeError("Task has no runtime session")
         if task.pending_interaction_type != "user_input" or not task.pending_request_id:
             raise RuntimeError("Task is not waiting for user input")
+        adapter = self._adapter_for(task)
         try:
-            await self.adapter.respond_task(task.runtime_session_id, task.pending_request_id, payload.answers)
+            await adapter.respond_task(task.runtime_session_id, task.pending_request_id, payload.answers)
         except RuntimeError as exc:
             if "Unknown Codex App Server session" not in str(exc):
                 raise
@@ -214,7 +233,7 @@ class TaskOrchestrator:
             refreshed = self._require_task(db, task.id, "clearing stale runtime session")
             refreshed = clear_runtime_session(db, refreshed)
             raise RuntimeError("Task runtime session is no longer available. Retry the task to continue.") from exc
-        if not self.adapter.stream_in_background:
+        if not adapter.stream_in_background:
             await self._consume_events(task.id, task.runtime_session_id)
         db.expire_all()
         refreshed = self._require_task(db, task.id, "refreshing response state")
@@ -223,8 +242,9 @@ class TaskOrchestrator:
     async def stop_task(self, db: Session, task: Task) -> Task:
         if not task.runtime_session_id:
             raise RuntimeError("Task has no runtime session")
-        await self.adapter.stop_task(task.runtime_session_id)
-        if not self.adapter.stream_in_background:
+        adapter = self._adapter_for(task)
+        await adapter.stop_task(task.runtime_session_id)
+        if not adapter.stream_in_background:
             await self._consume_events(task.id, task.runtime_session_id)
         db.expire_all()
         refreshed = self._require_task(db, task.id, "stopping task")
@@ -275,8 +295,9 @@ class TaskOrchestrator:
             return await self._restart_with_fresh_session(db, task)
         parent_run = get_latest_run(db, task.id)
         create_run(db, task, input_text="Run again", parent_run_id=parent_run.id if parent_run else None)
+        adapter = self._adapter_for(task)
         try:
-            session = await self.adapter.retry_task(task.runtime_session_id)
+            session = await adapter.retry_task(task.runtime_session_id)
         except RuntimeError as exc:
             if "Unknown Codex App Server session" not in str(exc):
                 raise
@@ -292,7 +313,7 @@ class TaskOrchestrator:
             runtime_session_id=session.session_id,
             effective_model=session.effective_model or refreshed.model,
         )
-        if self.adapter.stream_in_background:
+        if adapter.stream_in_background:
             self._start_background_consumer(task.id, session.session_id)
         else:
             await self._consume_events(task.id, session.session_id)
@@ -315,7 +336,8 @@ class TaskOrchestrator:
         )
         parent_run = get_latest_run(db, task.id)
         create_run(db, task, input_text=content, parent_run_id=parent_run.id if parent_run else None)
-        session = await self.adapter.followup_task(task.runtime_session_id, content, selected_skill=selected_skill)
+        adapter = self._adapter_for(task)
+        session = await adapter.followup_task(task.runtime_session_id, content, selected_skill=selected_skill)
         refreshed = self._require_task(db, task.id, "starting follow-up turn")
         refreshed = set_task_status(
             db,
@@ -324,7 +346,7 @@ class TaskOrchestrator:
             runtime_session_id=session.session_id,
             effective_model=session.effective_model or refreshed.model,
         )
-        if not self.adapter.stream_in_background:
+        if not adapter.stream_in_background:
             await self._consume_events(task.id, session.session_id)
         return refreshed
 
@@ -332,7 +354,7 @@ class TaskOrchestrator:
         runtime_diff: TaskDiff | None = None
         if task.runtime_session_id:
             try:
-                runtime_diff = await self.adapter.get_diff(task.runtime_session_id)
+                runtime_diff = await self._adapter_for(task).get_diff(task.runtime_session_id)
             except RuntimeError as exc:
                 if "Unknown Codex App Server session" not in str(exc):
                     raise
@@ -354,7 +376,7 @@ class TaskOrchestrator:
         if not task.runtime_session_id:
             return task
         try:
-            await self.adapter.get_diff(task.runtime_session_id)
+            await self._adapter_for(task).get_diff(task.runtime_session_id)
             return task
         except RuntimeError as exc:
             if "Unknown Codex App Server session" not in str(exc):
@@ -473,15 +495,16 @@ class TaskOrchestrator:
         return "medium"
 
     async def _consume_events(self, task_id: str, session_id: str) -> None:
-        if not self.adapter.stream_in_background:
-            async for event in self.adapter.subscribe_events(session_id):
+        adapter = self._adapter_for_task_id(task_id)
+        if not adapter.stream_in_background:
+            async for event in adapter.subscribe_events(session_id):
                 await self._handle_runtime_event(task_id, event)
             return
 
         attempts = 0
         while True:
             try:
-                async for event in self.adapter.subscribe_events(session_id):
+                async for event in adapter.subscribe_events(session_id):
                     await self._handle_runtime_event(task_id, event)
                 # Re-subscribe if runtime stream ended unexpectedly.
                 attempts += 1

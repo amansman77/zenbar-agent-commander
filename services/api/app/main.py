@@ -56,7 +56,7 @@ from .repo_discovery import (
     RepositoryDiscoveryError,
     discover_repository,
 )
-from .runtime import create_runtime_adapter
+from .runtime import ENGINE_LABELS, create_engine_adapters
 from .workspace import cleanup_workspace
 from .schemas import (
     AddConversationMessageRequest,
@@ -75,6 +75,8 @@ from .schemas import (
     ProjectPromptItem,
     ProjectSummary,
     RespondTaskRequest,
+    RuntimeEngineOption,
+    RuntimeEnginesResponse,
     RuntimeModelOption,
     RuntimeModelsResponse,
     RuntimeProfileOption,
@@ -94,9 +96,23 @@ from .schemas import (
 from .service import TaskOrchestrator, stream_task_events
 
 
-orchestrator = TaskOrchestrator(create_runtime_adapter())
-model_catalog = RuntimeModelCatalog(orchestrator.adapter, ttl_seconds=60)
+_engine_adapters, _default_engine = create_engine_adapters()
+orchestrator = TaskOrchestrator(_engine_adapters, _default_engine)
+model_catalogs: dict[str, RuntimeModelCatalog] = {
+    engine: RuntimeModelCatalog(adapter, ttl_seconds=60) for engine, adapter in _engine_adapters.items()
+}
+model_catalog = model_catalogs[_default_engine]  # back-compat alias for the default engine's catalog
 managed_app_server = ManagedAppServer()
+
+
+def _model_catalog_for(engine: str | None) -> RuntimeModelCatalog:
+    if engine is None:
+        return model_catalog
+    catalog = model_catalogs.get(engine)
+    if catalog is None:
+        allowed = ", ".join(sorted(model_catalogs))
+        raise HTTPException(status_code=400, detail=f"Unknown engine '{engine}'. Allowed engines: {allowed}")
+    return catalog
 
 
 def _is_truthy(value: str | None) -> bool:
@@ -323,12 +339,13 @@ async def post_conversation_message(
             project = get_project(db, conv.project_id) if conv.project_id else None
             if project is None:
                 raise HTTPException(status_code=400, detail="Conversation has no associated project")
-            allowed_models, _ = await model_catalog.list_models()
+            allowed_models, _ = await _model_catalog_for(payload.engine).list_models()
             default_model = allowed_models[0] if allowed_models else "default"
             task_request = CreateTaskRequest(
                 project_id=project.id,
                 title=payload.content[:50].strip() or "Conversation",
                 prompt=payload.content,
+                engine=payload.engine,
                 model=payload.model or default_model,
                 profile=payload.profile,
                 reasoning_effort="medium",
@@ -405,9 +422,20 @@ def get_project_tasks(project_id: str, db: Session = Depends(get_db)):
     return [serialize_task_summary(item) for item in list_tasks(db, project_id)]
 
 
+@app.get("/runtime/engines", response_model=RuntimeEnginesResponse)
+def get_runtime_engines():
+    return RuntimeEnginesResponse(
+        engines=[
+            RuntimeEngineOption(id=engine, label=ENGINE_LABELS.get(engine, engine))
+            for engine in orchestrator.adapters
+        ],
+        default_engine=orchestrator.default_engine,
+    )
+
+
 @app.get("/runtime/models", response_model=RuntimeModelsResponse)
-async def get_runtime_models():
-    models, source = await model_catalog.list_models()
+async def get_runtime_models(engine: str | None = None):
+    models, source = await _model_catalog_for(engine).list_models()
     return RuntimeModelsResponse(models=[RuntimeModelOption(id=item) for item in models], source=source)
 
 
@@ -435,7 +463,7 @@ async def post_task(payload: CreateTaskRequest, db: Session = Depends(get_db)):
     project = get_project(db, payload.project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    allowed_models, _ = await model_catalog.list_models()
+    allowed_models, _ = await _model_catalog_for(payload.engine).list_models()
     if payload.model not in allowed_models:
         allowed = ", ".join(allowed_models)
         raise HTTPException(status_code=400, detail=f"Invalid model '{payload.model}'. Allowed models: {allowed}")
@@ -548,7 +576,7 @@ async def retry_task(task_id: str, payload: TaskApprovalRequest, db: Session = D
     task = _require_task(get_task(db, task_id))
     _assert_transition(can_retry(task.status), f"Task cannot be retried from status '{task.status}'")
     if payload.model:
-        allowed_models, _ = await model_catalog.list_models()
+        allowed_models, _ = await _model_catalog_for(task.engine).list_models()
         if payload.model not in allowed_models:
             allowed = ", ".join(allowed_models)
             raise HTTPException(status_code=400, detail=f"Invalid model '{payload.model}'. Allowed models: {allowed}")

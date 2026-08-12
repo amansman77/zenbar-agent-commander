@@ -11,6 +11,7 @@ import type {
   DiscoverProjectResponse,
   FsBrowseResponse,
   FollowupTurnRequest,
+  ListRuntimeEnginesResponse,
   ListRuntimeModelsResponse,
   ListRuntimeProfilesResponse,
   ListRuntimeSkillsResponse,
@@ -111,7 +112,9 @@ export const api = {
     }),
   listTasks: (projectId: string) =>
     request<TaskSummary[]>(`/projects/${projectId}/tasks`),
-  listRuntimeModels: () => request<ListRuntimeModelsResponse>("/runtime/models"),
+  listRuntimeEngines: () => request<ListRuntimeEnginesResponse>("/runtime/engines"),
+  listRuntimeModels: (engine?: string | null) =>
+    request<ListRuntimeModelsResponse>(`/runtime/models${engine ? `?engine=${encodeURIComponent(engine)}` : ""}`),
   listRuntimeProfiles: () => request<ListRuntimeProfilesResponse>("/runtime/profiles"),
   listRuntimeSkills: () => request<ListRuntimeSkillsResponse>("/runtime/skills"),
   createTask: (payload: CreateTaskRequest) =>

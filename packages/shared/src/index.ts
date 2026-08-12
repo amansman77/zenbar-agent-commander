@@ -59,6 +59,16 @@ export interface ListRuntimeModelsResponse {
   source: "runtime" | "fallback";
 }
 
+export interface RuntimeEngineOption {
+  id: string;
+  label: string;
+}
+
+export interface ListRuntimeEnginesResponse {
+  engines: RuntimeEngineOption[];
+  default_engine: string;
+}
+
 export interface RuntimeProfileOption {
   id: string;
   description: string | null;
@@ -86,6 +96,7 @@ export interface TaskSummary {
   title: string;
   status: TaskStatus;
   execution_mode: ExecutionMode;
+  engine: string | null;
   model: string | null;
   effective_model: string | null;
   profile: string | null;
@@ -195,6 +206,7 @@ export interface CreateTaskRequest {
   project_id: string;
   title: string;
   prompt: string;
+  engine?: string | null;
   model: string;
   profile?: string | null;
   reasoning_effort?: ReasoningEffort;
@@ -258,6 +270,7 @@ export interface ConversationDetail {
   task_base_branch: string | null;
   task_model: string | null;
   task_profile: string | null;
+  task_engine: string | null;
   messages: ConversationMessageItem[];
   created_at: string;
   updated_at: string;
@@ -272,6 +285,7 @@ export interface AddConversationMessageRequest {
   content: string;
   role?: string;
   selected_skill?: string | null;
+  engine?: string | null;
   model?: string | null;
   profile?: string | null;
 }

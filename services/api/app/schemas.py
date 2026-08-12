@@ -87,6 +87,16 @@ class RuntimeModelsResponse(BaseModel):
     source: Literal["runtime", "fallback"]
 
 
+class RuntimeEngineOption(BaseModel):
+    id: str
+    label: str
+
+
+class RuntimeEnginesResponse(BaseModel):
+    engines: list[RuntimeEngineOption]
+    default_engine: str
+
+
 class RuntimeProfileOption(BaseModel):
     id: str
     description: str | None = None
@@ -120,6 +130,7 @@ class CreateTaskRequest(BaseModel):
     project_id: str
     title: str
     prompt: str
+    engine: str | None = None
     model: str = Field(min_length=1)
     profile: str | None = None
     reasoning_effort: ReasoningEffort = "medium"
@@ -184,6 +195,7 @@ class TaskSummary(BaseModel):
     title: str
     status: TaskStatus
     execution_mode: ExecutionMode
+    engine: str | None
     model: str | None
     effective_model: str | None
     profile: str | None
@@ -236,6 +248,7 @@ class RuntimeStartRequest(BaseModel):
     task_id: str
     title: str
     prompt: str
+    engine: str | None = None
     model: str
     profile: str | None = None
     reasoning_effort: ReasoningEffort = "medium"
@@ -303,6 +316,7 @@ class ConversationDetail(BaseModel):
     task_base_branch: str | None
     task_model: str | None
     task_profile: str | None
+    task_engine: str | None
     messages: list[ConversationMessageItem]
     created_at: datetime
     updated_at: datetime
@@ -317,6 +331,7 @@ class AddConversationMessageRequest(BaseModel):
     content: str
     role: str = "user"
     selected_skill: str | None = None
+    engine: str | None = None
     model: str | None = None
     profile: str | None = None
 
