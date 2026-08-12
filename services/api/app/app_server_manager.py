@@ -22,7 +22,7 @@ class ManagedAppServer:
         if self._process is not None and self._process.returncode is None:
             return
 
-        ws_url = os.getenv("ZENBAR_APP_SERVER_WS_URL", "ws://127.0.0.1:8765")
+        ws_url = os.getenv("ZENBAR_APP_SERVER_WS_URL", "ws://127.0.0.1:18765")
         parsed = urlparse(ws_url)
         ready_url = f"http://{parsed.hostname}:{parsed.port}/readyz"
 
