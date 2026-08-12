@@ -983,4 +983,8 @@ def create_runtime_adapter() -> RuntimeAdapter:
     mode = os.getenv("ZENBAR_RUNTIME_MODE", "app_server_ws")
     if mode == "mock":
         return MockRuntimeAdapter()
+    if mode == "antigravity_cli":
+        from .antigravity_adapter import AntigravityCliAdapter  # deferred: avoids a module-level circular import
+
+        return AntigravityCliAdapter()
     return AppServerWebSocketAdapter(os.getenv("ZENBAR_APP_SERVER_WS_URL", "ws://127.0.0.1:18765"))
