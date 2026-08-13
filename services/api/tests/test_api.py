@@ -753,7 +753,15 @@ def test_approve_rejected_outside_waiting_result_approval():
         assert response.status_code == 409
 
 
-def test_get_task_diff_uses_persisted_diff_when_runtime_session_is_stale():
+def test_get_task_diff_clears_persisted_diff_when_workspace_is_clean_and_runtime_session_is_stale():
+    # Workspace git diff is ground truth (see TaskOrchestrator.refresh_diff): a
+    # persisted diff from a prior run must not linger once the workspace is
+    # actually clean (e.g. changes were committed), even if the runtime
+    # session that produced it is no longer reachable. This used to assert
+    # the opposite (persisted diff wins) before that ground-truth behavior
+    # was introduced; test_get_task_diff_falls_back_to_workspace_git_diff_when_runtime_diff_is_unavailable
+    # covers the complementary case where the workspace *does* have real
+    # uncommitted changes.
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
         project = client.post(
@@ -777,8 +785,8 @@ def test_get_task_diff_uses_persisted_diff_when_runtime_session_is_stale():
 
         response = client.get(f"/tasks/{task['id']}/diff")
         assert response.status_code == 200
-        assert response.json()["summary"] == "Persisted diff"
-        assert response.json()["files_changed"] == ["README.md"]
+        assert response.json()["summary"] == ""
+        assert response.json()["files_changed"] == []
 
 
 def test_get_task_diff_falls_back_to_workspace_git_diff_when_runtime_diff_is_unavailable():

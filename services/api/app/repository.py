@@ -162,6 +162,16 @@ def get_task(db: Session, task_id: str) -> Task | None:
             selectinload(Task.turns),
             selectinload(Task.runs),
         )
+        # Sessions here are long-lived across several commits within a single
+        # request (e.g. TaskOrchestrator.followup_task commits a new turn,
+        # event, and run in sequence before the endpoint re-fetches the task
+        # to serialize the response). Since expire_on_commit=False, a
+        # relationship collection already loaded earlier in the same Session
+        # would otherwise be treated as "populated" and selectinload would
+        # skip reloading it, silently returning stale data (e.g. a `runs`
+        # list missing the run created moments ago). populate_existing forces
+        # every eager-loaded attribute above to be refreshed from this query.
+        .execution_options(populate_existing=True)
     )
     return db.scalars(stmt).first()
 
