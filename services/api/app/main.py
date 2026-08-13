@@ -361,7 +361,7 @@ async def post_conversation_message(
                 execution_mode="execute",
                 workspace_type="worktree",
             )
-            task = create_task(db, task_request)
+            task = create_task(db, task_request, project_name=project.name)
             task = get_task(db, task.id)
             set_conversation_task_id(db, conversation_id, task.id)
             db.expire_all()
@@ -476,7 +476,7 @@ async def post_task(payload: CreateTaskRequest, db: Session = Depends(get_db)):
     if payload.model not in allowed_models:
         allowed = ", ".join(allowed_models)
         raise HTTPException(status_code=400, detail=f"Invalid model '{payload.model}'. Allowed models: {allowed}")
-    task = _require_task(get_task(db, create_task(db, payload).id))
+    task = _require_task(get_task(db, create_task(db, payload, project_name=project.name).id))
     try:
         task = await orchestrator.start_task(db, task, project)
     except Exception as exc:

@@ -73,7 +73,10 @@ def test_create_project_and_task_flow():
         )
         assert task.status_code == 200
         body = task.json()
-        assert body["workspace_ref"].startswith("task/fix-canonical-")
+        # Branch/folder prefix is the zenbar Project's name (slugified), not
+        # the generic "task", so the Codex app's own UI can show which
+        # project a session belongs to at a glance.
+        assert body["workspace_ref"].startswith("shipbae/fix-canonical-")
         assert body["runtime_session_id"].startswith("mock-")
         assert Path(body["workspace_path"]).exists()
         # Task workspaces default to git worktrees of the project's repo
@@ -467,7 +470,7 @@ def test_task_workspace_commit_and_push_flow():
         assert commit.status_code == 200
         commit_body = commit.json()
         assert commit_body["ok"] is True
-        assert commit_body["branch"].startswith("task/")
+        assert commit_body["branch"].startswith("git-ops/")
 
         push = client.post(
             f"/tasks/{task['id']}/push",

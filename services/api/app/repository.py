@@ -37,8 +37,15 @@ def slugify(value: str) -> str:
     return normalized or "task"
 
 
-def build_workspace_ref(title: str) -> str:
-    return f"task/{slugify(title)}-{str(uuid4())[:4]}"
+def build_workspace_ref(title: str, project_name: str | None = None) -> str:
+    # The branch name doubles as the workspace folder name (see
+    # workspace.prepare_workspace: `workspace_ref.replace("/", "__")`), which
+    # is also what shows up as the session/"project" label in the Codex app's
+    # own UI. Prefixing with the zenbar Project's name instead of the generic
+    # "task" makes it possible to tell, at a glance in that UI, which zenbar
+    # project a session belongs to.
+    prefix = slugify(project_name) if project_name else "task"
+    return f"{prefix}/{slugify(title)}-{str(uuid4())[:4]}"
 
 
 def create_project(db: Session, payload: CreateProjectRequest) -> Project:
@@ -123,7 +130,7 @@ def delete_project_prompt(db: Session, prompt_id: str) -> None:
         db.commit()
 
 
-def create_task(db: Session, payload: CreateTaskRequest) -> Task:
+def create_task(db: Session, payload: CreateTaskRequest, project_name: str | None = None) -> Task:
     task = Task(
         project_id=payload.project_id,
         title=payload.title,
@@ -134,7 +141,7 @@ def create_task(db: Session, payload: CreateTaskRequest) -> Task:
         profile=payload.profile,
         reasoning_effort=payload.reasoning_effort,
         workspace_type=payload.workspace_type,
-        workspace_ref=build_workspace_ref(payload.title),
+        workspace_ref=build_workspace_ref(payload.title, project_name),
         workspace_path=None,
         status="queued",
     )
