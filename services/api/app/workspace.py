@@ -6,6 +6,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .codex_project_trust import remove_project_trust_entry
+
 
 @dataclass
 class PreparedWorkspace:
@@ -106,13 +108,17 @@ def cleanup_workspace(workspace_path: str | None, workspace_type: str | None, re
     if not workspace_path:
         return
     path = Path(workspace_path)
-    if not path.exists():
-        return
-    if workspace_type == "worktree" and repo_path:
-        repo = Path(repo_path).expanduser().resolve()
-        try:
-            _run_git(["worktree", "remove", "--force", str(path)], str(repo))
-        except RuntimeError:
-            pass
     if path.exists():
-        shutil.rmtree(path, ignore_errors=True)
+        if workspace_type == "worktree" and repo_path:
+            repo = Path(repo_path).expanduser().resolve()
+            try:
+                _run_git(["worktree", "remove", "--force", str(path)], str(repo))
+            except RuntimeError:
+                pass
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+    try:
+        remove_project_trust_entry(workspace_path)
+    except Exception:
+        # Never let Codex trust-file bookkeeping block workspace cleanup.
+        pass

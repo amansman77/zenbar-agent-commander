@@ -6,7 +6,9 @@ Requires-Dist: fastapi>=0.115.0
 Requires-Dist: httpx>=0.28.1
 Requires-Dist: pydantic>=2.10.0
 Requires-Dist: sqlalchemy>=2.0.36
+Requires-Dist: tomlkit>=0.13.0
 Requires-Dist: uvicorn>=0.34.0
+Requires-Dist: websockets>=16.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8.3.4; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.25.3; extra == "dev"
