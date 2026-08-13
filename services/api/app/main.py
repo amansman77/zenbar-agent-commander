@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from .db import Base, engine, ensure_schema, get_db
 from .app_server_manager import ManagedAppServer
 from .codex_profiles import list_profiles as list_codex_profiles
+from .codex_project_trust import add_project_trust_entry
 from .model_catalog import RuntimeModelCatalog
 from .repository import (
     add_approval,
@@ -228,7 +229,15 @@ def get_projects(db: Session = Depends(get_db)):
 
 @app.post("/projects", response_model=ProjectSummary)
 def post_project(payload: CreateProjectRequest, db: Session = Depends(get_db)):
-    return serialize_project(create_project(db, payload))
+    project = create_project(db, payload)
+    try:
+        # Trust the repo once at the Project level so every task worktree
+        # created under it (see workspace.prepare_workspace) is automatically
+        # trusted by Codex too — see add_project_trust_entry for why.
+        add_project_trust_entry(project.repo_path)
+    except Exception:
+        pass
+    return serialize_project(project)
 
 
 @app.delete("/projects/{project_id}", status_code=204)
@@ -350,7 +359,7 @@ async def post_conversation_message(
                 profile=payload.profile,
                 reasoning_effort="medium",
                 execution_mode="execute",
-                workspace_type="branch",
+                workspace_type="worktree",
             )
             task = create_task(db, task_request)
             task = get_task(db, task.id)

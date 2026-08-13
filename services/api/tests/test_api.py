@@ -76,6 +76,10 @@ def test_create_project_and_task_flow():
         assert body["workspace_ref"].startswith("task/fix-canonical-")
         assert body["runtime_session_id"].startswith("mock-")
         assert Path(body["workspace_path"]).exists()
+        # Task workspaces default to git worktrees of the project's repo
+        # (not standalone clones) so every task shares one Codex project
+        # trust entry instead of accumulating one per task.
+        assert body["workspace_type"] == "worktree"
 
         asyncio.run(asyncio.sleep(0.08))
 
@@ -83,6 +87,28 @@ def test_create_project_and_task_flow():
         assert events.status_code == 200
         event_types = [item["type"] for item in events.json()]
         assert "result_approval_requested" in event_types
+
+
+def test_create_project_registers_codex_trust_entry(tmp_path, monkeypatch):
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text('model = "gpt-5.5"\n')
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+
+        project = client.post(
+            "/projects",
+            json={"name": "Trust Me", "repo_path": str(repo), "default_branch": "main"},
+        )
+        assert project.status_code == 200
+
+        config_text = (codex_home / "config.toml").read_text()
+        assert f'[projects."{repo}"]' in config_text
+        assert 'trust_level = "trusted"' in config_text
+        # Unrelated settings must survive untouched.
+        assert 'model = "gpt-5.5"' in config_text
 
 
 def test_create_plan_task_flow():
@@ -414,7 +440,12 @@ def test_create_task_requires_model_field():
 
 def test_task_workspace_commit_and_push_flow():
     with TemporaryDirectory() as tmpdir:
-        repo = init_repo(tmpdir)
+        # Task workspaces are git worktrees of the project's repo_path (see
+        # workspace.prepare_workspace), which share repo_path's own .git/config
+        # rather than getting an auto-configured "origin" the way a standalone
+        # `git clone` would. Pushing therefore needs repo_path to have a real
+        # origin remote, same as any real zenbar project does.
+        repo, bare = init_repo_with_remote_paths(tmpdir)
         project = client.post(
             "/projects",
             json={"name": "Git Ops", "repo_path": str(repo), "default_branch": "main"},
@@ -448,14 +479,14 @@ def test_task_workspace_commit_and_push_flow():
         branch = push_body["branch"]
         assert branch
 
-        branches = subprocess.run(
-            ["git", "branch", "--list", branch],
-            cwd=repo,
+        remote_heads = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads"],
+            cwd=bare,
             check=True,
             capture_output=True,
             text=True,
-        ).stdout
-        assert branch in branches
+        ).stdout.splitlines()
+        assert branch in remote_heads
 
 
 def test_task_workspace_push_uses_project_origin_remote():

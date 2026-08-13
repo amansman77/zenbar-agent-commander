@@ -135,7 +135,7 @@ class CreateTaskRequest(BaseModel):
     profile: str | None = None
     reasoning_effort: ReasoningEffort = "medium"
     execution_mode: ExecutionMode = "execute"
-    workspace_type: WorkspaceType = "branch"
+    workspace_type: WorkspaceType = "worktree"
 
 
 class TaskApprovalRequest(BaseModel):

@@ -2282,7 +2282,7 @@ function TaskForm({
       profile: profile || null,
       reasoning_effort: reasoningEffort,
       execution_mode: executionMode,
-      workspace_type: "branch"
+      workspace_type: "worktree"
     });
   };
 

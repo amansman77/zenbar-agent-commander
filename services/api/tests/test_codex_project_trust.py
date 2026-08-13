@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from app.codex_project_trust import (
+    add_project_trust_entry,
     remove_project_trust_entry,
     remove_stale_project_trust_entries,
 )
@@ -96,3 +97,45 @@ trust_level = "trusted"
 
 def test_remove_stale_project_trust_entries_missing_config_returns_empty(codex_home: Path):
     assert remove_stale_project_trust_entries() == []
+
+
+def test_add_project_trust_entry_writes_new_entry(codex_home: Path, tmp_path: Path):
+    repo = tmp_path / "some-repo"
+    repo.mkdir()
+    config_path = _write_config(codex_home, 'model = "gpt-5.5"\n')
+
+    added = add_project_trust_entry(str(repo))
+
+    assert added is True
+    text = config_path.read_text()
+    assert f'[projects."{repo}"]' in text
+    assert 'trust_level = "trusted"' in text
+    assert 'model = "gpt-5.5"' in text
+
+
+def test_add_project_trust_entry_is_idempotent(codex_home: Path, tmp_path: Path):
+    repo = tmp_path / "some-repo"
+    repo.mkdir()
+    config_path = _write_config(
+        codex_home,
+        f"""
+[projects."{repo}"]
+trust_level = "trusted"
+""",
+    )
+    before = config_path.read_text()
+
+    added = add_project_trust_entry(str(repo))
+
+    assert added is False
+    assert config_path.read_text() == before
+
+
+def test_add_project_trust_entry_missing_config_is_noop(codex_home: Path, tmp_path: Path):
+    repo = tmp_path / "some-repo"
+    repo.mkdir()
+    assert add_project_trust_entry(str(repo)) is False
+
+
+def test_add_project_trust_entry_none_path_is_noop(codex_home: Path):
+    assert add_project_trust_entry(None) is False
