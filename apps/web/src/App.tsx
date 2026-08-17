@@ -2616,6 +2616,15 @@ function TaskForm({
       className="panel form-panel"
       onSubmit={(event) => {
         event.preventDefault();
+        // The submit button is disabled while !canSubmit, but that only
+        // blocks a click — pressing Enter in a text field (e.g. Title)
+        // submits the form natively regardless of the button's disabled
+        // state, which used to send an empty/not-yet-loaded model straight
+        // to the API and get a 400 back. Guard here too, matching the
+        // mobile step-wizard branch's `if (step !== 3 || !canSubmit) return`.
+        if (!canSubmit) {
+          return;
+        }
         submitTask();
       }}
     >

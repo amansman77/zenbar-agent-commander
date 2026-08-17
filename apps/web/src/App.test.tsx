@@ -265,6 +265,57 @@ describe("App", () => {
     });
   });
 
+  it("does not submit the desktop task form via Enter before a model is selected", async () => {
+    // Regression test: the desktop TaskForm's submit *button* is correctly
+    // disabled while !canSubmit, but the <form>'s onSubmit used to call
+    // submitTask() unconditionally. Pressing Enter in a text field submits
+    // a <form> natively regardless of the submit button's disabled state,
+    // so this used to send a request with an empty/not-yet-loaded model
+    // straight to the API and get a 400 back.
+    projects = [
+      {
+        id: "project-1",
+        name: "agent-commander",
+        repo_path: "/Users/hosung/Workspace/zenbar/agent-commander",
+        default_branch: "main",
+        created_at: new Date().toISOString()
+      }
+    ];
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <App />
+      </QueryClientProvider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /agent-commander/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "New Task" }));
+
+    const createButton = await screen.findByRole("button", { name: "Create task" });
+    expect(createButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Fix sitemap canonical" } });
+    fireEvent.change(screen.getByLabelText("Prompt"), {
+      target: { value: "Analyze the repository and fix canonical tag generation." }
+    });
+
+    const postTasksCallsBefore = fetchMock.mock.calls.filter(
+      ([url, init]) => String(url).endsWith("/tasks") && (init as RequestInit | undefined)?.method === "POST"
+    ).length;
+
+    fireEvent.submit(createButton.closest("form")!);
+
+    // The mutation dispatch (if the guard is missing) goes through
+    // react-query's async machinery before fetch is actually called, so
+    // give it a beat to fire before asserting it didn't.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const postTasksCallsAfter = fetchMock.mock.calls.filter(
+      ([url, init]) => String(url).endsWith("/tasks") && (init as RequestInit | undefined)?.method === "POST"
+    ).length;
+    expect(postTasksCallsAfter).toBe(postTasksCallsBefore);
+  });
+
   it("submits task through mobile 3-step creation flow", async () => {
     Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: 390 });
     window.dispatchEvent(new Event("resize"));
