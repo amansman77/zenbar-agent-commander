@@ -1312,7 +1312,10 @@ def test_get_runtime_profiles_reads_codex_home_config_profiles(tmp_path, monkeyp
     ]
 
 
-def test_task_can_be_created_with_a_profile():
+def test_task_can_be_created_with_a_profile(tmp_path, monkeypatch):
+    (tmp_path / "azure-sqlgen.config.toml").write_text('model = "gpt-5.5"\nmodel_provider = "azure"\n')
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
         project = client.post(
@@ -1330,6 +1333,90 @@ def test_task_can_be_created_with_a_profile():
             },
         ).json()
         assert task["profile"] == "azure-sqlgen"
+
+
+def test_task_can_be_created_with_a_profile_whose_model_is_outside_the_generic_catalog(tmp_path, monkeypatch):
+    # A profile's own declared model always wins over an explicit model pick
+    # (see TaskForm's profileControlsModel on the frontend), and that model
+    # may be a provider-specific deployment name -- e.g. an Azure OpenAI
+    # deployment like "inoberry-amansman77-gpt-5.5" -- that isn't in the
+    # generic engine-wide model catalog at all. Creating a task with such a
+    # profile used to 400 with "Invalid model" because the server validated
+    # the submitted model against that generic catalog regardless of the
+    # profile. The frontend sends exactly the profile's model in this case
+    # (matches ThreadForm's profileControlsModel behavior), so this
+    # reproduces the real request shape.
+    (tmp_path / "azure-sqlgen.config.toml").write_text(
+        'model = "inoberry-amansman77-gpt-5.5"\nmodel_provider = "azure"\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Profile Custom Model", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        response = client.post(
+            "/tasks",
+            json={
+                "project_id": project["id"],
+                "title": "Profile task",
+                "prompt": "Do work",
+                "model": "inoberry-amansman77-gpt-5.5",
+                "profile": "azure-sqlgen",
+            },
+        )
+        assert response.status_code == 200
+        task = response.json()
+        assert task["profile"] == "azure-sqlgen"
+        assert task["model"] == "inoberry-amansman77-gpt-5.5"
+
+
+def test_task_creation_still_rejects_invalid_model_without_a_profile():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "No Profile", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        response = client.post(
+            "/tasks",
+            json={
+                "project_id": project["id"],
+                "title": "Bad model",
+                "prompt": "Do work",
+                "model": "not-a-real-model",
+            },
+        )
+        assert response.status_code == 400
+        assert "Invalid model" in response.json()["detail"]
+
+
+def test_task_creation_rejects_invalid_model_when_profile_has_no_declared_model(tmp_path, monkeypatch):
+    # A profile that doesn't itself declare a model (e.g. it only sets
+    # approval_policy/sandbox_mode) must not bypass model validation.
+    (tmp_path / "careful.config.toml").write_text('approval_policy = "untrusted"\n')
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Profile No Model", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        response = client.post(
+            "/tasks",
+            json={
+                "project_id": project["id"],
+                "title": "Bad model",
+                "prompt": "Do work",
+                "model": "not-a-real-model",
+                "profile": "careful",
+            },
+        )
+        assert response.status_code == 400
+        assert "Invalid model" in response.json()["detail"]
 
 
 def _create_project_for_prompts() -> dict:

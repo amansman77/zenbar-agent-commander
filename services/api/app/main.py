@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from .db import Base, engine, ensure_schema, get_db
 from .app_server_manager import ManagedAppServer
+from .codex_profiles import get_profile as get_codex_profile
 from .codex_profiles import list_profiles as list_codex_profiles
 from .codex_project_trust import add_project_trust_entry
 from .model_catalog import RuntimeModelCatalog
@@ -114,6 +115,25 @@ def _model_catalog_for(engine: str | None) -> RuntimeModelCatalog:
         allowed = ", ".join(sorted(model_catalogs))
         raise HTTPException(status_code=400, detail=f"Unknown engine '{engine}'. Allowed engines: {allowed}")
     return catalog
+
+
+def _validate_task_model(model: str, profile_id: str | None, allowed_models: list[str]) -> None:
+    # A selected profile with its own declared model always wins over an
+    # explicit model pick (see TaskForm's profileControlsModel on the
+    # frontend, which sends the profile's model rather than letting the user
+    # pick one) -- and that model may legitimately be outside the generic
+    # engine-wide catalog, e.g. an Azure OpenAI deployment name like
+    # "inoberry-amansman77-gpt-5.5" rather than a plain "gpt-5.5". Validating
+    # it against `allowed_models` here was rejecting every task created with
+    # such a profile with a 400. Skip the catalog check in that case; the
+    # profile itself is the source of truth for whether the model is valid.
+    if profile_id:
+        profile = get_codex_profile(profile_id)
+        if profile is not None and profile.model:
+            return
+    if model not in allowed_models:
+        allowed = ", ".join(allowed_models)
+        raise HTTPException(status_code=400, detail=f"Invalid model '{model}'. Allowed models: {allowed}")
 
 
 def _is_truthy(value: str | None) -> bool:
@@ -473,9 +493,7 @@ async def post_task(payload: CreateTaskRequest, db: Session = Depends(get_db)):
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     allowed_models, _ = await _model_catalog_for(payload.engine).list_models()
-    if payload.model not in allowed_models:
-        allowed = ", ".join(allowed_models)
-        raise HTTPException(status_code=400, detail=f"Invalid model '{payload.model}'. Allowed models: {allowed}")
+    _validate_task_model(payload.model, payload.profile, allowed_models)
     task = _require_task(get_task(db, create_task(db, payload, project_name=project.name).id))
     try:
         task = await orchestrator.start_task(db, task, project)
@@ -586,9 +604,7 @@ async def retry_task(task_id: str, payload: TaskApprovalRequest, db: Session = D
     _assert_transition(can_retry(task.status), f"Task cannot be retried from status '{task.status}'")
     if payload.model:
         allowed_models, _ = await _model_catalog_for(task.engine).list_models()
-        if payload.model not in allowed_models:
-            allowed = ", ".join(allowed_models)
-            raise HTTPException(status_code=400, detail=f"Invalid model '{payload.model}'. Allowed models: {allowed}")
+        _validate_task_model(payload.model, payload.profile, allowed_models)
     add_approval(db, task, "retry", payload.actor)
     try:
         await orchestrator.retry_task(db, task, model_override=payload.model, profile_override=payload.profile)
