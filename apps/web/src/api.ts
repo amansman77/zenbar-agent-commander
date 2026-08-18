@@ -5,6 +5,7 @@ import type {
   ConversationDetail,
   ConversationSummary,
   CreateConversationRequest,
+  CreateProjectPipelineRequest,
   CreateProjectPromptRequest,
   CreateProjectRequest,
   DiscoverProjectRequest,
@@ -16,6 +17,7 @@ import type {
   ListRuntimeProfilesResponse,
   ListRuntimeSkillsResponse,
   CreateTaskRequest,
+  ProjectPipeline,
   ProjectPrompt,
   ProjectSummary,
   PushTaskRequest,
@@ -25,6 +27,7 @@ import type {
   TaskEvent,
   TaskGitActionResult,
   TaskSummary,
+  UpdateProjectPipelineRequest,
   UpdateProjectPromptRequest
 } from "@zenbar/shared";
 
@@ -108,6 +111,22 @@ export const api = {
     }),
   deleteProjectPrompt: (projectId: string, promptId: string) =>
     request<void>(`/projects/${projectId}/prompts/${promptId}`, {
+      method: "DELETE"
+    }),
+  listProjectPipelines: (projectId: string) =>
+    request<ProjectPipeline[]>(`/projects/${projectId}/pipelines`),
+  createProjectPipeline: (projectId: string, payload: CreateProjectPipelineRequest) =>
+    request<ProjectPipeline>(`/projects/${projectId}/pipelines`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  updateProjectPipeline: (projectId: string, pipelineId: string, payload: UpdateProjectPipelineRequest) =>
+    request<ProjectPipeline>(`/projects/${projectId}/pipelines/${pipelineId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  deleteProjectPipeline: (projectId: string, pipelineId: string) =>
+    request<void>(`/projects/${projectId}/pipelines/${pipelineId}`, {
       method: "DELETE"
     }),
   listTasks: (projectId: string) =>

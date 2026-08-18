@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ class Project(Base):
 
     tasks: Mapped[list["Task"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     prompts: Mapped[list["ProjectPrompt"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    pipelines: Mapped[list["ProjectPipeline"]] = relationship(back_populates="project", cascade="all, delete-orphan")
 
 
 class ProjectPrompt(Base):
@@ -39,6 +41,24 @@ class ProjectPrompt(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="prompts")
+
+
+class ProjectPipeline(Base):
+    __tablename__ = "project_pipelines"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
+    name: Mapped[str] = mapped_column(String(255))
+    # Ordered list of ProjectPrompt.id, JSON-encoded. Resolved to each
+    # prompt's *current* content at run time (see main.py's conversation
+    # message handler), so editing a saved prompt's text later is picked up
+    # by pipelines that reference it -- this column is just the recipe
+    # (which prompts, in what order), not a content snapshot.
+    prompt_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    project: Mapped[Project] = relationship(back_populates="pipelines")
 
 
 class Task(Base):
@@ -65,8 +85,28 @@ class Task(Base):
     latest_diff_summary: Mapped[str] = mapped_column(Text, default="")
     latest_diff_raw: Mapped[str | None] = mapped_column(Text, nullable=True)
     latest_diff_files_json: Mapped[str] = mapped_column(Text, default="[]")
+    # Pipeline execution state. pipeline_name/pipeline_steps_json are
+    # snapshotted from the ProjectPipeline at the moment this task started
+    # running it (not live-resolved), so a pipeline being edited or deleted
+    # mid-run can't change what's actually executing. pipeline_steps_json is
+    # a JSON list of {"prompt_id", "title", "content"}, in order;
+    # pipeline_step_index is the 0-based index of the step this task is
+    # currently on (or just finished). All null for non-pipeline tasks.
+    pipeline_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    pipeline_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    pipeline_steps_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pipeline_step_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    @property
+    def pipeline_total_steps(self) -> int | None:
+        if not self.pipeline_steps_json:
+            return None
+        try:
+            return len(json.loads(self.pipeline_steps_json))
+        except (TypeError, ValueError):
+            return None
 
     project: Mapped[Project] = relationship(back_populates="tasks")
     events: Mapped[list["TaskEvent"]] = relationship(back_populates="task", cascade="all, delete-orphan")

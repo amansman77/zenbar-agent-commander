@@ -55,6 +55,14 @@ def ensure_schema() -> None:
             connection.execute(text("ALTER TABLE tasks ADD COLUMN pending_request_id VARCHAR(255)"))
         if "pending_request_payload_json" not in columns:
             connection.execute(text("ALTER TABLE tasks ADD COLUMN pending_request_payload_json TEXT"))
+        if "pipeline_id" not in columns:
+            connection.execute(text("ALTER TABLE tasks ADD COLUMN pipeline_id VARCHAR"))
+        if "pipeline_name" not in columns:
+            connection.execute(text("ALTER TABLE tasks ADD COLUMN pipeline_name VARCHAR(255)"))
+        if "pipeline_steps_json" not in columns:
+            connection.execute(text("ALTER TABLE tasks ADD COLUMN pipeline_steps_json TEXT"))
+        if "pipeline_step_index" not in columns:
+            connection.execute(text("ALTER TABLE tasks ADD COLUMN pipeline_step_index INTEGER"))
         if "waiting_approval" in statuses:
             connection.execute(
                 text("UPDATE tasks SET status = 'waiting_result_approval' WHERE status = 'waiting_approval'")

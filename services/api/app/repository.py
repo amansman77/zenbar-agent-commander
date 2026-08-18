@@ -7,17 +7,30 @@ from uuid import uuid4
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from .models import Conversation, ConversationMessage, Project, ProjectPrompt, Task, TaskApproval, TaskEvent, TaskRun, TaskTurn
+from .models import (
+    Conversation,
+    ConversationMessage,
+    Project,
+    ProjectPipeline,
+    ProjectPrompt,
+    Task,
+    TaskApproval,
+    TaskEvent,
+    TaskRun,
+    TaskTurn,
+)
 from .schemas import (
     AddConversationMessageRequest,
     ConversationDetail,
     ConversationMessageItem,
     ConversationSummary,
     CreateConversationRequest,
+    CreateProjectPipelineRequest,
     CreateProjectPromptRequest,
     CreateProjectRequest,
     CreateTaskRequest,
     PendingInteractionType,
+    ProjectPipelineItem,
     ProjectPromptItem,
     ProjectSummary,
     RuntimeEvent,
@@ -28,6 +41,7 @@ from .schemas import (
     TaskDiff,
     TaskEventResponse,
     TaskSummary,
+    UpdateProjectPipelineRequest,
     UpdateProjectPromptRequest,
 )
 
@@ -128,6 +142,56 @@ def delete_project_prompt(db: Session, prompt_id: str) -> None:
     if prompt:
         db.delete(prompt)
         db.commit()
+
+
+def list_project_pipelines(db: Session, project_id: str) -> list[ProjectPipeline]:
+    stmt = (
+        select(ProjectPipeline)
+        .where(ProjectPipeline.project_id == project_id)
+        .order_by(ProjectPipeline.created_at)
+    )
+    return list(db.scalars(stmt))
+
+
+def get_project_pipeline(db: Session, pipeline_id: str) -> ProjectPipeline | None:
+    return db.get(ProjectPipeline, pipeline_id)
+
+
+def create_project_pipeline(db: Session, project_id: str, payload: CreateProjectPipelineRequest) -> ProjectPipeline:
+    pipeline = ProjectPipeline(
+        project_id=project_id,
+        name=payload.name,
+        prompt_ids_json=json.dumps(payload.prompt_ids),
+    )
+    db.add(pipeline)
+    db.commit()
+    db.refresh(pipeline)
+    return pipeline
+
+
+def update_project_pipeline(db: Session, pipeline: ProjectPipeline, payload: UpdateProjectPipelineRequest) -> ProjectPipeline:
+    if payload.name is not None:
+        pipeline.name = payload.name
+    if payload.prompt_ids is not None:
+        pipeline.prompt_ids_json = json.dumps(payload.prompt_ids)
+    db.add(pipeline)
+    db.commit()
+    db.refresh(pipeline)
+    return pipeline
+
+
+def delete_project_pipeline(db: Session, pipeline_id: str) -> None:
+    pipeline = db.get(ProjectPipeline, pipeline_id)
+    if pipeline:
+        db.delete(pipeline)
+        db.commit()
+
+
+def set_task_pipeline_step(db: Session, task: Task, step_index: int) -> Task:
+    task.pipeline_step_index = step_index
+    db.add(task)
+    db.commit()
+    return get_task(db, task.id)
 
 
 def create_task(db: Session, payload: CreateTaskRequest, project_name: str | None = None) -> Task:
@@ -444,6 +508,17 @@ def serialize_project_prompt(prompt: ProjectPrompt) -> ProjectPromptItem:
     return ProjectPromptItem.model_validate(prompt, from_attributes=True)
 
 
+def serialize_project_pipeline(pipeline: ProjectPipeline) -> ProjectPipelineItem:
+    return ProjectPipelineItem(
+        id=pipeline.id,
+        project_id=pipeline.project_id,
+        name=pipeline.name,
+        prompt_ids=json.loads(pipeline.prompt_ids_json or "[]"),
+        created_at=pipeline.created_at,
+        updated_at=pipeline.updated_at,
+    )
+
+
 def serialize_task_summary(task: Task) -> TaskSummary:
     return TaskSummary.model_validate(task, from_attributes=True)
 
@@ -500,6 +575,13 @@ def get_conversation(db: Session, conversation_id: str) -> Conversation | None:
             selectinload(Conversation.project),
             selectinload(Conversation.task).selectinload(Task.project),
         )
+        # Same reasoning as get_task's populate_existing: this is called
+        # multiple times within one request (e.g. post_conversation_message
+        # re-fetches before/after starting or following up a task), and
+        # without it, an already-loaded `.task` relationship (e.g. still
+        # None from before the task existed) wouldn't be refreshed by a
+        # later call in the same Session.
+        .execution_options(populate_existing=True)
     )
     return db.scalars(stmt).first()
 
@@ -534,6 +616,27 @@ def add_conversation_message(
             .where(Conversation.id == conversation_id)
             .values(updated_at=func.current_timestamp(), title=conv.title)
         )
+    db.commit()
+    db.refresh(msg)
+    return msg
+
+
+def add_conversation_message_for_task(db: Session, task_id: str, role: str, content: str) -> ConversationMessage | None:
+    # A pipeline's later steps are sent via TaskOrchestrator.followup_task
+    # directly (not through the POST /conversations/{id}/messages endpoint,
+    # since nothing external triggers them), which only records a TaskTurn
+    # + TaskEvent -- neither of those is a ConversationMessage, so without
+    # this each step's prompt after the first would silently never show up
+    # in the chat view. Mirrors append_event's own conv lookup for assistant
+    # messages (source == "agent_message").
+    conv = db.scalars(select(Conversation).where(Conversation.task_id == task_id)).first()
+    if conv is None:
+        return None
+    msg = ConversationMessage(conversation_id=conv.id, role=role, content=content)
+    db.add(msg)
+    db.execute(
+        update(Conversation).where(Conversation.id == conv.id).values(updated_at=func.current_timestamp())
+    )
     db.commit()
     db.refresh(msg)
     return msg
@@ -578,6 +681,10 @@ def serialize_conversation_detail(conv: Conversation) -> ConversationDetail:
         task_model=task.effective_model or task.model if task else None,
         task_profile=task.profile if task else None,
         task_engine=task.engine if task else None,
+        task_pipeline_id=task.pipeline_id if task else None,
+        task_pipeline_name=task.pipeline_name if task else None,
+        task_pipeline_step_index=task.pipeline_step_index if task else None,
+        task_pipeline_total_steps=task.pipeline_total_steps if task else None,
         messages=[serialize_conversation_message(msg) for msg in conv.messages],
         created_at=conv.created_at,
         updated_at=conv.updated_at,

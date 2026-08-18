@@ -1489,3 +1489,195 @@ def test_project_prompts_404_for_unknown_project_or_prompt():
     assert client.patch(
         f"/projects/{project['id']}/prompts/does-not-exist", json={"title": "z"}
     ).status_code == 404
+
+
+def test_project_pipelines_crud_flow():
+    project = _create_project_for_prompts()
+    prompt_a = client.post(
+        f"/projects/{project['id']}/prompts", json={"title": "A", "content": "Do A."}
+    ).json()
+    prompt_b = client.post(
+        f"/projects/{project['id']}/prompts", json={"title": "B", "content": "Do B."}
+    ).json()
+
+    empty = client.get(f"/projects/{project['id']}/pipelines")
+    assert empty.status_code == 200
+    assert empty.json() == []
+
+    created = client.post(
+        f"/projects/{project['id']}/pipelines",
+        json={"name": "A then B", "prompt_ids": [prompt_a["id"], prompt_b["id"]]},
+    )
+    assert created.status_code == 201
+    pipeline = created.json()
+    assert pipeline["name"] == "A then B"
+    assert pipeline["prompt_ids"] == [prompt_a["id"], prompt_b["id"]]
+    assert pipeline["project_id"] == project["id"]
+
+    listed = client.get(f"/projects/{project['id']}/pipelines").json()
+    assert [p["id"] for p in listed] == [pipeline["id"]]
+
+    reordered = client.patch(
+        f"/projects/{project['id']}/pipelines/{pipeline['id']}",
+        json={"name": "B then A", "prompt_ids": [prompt_b["id"], prompt_a["id"]]},
+    )
+    assert reordered.status_code == 200
+    assert reordered.json()["name"] == "B then A"
+    assert reordered.json()["prompt_ids"] == [prompt_b["id"], prompt_a["id"]]
+
+    deleted = client.delete(f"/projects/{project['id']}/pipelines/{pipeline['id']}")
+    assert deleted.status_code == 204
+    assert client.get(f"/projects/{project['id']}/pipelines").json() == []
+
+
+def test_project_pipelines_reject_prompts_from_another_project():
+    project = _create_project_for_prompts()
+    other_project = _create_project_for_prompts()
+    foreign_prompt = client.post(
+        f"/projects/{other_project['id']}/prompts", json={"title": "Foreign", "content": "..."}
+    ).json()
+
+    response = client.post(
+        f"/projects/{project['id']}/pipelines",
+        json={"name": "Bad", "prompt_ids": [foreign_prompt["id"]]},
+    )
+    assert response.status_code == 400
+
+
+def test_project_pipelines_404_for_unknown_project_or_pipeline():
+    project = _create_project_for_prompts()
+
+    assert client.get("/projects/does-not-exist/pipelines").status_code == 404
+    prompt = client.post(
+        f"/projects/{project['id']}/prompts", json={"title": "x", "content": "y"}
+    ).json()
+    assert client.post(
+        "/projects/does-not-exist/pipelines", json={"name": "x", "prompt_ids": [prompt["id"]]}
+    ).status_code == 404
+
+    pipeline = client.post(
+        f"/projects/{project['id']}/pipelines", json={"name": "x", "prompt_ids": [prompt["id"]]}
+    ).json()
+
+    other_project = _create_project_for_prompts()
+    assert client.patch(
+        f"/projects/{other_project['id']}/pipelines/{pipeline['id']}", json={"name": "z"}
+    ).status_code == 404
+    assert client.delete(f"/projects/{other_project['id']}/pipelines/{pipeline['id']}").status_code == 404
+    assert client.patch(
+        f"/projects/{project['id']}/pipelines/does-not-exist", json={"name": "z"}
+    ).status_code == 404
+
+
+def test_pipeline_execution_auto_advances_through_all_steps_and_completes():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Pipeline Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+
+        prompt_specs = [
+            ("Step 1", "Do the first thing."),
+            ("Step 2", "Do the second thing."),
+            ("Step 3", "Do the third thing."),
+        ]
+        prompt_ids = []
+        for title, content in prompt_specs:
+            prompt = client.post(
+                f"/projects/{project['id']}/prompts",
+                json={"title": title, "content": content},
+            ).json()
+            prompt_ids.append(prompt["id"])
+
+        pipeline = client.post(
+            f"/projects/{project['id']}/pipelines",
+            json={"name": "Full Flow", "prompt_ids": prompt_ids},
+        )
+        assert pipeline.status_code == 201
+        pipeline_id = pipeline.json()["id"]
+
+        conversation = client.post(
+            "/conversations",
+            json={"project_id": project["id"], "title": "Pipeline run"},
+        ).json()
+
+        response = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "", "pipeline_id": pipeline_id},
+        )
+        assert response.status_code == 201
+        body = response.json()
+
+        # Fully automatic (no per-step approval): by the time the request
+        # returns, all 3 steps have run to completion via the mock adapter's
+        # synchronous event consumption.
+        assert body["task_pipeline_id"] == pipeline_id
+        assert body["task_pipeline_name"] == "Full Flow"
+        assert body["task_pipeline_step_index"] == 2
+        assert body["task_pipeline_total_steps"] == 3
+        assert body["task_status"] == "completed"
+
+        # Each step's prompt content appears as its own user message, in order.
+        user_messages = [m["content"] for m in body["messages"] if m["role"] == "user"]
+        assert user_messages == [content for _, content in prompt_specs]
+
+        task = client.get(f"/tasks/{body['task_id']}").json()
+        assert task["status"] == "completed"
+        assert task["pipeline_step_index"] == 2
+        assert task["pipeline_total_steps"] == 3
+
+
+def test_pipeline_stops_and_reports_failure_when_a_step_fails():
+    from app.main import orchestrator
+    from app.schemas import RuntimeEvent, RuntimeSession
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Pipeline Failure Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+
+        prompt_ids = []
+        for title, content in [("Step 1", "Do the first thing."), ("Step 2", "Do the second thing.")]:
+            prompt_ids.append(
+                client.post(
+                    f"/projects/{project['id']}/prompts", json={"title": title, "content": content}
+                ).json()["id"]
+            )
+
+        pipeline_id = client.post(
+            f"/projects/{project['id']}/pipelines",
+            json={"name": "Will Fail", "prompt_ids": prompt_ids},
+        ).json()["id"]
+
+        conversation = client.post(
+            "/conversations",
+            json={"project_id": project["id"], "title": "Pipeline failure run"},
+        ).json()
+
+        original_followup = orchestrator.adapter.followup_task
+
+        async def failing_followup(session_id: str, message: str, selected_skill: str | None = None):
+            # Simulate step 2 failing instead of completing normally.
+            orchestrator.adapter._events.setdefault(session_id, []).append(
+                RuntimeEvent(type="failed", message="Simulated step failure")
+            )
+            return RuntimeSession(session_id=session_id, effective_model="default")
+
+        orchestrator.adapter.followup_task = failing_followup
+        try:
+            response = client.post(
+                f"/conversations/{conversation['id']}/messages",
+                json={"content": "", "pipeline_id": pipeline_id},
+            )
+        finally:
+            orchestrator.adapter.followup_task = original_followup
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body["task_status"] == "failed"
+        # Advanced to (and failed on) step index 1 -- the pipeline did not
+        # silently skip ahead or retry.
+        assert body["task_pipeline_step_index"] == 1

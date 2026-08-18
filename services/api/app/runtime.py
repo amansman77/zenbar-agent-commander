@@ -961,7 +961,15 @@ class MockRuntimeAdapter(RuntimeAdapter):
                     message="Applied follow-up changes",
                     payload={"role": "assistant", "content": "Applied requested follow-up changes."},
                 ),
-                RuntimeEvent(type="completed", message="Follow-up completed"),
+                # A follow-up's result needs approval just like the initial
+                # turn (zenbar's result-approval step is baked into every
+                # turn's prompt, not a one-time thing) -- matches
+                # start_task's own event sequence below.
+                RuntimeEvent(
+                    type="result_approval_requested",
+                    message="Waiting for result approval",
+                    payload={"request_id": "mock-approval", "method": "item/fileChange/requestApproval"},
+                ),
             ]
         )
         return RuntimeSession(session_id=session_id, effective_model=request.model)

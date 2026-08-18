@@ -70,6 +70,25 @@ class UpdateProjectPromptRequest(BaseModel):
     content: str | None = Field(default=None, min_length=1)
 
 
+class ProjectPipelineItem(BaseModel):
+    id: str
+    project_id: str
+    name: str
+    prompt_ids: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class CreateProjectPipelineRequest(BaseModel):
+    name: str = Field(min_length=1)
+    prompt_ids: list[str] = Field(min_length=1)
+
+
+class UpdateProjectPipelineRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
+    prompt_ids: list[str] | None = Field(default=None, min_length=1)
+
+
 class DiscoverProjectResponse(BaseModel):
     name: str
     repo_path: str
@@ -204,6 +223,10 @@ class TaskSummary(BaseModel):
     workspace_ref: str
     workspace_path: str | None
     runtime_session_id: str | None
+    pipeline_id: str | None = None
+    pipeline_name: str | None = None
+    pipeline_step_index: int | None = None
+    pipeline_total_steps: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -317,6 +340,10 @@ class ConversationDetail(BaseModel):
     task_model: str | None
     task_profile: str | None
     task_engine: str | None
+    task_pipeline_id: str | None = None
+    task_pipeline_name: str | None = None
+    task_pipeline_step_index: int | None = None
+    task_pipeline_total_steps: int | None = None
     messages: list[ConversationMessageItem]
     created_at: datetime
     updated_at: datetime
@@ -328,12 +355,13 @@ class CreateConversationRequest(BaseModel):
 
 
 class AddConversationMessageRequest(BaseModel):
-    content: str
+    content: str = ""
     role: str = "user"
     selected_skill: str | None = None
     engine: str | None = None
     model: str | None = None
     profile: str | None = None
+    pipeline_id: str | None = None
 
 
 class FsBrowseEntry(BaseModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 from collections.abc import AsyncIterator
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 from .db import SessionLocal
 from .models import Project, Task
 from .repository import (
+    add_conversation_message_for_task,
     append_event,
     clear_runtime_session,
     create_run,
@@ -22,6 +24,7 @@ from .repository import (
     serialize_diff,
     serialize_event,
     serialize_task_detail,
+    set_task_pipeline_step,
     set_task_workspace,
     set_task_status,
 )
@@ -576,6 +579,7 @@ class TaskOrchestrator:
                 return
             if task.runtime_session_id and event.type in {"diff_generated", "completed"}:
                 task = await self.refresh_diff(db, task)
+            task = await self._advance_pipeline_if_needed(db, task)
             records = list_events(db, task_id)
             latest_event = serialize_event(records[-1])
             payload = {
@@ -584,6 +588,57 @@ class TaskOrchestrator:
                 "diff": serialize_diff(task).model_dump(mode="json"),
             }
         await broker.publish(task_id, payload)
+
+    async def _advance_pipeline_if_needed(self, db: Session, task: Task) -> Task:
+        """Prompt pipelines run fully automatically (no per-step human
+        approval, per the chosen design): once a pipeline task's current
+        step reaches waiting_result_approval, auto-approve it and, if more
+        steps remain, immediately send the next prompt as a follow-up turn
+        in the same session. A step failing (status becomes "failed") is
+        simply not handled here, so the pipeline naturally stops -- there is
+        no "resume" path, matching "실패하면 파이프라인 중단".
+        """
+        if task.status != "waiting_result_approval" or not task.pipeline_id:
+            return task
+        steps = json.loads(task.pipeline_steps_json or "[]")
+        current_index = task.pipeline_step_index if task.pipeline_step_index is not None else 0
+        next_index = current_index + 1
+
+        try:
+            task = await self.approve_task(db, task)
+        except Exception as exc:
+            append_event(
+                db,
+                task,
+                RuntimeEvent(
+                    type="failed",
+                    message=f"Pipeline '{task.pipeline_name}' stopped: could not auto-approve step {current_index + 1}/{len(steps)}.",
+                    payload={"reason": "pipeline_auto_approve_failed", "error": str(exc)[:500]},
+                ),
+            )
+            return self._require_task(db, task.id, "pipeline auto-approve failure")
+
+        if next_index >= len(steps):
+            # Last step just auto-approved -- pipeline finished successfully.
+            return task
+
+        next_step = steps[next_index]
+        try:
+            task = set_task_pipeline_step(db, task, next_index)
+            add_conversation_message_for_task(db, task.id, "user", next_step["content"])
+            task = await self.followup_task(db, task, next_step["content"])
+        except Exception as exc:
+            append_event(
+                db,
+                task,
+                RuntimeEvent(
+                    type="failed",
+                    message=f"Pipeline '{task.pipeline_name}' stopped: could not start step {next_index + 1}/{len(steps)}.",
+                    payload={"reason": "pipeline_followup_failed", "error": str(exc)[:500]},
+                ),
+            )
+            return self._require_task(db, task.id, "pipeline followup failure")
+        return task
 
     def _has_diff_content(self, diff: TaskDiff | None) -> bool:
         if diff is None:

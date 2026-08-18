@@ -105,6 +105,10 @@ export interface TaskSummary {
   workspace_ref: string;
   workspace_path: string | null;
   runtime_session_id: string | null;
+  pipeline_id?: string | null;
+  pipeline_name?: string | null;
+  pipeline_step_index?: number | null;
+  pipeline_total_steps?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -202,6 +206,25 @@ export interface UpdateProjectPromptRequest {
   content?: string;
 }
 
+export interface ProjectPipeline {
+  id: string;
+  project_id: string;
+  name: string;
+  prompt_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateProjectPipelineRequest {
+  name: string;
+  prompt_ids: string[];
+}
+
+export interface UpdateProjectPipelineRequest {
+  name?: string;
+  prompt_ids?: string[];
+}
+
 export interface CreateTaskRequest {
   project_id: string;
   title: string;
@@ -271,6 +294,10 @@ export interface ConversationDetail {
   task_model: string | null;
   task_profile: string | null;
   task_engine: string | null;
+  task_pipeline_id?: string | null;
+  task_pipeline_name?: string | null;
+  task_pipeline_step_index?: number | null;
+  task_pipeline_total_steps?: number | null;
   messages: ConversationMessageItem[];
   created_at: string;
   updated_at: string;
@@ -288,6 +315,7 @@ export interface AddConversationMessageRequest {
   engine?: string | null;
   model?: string | null;
   profile?: string | null;
+  pipeline_id?: string | null;
 }
 
 export interface FsBrowseEntry {

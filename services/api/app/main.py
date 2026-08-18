@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from contextlib import asynccontextmanager
 
@@ -25,17 +26,21 @@ from .repository import (
     delete_conversation,
     delete_task,
     create_project,
+    create_project_pipeline,
     create_project_prompt,
     create_task,
+    delete_project_pipeline,
     delete_project_prompt,
     get_conversation,
     get_project_any,
     get_project,
+    get_project_pipeline,
     get_project_prompt,
     get_task,
     get_task_by_session_id,
     list_conversations,
     list_events,
+    list_project_pipelines,
     list_project_prompts,
     list_projects,
     list_tasks,
@@ -45,12 +50,14 @@ from .repository import (
     serialize_diff,
     serialize_event,
     serialize_project,
+    serialize_project_pipeline,
     serialize_project_prompt,
     serialize_task_detail,
     serialize_task_summary,
     set_conversation_task_id,
     soft_delete_project,
     set_task_status,
+    update_project_pipeline,
     update_project_prompt,
 )
 from .repo_discovery import (
@@ -66,6 +73,7 @@ from .schemas import (
     ConversationMessageItem,
     ConversationSummary,
     CreateConversationRequest,
+    CreateProjectPipelineRequest,
     CreateProjectPromptRequest,
     CreateProjectRequest,
     TaskCommitRequest,
@@ -74,6 +82,7 @@ from .schemas import (
     DiscoverProjectResponse,
     FsBrowseEntry,
     FsBrowseResponse,
+    ProjectPipelineItem,
     ProjectPromptItem,
     ProjectSummary,
     RespondTaskRequest,
@@ -93,6 +102,7 @@ from .schemas import (
     TaskGitActionResponse,
     TaskPushRequest,
     TaskSummary,
+    UpdateProjectPipelineRequest,
     UpdateProjectPromptRequest,
 )
 from .service import TaskOrchestrator, stream_task_events
@@ -305,6 +315,53 @@ def delete_project_prompt_endpoint(project_id: str, prompt_id: str, db: Session 
     return Response(status_code=204)
 
 
+def _validate_pipeline_prompt_ids(db: Session, project_id: str, prompt_ids: list[str]) -> None:
+    for prompt_id in prompt_ids:
+        prompt = get_project_prompt(db, prompt_id)
+        if prompt is None or prompt.project_id != project_id:
+            raise HTTPException(status_code=400, detail=f"Prompt '{prompt_id}' not found in this project")
+
+
+@app.get("/projects/{project_id}/pipelines", response_model=list[ProjectPipelineItem])
+def get_project_pipelines(project_id: str, db: Session = Depends(get_db)):
+    if get_project(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return [serialize_project_pipeline(item) for item in list_project_pipelines(db, project_id)]
+
+
+@app.post("/projects/{project_id}/pipelines", response_model=ProjectPipelineItem, status_code=201)
+def post_project_pipeline(project_id: str, payload: CreateProjectPipelineRequest, db: Session = Depends(get_db)):
+    if get_project(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    _validate_pipeline_prompt_ids(db, project_id, payload.prompt_ids)
+    return serialize_project_pipeline(create_project_pipeline(db, project_id, payload))
+
+
+@app.patch("/projects/{project_id}/pipelines/{pipeline_id}", response_model=ProjectPipelineItem)
+def patch_project_pipeline(
+    project_id: str, pipeline_id: str, payload: UpdateProjectPipelineRequest, db: Session = Depends(get_db)
+):
+    if get_project(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    pipeline = get_project_pipeline(db, pipeline_id)
+    if pipeline is None or pipeline.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    if payload.prompt_ids is not None:
+        _validate_pipeline_prompt_ids(db, project_id, payload.prompt_ids)
+    return serialize_project_pipeline(update_project_pipeline(db, pipeline, payload))
+
+
+@app.delete("/projects/{project_id}/pipelines/{pipeline_id}", status_code=204)
+def delete_project_pipeline_endpoint(project_id: str, pipeline_id: str, db: Session = Depends(get_db)):
+    if get_project(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    pipeline = get_project_pipeline(db, pipeline_id)
+    if pipeline is None or pipeline.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    delete_project_pipeline(db, pipeline_id)
+    return Response(status_code=204)
+
+
 @app.post("/projects/discover", response_model=DiscoverProjectResponse)
 def post_project_discovery(payload: DiscoverProjectRequest | None = None):
     try:
@@ -359,6 +416,33 @@ async def post_conversation_message(
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    # Starting a pipeline: resolve it up front (before saving the visible
+    # message) so the first step's actual prompt content becomes both the
+    # user-facing chat bubble and the task's prompt -- the compose bar
+    # doesn't require typing anything when a pipeline is selected.
+    pipeline = None
+    pipeline_steps: list[dict] | None = None
+    if payload.role == "user" and payload.pipeline_id and conv.task_id is None:
+        project_for_pipeline = get_project(db, conv.project_id) if conv.project_id else None
+        if project_for_pipeline is None:
+            raise HTTPException(status_code=400, detail="Conversation has no associated project")
+        pipeline = get_project_pipeline(db, payload.pipeline_id)
+        if pipeline is None or pipeline.project_id != project_for_pipeline.id:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+        prompt_ids = json.loads(pipeline.prompt_ids_json or "[]")
+        if not prompt_ids:
+            raise HTTPException(status_code=400, detail="Pipeline has no prompts")
+        pipeline_steps = []
+        for prompt_id in prompt_ids:
+            prompt = get_project_prompt(db, prompt_id)
+            if prompt is None or prompt.project_id != project_for_pipeline.id:
+                raise HTTPException(status_code=400, detail=f"Pipeline references a missing prompt '{prompt_id}'")
+            pipeline_steps.append({"prompt_id": prompt.id, "title": prompt.title, "content": prompt.content})
+        payload = payload.model_copy(update={"content": pipeline_steps[0]["content"]})
+
+    if not payload.content.strip():
+        raise HTTPException(status_code=400, detail="Message content cannot be empty")
+
     add_conversation_message(db, conversation_id, payload)
 
     if payload.role == "user":
@@ -382,6 +466,13 @@ async def post_conversation_message(
                 workspace_type="worktree",
             )
             task = create_task(db, task_request, project_name=project.name)
+            if pipeline_steps is not None and pipeline is not None:
+                task.pipeline_id = pipeline.id
+                task.pipeline_name = pipeline.name
+                task.pipeline_steps_json = json.dumps(pipeline_steps)
+                task.pipeline_step_index = 0
+                db.add(task)
+                db.commit()
             task = get_task(db, task.id)
             set_conversation_task_id(db, conversation_id, task.id)
             db.expire_all()
@@ -418,6 +509,16 @@ async def post_conversation_message(
                         detail = _safe_runtime_error_detail("Failed to restart Codex session", start_exc)
                         raise HTTPException(status_code=502, detail=detail) from start_exc
 
+    # orchestrator.start_task/followup_task (above) do most of their event
+    # processing on separate SessionLocal() instances (see
+    # TaskOrchestrator._handle_runtime_event), which is how synchronous
+    # runtimes like the mock adapter can run a whole pipeline to completion
+    # within this one request. This session's own transaction began its
+    # snapshot before any of that happened, so — unlike expire_all(), which
+    # only invalidates the ORM's object cache — it would keep reading that
+    # stale pre-pipeline snapshot without an explicit commit here to end the
+    # transaction and let the next read start a fresh one that can see it.
+    db.commit()
     conv = get_conversation(db, conversation_id)
     return serialize_conversation_detail(conv)
 

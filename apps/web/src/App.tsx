@@ -10,6 +10,7 @@ import type {
   DiscoverProjectResponse,
   ExecutionMode,
   FsBrowseResponse,
+  ProjectPipeline,
   ProjectPrompt,
   ReasoningEffort,
   RuntimeEngineOption,
@@ -1046,6 +1047,9 @@ function ConversationDetailScreen({
   const skillMenuRef = useRef<HTMLDivElement>(null);
   const [promptMenuOpen, setPromptMenuOpen] = useState(false);
   const promptMenuRef = useRef<HTMLDivElement>(null);
+  const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(null);
+  const [pipelineMenuOpen, setPipelineMenuOpen] = useState(false);
+  const pipelineMenuRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const deleteConversationMutation = useMutation({
@@ -1081,6 +1085,14 @@ function ConversationDetailScreen({
     staleTime: 60_000,
   });
   const savedPrompts: ProjectPrompt[] = promptsData ?? [];
+
+  const { data: pipelinesData } = useQuery({
+    queryKey: ["project-pipelines", projectId],
+    queryFn: () => api.listProjectPipelines(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: 60_000,
+  });
+  const availablePipelines: ProjectPipeline[] = pipelinesData ?? [];
 
   const taskId = conversation?.task_id ?? null;
   const { data: diffData, refetch: refetchDiff } = useQuery({
@@ -1169,7 +1181,7 @@ function ConversationDetailScreen({
   });
 
   const addMessageMutation = useMutation({
-    mutationFn: (payload: { content: string; selected_skill?: string | null; engine?: string | null; model?: string | null; profile?: string | null }) =>
+    mutationFn: (payload: AddConversationMessageRequest) =>
       api.addConversationMessage(conversationId, payload),
     onSuccess: (updated) => {
       setInput("");
@@ -1215,6 +1227,17 @@ function ConversationDetailScreen({
   }, [promptMenuOpen]);
 
   useEffect(() => {
+    if (!pipelineMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (pipelineMenuRef.current && !pipelineMenuRef.current.contains(e.target as Node)) {
+        setPipelineMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [pipelineMenuOpen]);
+
+  useEffect(() => {
     // Model/profile catalogs are engine-specific; a pick from the previous
     // engine is meaningless (or invalid) after switching.
     setSelectedModel(null);
@@ -1258,16 +1281,34 @@ function ConversationDetailScreen({
     return groups;
   }, [conversation?.messages]);
 
-  const isSendDisabled = !input.trim() || addMessageMutation.isPending || isTaskActive;
+  // Pipelines only make sense as the way a task *starts* -- the auto-advance
+  // machinery (TaskOrchestrator._advance_pipeline_if_needed) drives a
+  // freshly-created task through all its steps, so picking one only applies
+  // before the first message.
+  const canSendPipeline = Boolean(selectedPipelineId && !taskStarted);
+  const selectedPipelineName = availablePipelines.find((p) => p.id === selectedPipelineId)?.name ?? null;
+  const isSendDisabled = (!input.trim() && !canSendPipeline) || addMessageMutation.isPending || isTaskActive;
 
   const handleSend = () => {
-    const trimmed = input.trim();
-    if (trimmed && !isSendDisabled) {
-      const modelToUse = taskStarted || profileControlsModel ? null : (selectedModel || availableModels[0] || null);
-      const profileToUse = taskStarted ? null : selectedProfile;
-      const engineToUse = taskStarted ? null : selectedEngine;
-      addMessageMutation.mutate({ content: trimmed, selected_skill: selectedSkill, engine: engineToUse, model: modelToUse, profile: profileToUse });
+    if (isSendDisabled) return;
+    const modelToUse = taskStarted || profileControlsModel ? null : (selectedModel || availableModels[0] || null);
+    const profileToUse = taskStarted ? null : selectedProfile;
+    const engineToUse = taskStarted ? null : selectedEngine;
+    if (canSendPipeline) {
+      addMessageMutation.mutate({
+        content: "",
+        selected_skill: null,
+        engine: engineToUse,
+        model: null,
+        profile: null,
+        pipeline_id: selectedPipelineId,
+      });
+      setSelectedPipelineId(null);
+      return;
     }
+    const trimmed = input.trim();
+    if (!trimmed) return;
+    addMessageMutation.mutate({ content: trimmed, selected_skill: selectedSkill, engine: engineToUse, model: modelToUse, profile: profileToUse });
   };
 
   return (
@@ -1712,7 +1753,102 @@ function ConversationDetailScreen({
               )}
             </div>
           )}
+          {!taskStarted && availablePipelines.length > 0 && (
+            <div ref={pipelineMenuRef} style={{ position: "relative" }}>
+              <button
+                type="button"
+                onClick={() => setPipelineMenuOpen((o) => !o)}
+                title="파이프라인 실행"
+                style={{
+                  padding: "4px 12px",
+                  borderRadius: "14px",
+                  fontSize: "0.78rem",
+                  fontWeight: selectedPipelineId ? 600 : 400,
+                  border: selectedPipelineId ? "1.5px solid #0f3158" : "1.5px solid var(--line)",
+                  background: selectedPipelineId ? "#0f3158" : "transparent",
+                  color: selectedPipelineId ? "#fff" : "var(--text-soft)",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {selectedPipelineName ? `🔗 ${selectedPipelineName}` : "🔗 파이프라인"}
+              </button>
+              {pipelineMenuOpen && (
+                <div style={{
+                  position: "absolute",
+                  bottom: "calc(100% + 6px)",
+                  left: 0,
+                  zIndex: 200,
+                  background: "var(--panel)",
+                  border: "1px solid var(--line)",
+                  borderRadius: "10px",
+                  boxShadow: "var(--shadow)",
+                  width: "260px",
+                  maxHeight: "260px",
+                  overflowY: "auto",
+                }}>
+                  {selectedPipelineId && (
+                    <button
+                      type="button"
+                      onClick={() => { setSelectedPipelineId(null); setPipelineMenuOpen(false); }}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "8px 14px",
+                        fontSize: "0.82rem",
+                        background: "var(--panel-soft)",
+                        color: "var(--primary)",
+                        fontWeight: 600,
+                        border: "none",
+                        borderRadius: 0,
+                        cursor: "pointer",
+                      }}
+                    >
+                      선택 해제
+                    </button>
+                  )}
+                  {availablePipelines.map((pipeline) => (
+                    <button
+                      key={pipeline.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedPipelineId(pipeline.id);
+                        setPipelineMenuOpen(false);
+                      }}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "8px 14px",
+                        fontSize: "0.82rem",
+                        background: selectedPipelineId === pipeline.id ? "var(--panel-soft)" : "transparent",
+                        color: selectedPipelineId === pipeline.id ? "var(--primary)" : "var(--text)",
+                        fontWeight: selectedPipelineId === pipeline.id ? 600 : 400,
+                        border: "none",
+                        borderRadius: 0,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <strong style={{ display: "block" }}>{pipeline.name}</strong>
+                      <span
+                        className="item-secondary truncate"
+                        style={{ display: "block", fontSize: "0.75rem" }}
+                      >
+                        {pipeline.prompt_ids.length}단계
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
+        {selectedPipelineId && (
+          <p className="item-secondary" style={{ padding: "0 12px", fontSize: "0.78rem" }}>
+            🔗 "{selectedPipelineName}" 파이프라인이 선택됨 — 보내기를 누르면 전체 단계가 자동으로 순서대로 실행돼요.
+          </p>
+        )}
         <div style={{ display: "flex", gap: "8px", padding: "8px 12px" }}>
           <textarea
             value={input}
@@ -1833,6 +1969,214 @@ function useProjectPrompts(project: ProjectSummary | null) {
   };
 }
 
+function useProjectPipelines(project: ProjectSummary | null) {
+  const queryClient = useQueryClient();
+  const [selectedPromptIds, setSelectedPromptIds] = useState<string[]>([]);
+  const [pipelineName, setPipelineName] = useState("");
+  const [builderOpen, setBuilderOpen] = useState(false);
+
+  const pipelinesQuery = useQuery({
+    queryKey: ["project-pipelines", project?.id ?? null],
+    queryFn: () => api.listProjectPipelines(project!.id),
+    enabled: Boolean(project),
+  });
+
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["project-pipelines", project?.id ?? null] });
+
+  const togglePrompt = (promptId: string) => {
+    setSelectedPromptIds((previous) =>
+      previous.includes(promptId) ? previous.filter((id) => id !== promptId) : [...previous, promptId]
+    );
+  };
+
+  const openBuilder = () => {
+    setSelectedPromptIds([]);
+    setPipelineName("");
+    setBuilderOpen(true);
+  };
+
+  const closeBuilder = () => {
+    setBuilderOpen(false);
+    setSelectedPromptIds([]);
+    setPipelineName("");
+  };
+
+  const createMutation = useMutation({
+    mutationFn: (payload: { name: string; prompt_ids: string[] }) => api.createProjectPipeline(project!.id, payload),
+    onSuccess: () => {
+      invalidate();
+      closeBuilder();
+    },
+    onError: (err: Error) => alert(`파이프라인 저장 실패: ${err.message}`),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (pipelineId: string) => api.deleteProjectPipeline(project!.id, pipelineId),
+    onSuccess: () => invalidate(),
+    onError: (err: Error) => alert(`파이프라인 삭제 실패: ${err.message}`),
+  });
+
+  const canSave = Boolean(pipelineName.trim() && selectedPromptIds.length > 0);
+
+  const submitPipeline = () => {
+    if (!canSave) return;
+    createMutation.mutate({ name: pipelineName.trim(), prompt_ids: selectedPromptIds });
+  };
+
+  return {
+    pipelinesQuery,
+    selectedPromptIds,
+    togglePrompt,
+    pipelineName,
+    setPipelineName,
+    builderOpen,
+    openBuilder,
+    closeBuilder,
+    canSave,
+    isSaving: createMutation.isPending,
+    submitPipeline,
+    deleteMutation,
+  };
+}
+
+function ProjectPipelineList({
+  pipelines,
+  prompts,
+  isLoading,
+  hasProject,
+  deletePending,
+  onDelete,
+}: {
+  pipelines: ProjectPipeline[] | undefined;
+  prompts: ProjectPrompt[] | undefined;
+  isLoading: boolean;
+  hasProject: boolean;
+  deletePending: boolean;
+  onDelete: (pipeline: ProjectPipeline) => void;
+}) {
+  if (!hasProject) {
+    return <p className="empty-state">프로젝트를 먼저 선택하세요.</p>;
+  }
+  if (isLoading) {
+    return <p className="empty-state">Loading...</p>;
+  }
+  if (!pipelines?.length) {
+    return <p className="empty-state">저장된 파이프라인이 없습니다. 아래에서 프롬프트를 골라 순서대로 추가하세요.</p>;
+  }
+  const titleFor = (promptId: string) => prompts?.find((p) => p.id === promptId)?.title ?? "(삭제된 프롬프트)";
+  return (
+    <>
+      {pipelines.map((pipeline) => (
+        <div key={pipeline.id} className="list-item">
+          <div>
+            <strong>{pipeline.name}</strong>
+            <p className="item-secondary" style={{ marginTop: "4px" }}>
+              {pipeline.prompt_ids.map((id, index) => `${index + 1}. ${titleFor(id)}`).join(" → ")}
+            </p>
+          </div>
+          <div className="inline-actions" style={{ marginTop: "8px" }}>
+            <button
+              type="button"
+              className="secondary"
+              style={{ fontSize: "0.75rem", padding: "4px 10px" }}
+              disabled={deletePending}
+              onClick={() => onDelete(pipeline)}
+            >
+              삭제
+            </button>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function ProjectPipelineBuilder({
+  prompts,
+  selectedPromptIds,
+  onTogglePrompt,
+  name,
+  setName,
+  onSubmit,
+  onCancel,
+  canSave,
+  isSaving,
+}: {
+  prompts: ProjectPrompt[] | undefined;
+  selectedPromptIds: string[];
+  onTogglePrompt: (promptId: string) => void;
+  name: string;
+  setName: (value: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+  canSave: boolean;
+  isSaving: boolean;
+}) {
+  return (
+    <form
+      className="panel form-panel"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (canSave) onSubmit();
+      }}
+    >
+      <label>
+        파이프라인 이름
+        <input value={name} onChange={(event) => setName(event.target.value)} placeholder="예: 이슈 대응 전체 흐름" />
+      </label>
+      <p className="item-secondary">프롬프트를 클릭한 순서대로 파이프라인이 만들어져요.</p>
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+        {!prompts?.length && <p className="empty-state">저장된 프롬프트가 없습니다. 먼저 프롬프트를 추가하세요.</p>}
+        {prompts?.map((prompt) => {
+          const order = selectedPromptIds.indexOf(prompt.id);
+          const selected = order !== -1;
+          return (
+            <button
+              type="button"
+              key={prompt.id}
+              onClick={() => onTogglePrompt(prompt.id)}
+              className="list-item"
+              style={{
+                textAlign: "left",
+                cursor: "pointer",
+                border: selected ? "2px solid #0f3158" : undefined,
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+              }}
+            >
+              <span
+                style={{
+                  flexShrink: 0,
+                  width: "22px",
+                  height: "22px",
+                  borderRadius: "50%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: "0.75rem",
+                  background: selected ? "#0f3158" : "#e5e9f0",
+                  color: selected ? "#fff" : "#5b6472",
+                }}
+              >
+                {selected ? order + 1 : ""}
+              </span>
+              <strong>{prompt.title}</strong>
+            </button>
+          );
+        })}
+      </div>
+      <button type="submit" disabled={!canSave || isSaving}>
+        {isSaving ? "저장 중..." : "파이프라인 저장"}
+      </button>
+      <button type="button" className="secondary" onClick={onCancel}>
+        취소
+      </button>
+    </form>
+  );
+}
+
 function ProjectPromptList({
   prompts,
   isLoading,
@@ -1945,6 +2289,8 @@ function ProjectPromptsScreen({
   onBack: () => void;
 }) {
   const pm = useProjectPrompts(project);
+  const pl = useProjectPipelines(project);
+  const [tab, setTab] = useState<"prompts" | "pipelines">("prompts");
 
   return (
     <section className="panel mobile-screen">
@@ -1956,30 +2302,59 @@ function ProjectPromptsScreen({
                 Back
               </button>
               <h2 className="truncate" style={{ minWidth: 0 }}>
-                {project ? `${project.name} 프롬프트` : "Prompts"}
+                {project ? `${project.name} ${tab === "prompts" ? "프롬프트" : "파이프라인"}` : "Prompts"}
               </h2>
             </div>
           </div>
           <div className="inline-actions">
-            <button type="button" onClick={pm.openCreateForm} disabled={!project}>
-              + Add
-            </button>
+            {tab === "prompts" ? (
+              <button type="button" onClick={pm.openCreateForm} disabled={!project}>
+                + Add
+              </button>
+            ) : (
+              <button type="button" onClick={pl.openBuilder} disabled={!project}>
+                + New
+              </button>
+            )}
           </div>
+        </div>
+        <div className="inline-actions" style={{ marginTop: "8px" }}>
+          <button type="button" className={tab === "prompts" ? undefined : "secondary"} onClick={() => setTab("prompts")}>
+            프롬프트
+          </button>
+          <button type="button" className={tab === "pipelines" ? undefined : "secondary"} onClick={() => setTab("pipelines")}>
+            파이프라인
+          </button>
         </div>
       </div>
       <div className="panel-scroll">
-        <ProjectPromptList
-          prompts={pm.promptsQuery.data}
-          isLoading={pm.promptsQuery.isLoading}
-          hasProject={Boolean(project)}
-          deletePending={pm.deleteMutation.isPending}
-          onEdit={pm.openEditForm}
-          onDelete={(prompt) => {
-            if (confirm(`"${prompt.title}" 프롬프트를 삭제할까요?`)) {
-              pm.deleteMutation.mutate(prompt.id);
-            }
-          }}
-        />
+        {tab === "prompts" ? (
+          <ProjectPromptList
+            prompts={pm.promptsQuery.data}
+            isLoading={pm.promptsQuery.isLoading}
+            hasProject={Boolean(project)}
+            deletePending={pm.deleteMutation.isPending}
+            onEdit={pm.openEditForm}
+            onDelete={(prompt) => {
+              if (confirm(`"${prompt.title}" 프롬프트를 삭제할까요?`)) {
+                pm.deleteMutation.mutate(prompt.id);
+              }
+            }}
+          />
+        ) : (
+          <ProjectPipelineList
+            pipelines={pl.pipelinesQuery.data}
+            prompts={pm.promptsQuery.data}
+            isLoading={pl.pipelinesQuery.isLoading}
+            hasProject={Boolean(project)}
+            deletePending={pl.deleteMutation.isPending}
+            onDelete={(pipeline) => {
+              if (confirm(`"${pipeline.name}" 파이프라인을 삭제할까요?`)) {
+                pl.deleteMutation.mutate(pipeline.id);
+              }
+            }}
+          />
+        )}
       </div>
 
       <Modal title={pm.editingPrompt ? "Edit prompt" : "New prompt"} open={pm.formOpen} onClose={pm.closeForm}>
@@ -1992,6 +2367,20 @@ function ProjectPromptsScreen({
           onCancel={pm.closeForm}
           canSubmit={pm.canSubmit}
           isSaving={pm.isSaving}
+        />
+      </Modal>
+
+      <Modal title="새 파이프라인" open={pl.builderOpen} onClose={pl.closeBuilder}>
+        <ProjectPipelineBuilder
+          prompts={pm.promptsQuery.data}
+          selectedPromptIds={pl.selectedPromptIds}
+          onTogglePrompt={pl.togglePrompt}
+          name={pl.pipelineName}
+          setName={pl.setPipelineName}
+          onSubmit={pl.submitPipeline}
+          onCancel={pl.closeBuilder}
+          canSave={pl.canSave}
+          isSaving={pl.isSaving}
         />
       </Modal>
     </section>
@@ -2008,13 +2397,18 @@ function ProjectPromptsModal({
   onClose: () => void;
 }) {
   const pm = useProjectPrompts(project);
+  const pl = useProjectPipelines(project);
+  const [tab, setTab] = useState<"prompts" | "pipelines">("prompts");
+
   const modalTitle = pm.formOpen
     ? pm.editingPrompt
       ? "Edit prompt"
       : "New prompt"
-    : project
-      ? `${project.name} Prompts`
-      : "Prompts";
+    : pl.builderOpen
+      ? "New pipeline"
+      : project
+        ? `${project.name} ${tab === "prompts" ? "Prompts" : "Pipelines"}`
+        : "Prompts";
 
   return (
     <Modal
@@ -2022,6 +2416,7 @@ function ProjectPromptsModal({
       open={open}
       onClose={() => {
         pm.closeForm();
+        pl.closeBuilder();
         onClose();
       }}
     >
@@ -2036,26 +2431,67 @@ function ProjectPromptsModal({
           canSubmit={pm.canSubmit}
           isSaving={pm.isSaving}
         />
+      ) : pl.builderOpen ? (
+        <ProjectPipelineBuilder
+          prompts={pm.promptsQuery.data}
+          selectedPromptIds={pl.selectedPromptIds}
+          onTogglePrompt={pl.togglePrompt}
+          name={pl.pipelineName}
+          setName={pl.setPipelineName}
+          onSubmit={pl.submitPipeline}
+          onCancel={pl.closeBuilder}
+          canSave={pl.canSave}
+          isSaving={pl.isSaving}
+        />
       ) : (
         <>
           <div className="inline-actions" style={{ marginBottom: "0.6rem" }}>
-            <button type="button" onClick={pm.openCreateForm} disabled={!project}>
-              + Add prompt
+            <button type="button" className={tab === "prompts" ? undefined : "secondary"} onClick={() => setTab("prompts")}>
+              프롬프트
+            </button>
+            <button type="button" className={tab === "pipelines" ? undefined : "secondary"} onClick={() => setTab("pipelines")}>
+              파이프라인
             </button>
           </div>
+          <div className="inline-actions" style={{ marginBottom: "0.6rem" }}>
+            {tab === "prompts" ? (
+              <button type="button" onClick={pm.openCreateForm} disabled={!project}>
+                + Add prompt
+              </button>
+            ) : (
+              <button type="button" onClick={pl.openBuilder} disabled={!project}>
+                + New pipeline
+              </button>
+            )}
+          </div>
           <div className="panel-scroll" style={{ maxHeight: "50vh" }}>
-            <ProjectPromptList
-              prompts={pm.promptsQuery.data}
-              isLoading={pm.promptsQuery.isLoading}
-              hasProject={Boolean(project)}
-              deletePending={pm.deleteMutation.isPending}
-              onEdit={pm.openEditForm}
-              onDelete={(prompt) => {
-                if (confirm(`"${prompt.title}" 프롬프트를 삭제할까요?`)) {
-                  pm.deleteMutation.mutate(prompt.id);
-                }
-              }}
-            />
+            {tab === "prompts" ? (
+              <ProjectPromptList
+                prompts={pm.promptsQuery.data}
+                isLoading={pm.promptsQuery.isLoading}
+                hasProject={Boolean(project)}
+                deletePending={pm.deleteMutation.isPending}
+                onEdit={pm.openEditForm}
+                onDelete={(prompt) => {
+                  if (confirm(`"${prompt.title}" 프롬프트를 삭제할까요?`)) {
+                    pm.deleteMutation.mutate(prompt.id);
+                  }
+                }}
+              />
+            ) : (
+              <ProjectPipelineList
+                pipelines={pl.pipelinesQuery.data}
+                prompts={pm.promptsQuery.data}
+                isLoading={pl.pipelinesQuery.isLoading}
+                hasProject={Boolean(project)}
+                deletePending={pl.deleteMutation.isPending}
+                onDelete={(pipeline) => {
+                  if (confirm(`"${pipeline.name}" 파이프라인을 삭제할까요?`)) {
+                    pl.deleteMutation.mutate(pipeline.id);
+                  }
+                }}
+              />
+            )}
           </div>
         </>
       )}
