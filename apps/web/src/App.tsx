@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AddConversationMessageRequest,
   ConversationDetail,
+  ConversationMessageItem,
   ConversationSummary,
   CreateProjectRequest,
   CreateTaskRequest,
@@ -960,6 +961,71 @@ function ConversationListScreen({
   );
 }
 
+function ChatBubble({ message, muted = false }: { message: ConversationMessageItem; muted?: boolean }) {
+  const isUser = message.role === "user";
+  return (
+    <div
+      style={{
+        maxWidth: "85%",
+        padding: "0.55rem 0.75rem",
+        borderRadius: isUser ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
+        background: isUser ? "#0f3158" : muted ? "#f7f8fa" : "#f0f4fa",
+        color: isUser ? "#fff" : muted ? "#5b6472" : "#16253a",
+        fontSize: muted ? "0.85rem" : "0.93rem",
+        fontStyle: muted ? "italic" : "normal",
+        lineHeight: "1.45",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+      }}
+    >
+      {message.content}
+    </div>
+  );
+}
+
+// Groups a run of consecutive assistant messages: `final` is always shown as
+// a normal chat bubble; `intermediates` (Codex's status updates/notes along
+// the way to that final answer) start collapsed behind a small toggle,
+// mirroring the Codex app's own collapsible "thinking" section.
+function AssistantMessageGroup({
+  intermediates,
+  final,
+}: {
+  intermediates: ConversationMessageItem[];
+  final: ConversationMessageItem;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
+      {intermediates.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start", width: "100%" }}>
+          <button
+            type="button"
+            onClick={() => setExpanded((previous) => !previous)}
+            style={{
+              background: "none",
+              border: "none",
+              padding: "2px 4px",
+              color: "var(--text-soft)",
+              fontSize: "0.78rem",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
+            }}
+          >
+            <span>{expanded ? "▾" : "▸"}</span>
+            <span>중간 응답 {intermediates.length}개 {expanded ? "접기" : "보기"}</span>
+          </button>
+          {expanded && intermediates.map((message) => <ChatBubble key={message.id} message={message} muted />)}
+        </div>
+      )}
+      <ChatBubble message={final} />
+    </div>
+  );
+}
+
 const ACTIVE_TASK_STATUSES: TaskStatus[] = ["queued", "starting", "running", "waiting_user_input", "waiting_result_approval"];
 
 function ConversationDetailScreen({
@@ -1161,6 +1227,37 @@ function ConversationDetailScreen({
     s.id.toLowerCase().includes(skillSearch.toLowerCase())
   );
 
+  // Codex can emit several assistant messages while working a single turn
+  // (status updates, intermediate notes) before the actual final answer.
+  // These all land as separate ConversationMessage rows with no marker
+  // distinguishing them, so group each run of consecutive assistant
+  // messages and treat only the last one as the prominent "final answer" —
+  // the earlier ones in the run render collapsed, similar to the Codex
+  // app's own "thinking" section.
+  const messageGroups = useMemo(() => {
+    const groups: Array<
+      | { kind: "user"; message: ConversationMessageItem }
+      | { kind: "assistant"; intermediates: ConversationMessageItem[]; final: ConversationMessageItem }
+    > = [];
+    let run: ConversationMessageItem[] = [];
+    const flushRun = () => {
+      if (run.length > 0) {
+        groups.push({ kind: "assistant", intermediates: run.slice(0, -1), final: run[run.length - 1] });
+        run = [];
+      }
+    };
+    for (const message of conversation?.messages ?? []) {
+      if (message.role === "assistant") {
+        run.push(message);
+      } else {
+        flushRun();
+        groups.push({ kind: "user", message });
+      }
+    }
+    flushRun();
+    return groups;
+  }, [conversation?.messages]);
+
   const isSendDisabled = !input.trim() || addMessageMutation.isPending || isTaskActive;
 
   const handleSend = () => {
@@ -1219,31 +1316,15 @@ function ConversationDetailScreen({
             <p className="empty-state">변경된 파일이 없습니다.</p>
           )
         )}
-        {activeTab === "chat" && conversation?.messages.map((msg) => (
-          <div
-            key={msg.id}
-            style={{
-              display: "flex",
-              justifyContent: msg.role === "user" ? "flex-end" : "flex-start",
-            }}
-          >
-            <div
-              style={{
-                maxWidth: "85%",
-                padding: "0.55rem 0.75rem",
-                borderRadius: msg.role === "user" ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
-                background: msg.role === "user" ? "#0f3158" : "#f0f4fa",
-                color: msg.role === "user" ? "#fff" : "#16253a",
-                fontSize: "0.93rem",
-                lineHeight: "1.45",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-              }}
-            >
-              {msg.content}
+        {activeTab === "chat" && messageGroups.map((group) =>
+          group.kind === "user" ? (
+            <div key={group.message.id} style={{ display: "flex", justifyContent: "flex-end" }}>
+              <ChatBubble message={group.message} />
             </div>
-          </div>
-        ))}
+          ) : (
+            <AssistantMessageGroup key={group.final.id} intermediates={group.intermediates} final={group.final} />
+          )
+        )}
         {activeTab === "chat" && isTaskActive && (
           <div style={{ display: "flex", justifyContent: "flex-start" }}>
             <div
