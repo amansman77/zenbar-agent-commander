@@ -1974,6 +1974,7 @@ function useProjectPipelines(project: ProjectSummary | null) {
   const [selectedPromptIds, setSelectedPromptIds] = useState<string[]>([]);
   const [pipelineName, setPipelineName] = useState("");
   const [builderOpen, setBuilderOpen] = useState(false);
+  const [editingPipeline, setEditingPipeline] = useState<ProjectPipeline | null>(null);
 
   const pipelinesQuery = useQuery({
     queryKey: ["project-pipelines", project?.id ?? null],
@@ -1991,13 +1992,22 @@ function useProjectPipelines(project: ProjectSummary | null) {
   };
 
   const openBuilder = () => {
+    setEditingPipeline(null);
     setSelectedPromptIds([]);
     setPipelineName("");
     setBuilderOpen(true);
   };
 
+  const openEditor = (pipeline: ProjectPipeline) => {
+    setEditingPipeline(pipeline);
+    setSelectedPromptIds(pipeline.prompt_ids);
+    setPipelineName(pipeline.name);
+    setBuilderOpen(true);
+  };
+
   const closeBuilder = () => {
     setBuilderOpen(false);
+    setEditingPipeline(null);
     setSelectedPromptIds([]);
     setPipelineName("");
   };
@@ -2011,6 +2021,16 @@ function useProjectPipelines(project: ProjectSummary | null) {
     onError: (err: Error) => alert(`파이프라인 저장 실패: ${err.message}`),
   });
 
+  const updateMutation = useMutation({
+    mutationFn: (payload: { id: string; name: string; prompt_ids: string[] }) =>
+      api.updateProjectPipeline(project!.id, payload.id, { name: payload.name, prompt_ids: payload.prompt_ids }),
+    onSuccess: () => {
+      invalidate();
+      closeBuilder();
+    },
+    onError: (err: Error) => alert(`파이프라인 수정 실패: ${err.message}`),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: (pipelineId: string) => api.deleteProjectPipeline(project!.id, pipelineId),
     onSuccess: () => invalidate(),
@@ -2021,7 +2041,11 @@ function useProjectPipelines(project: ProjectSummary | null) {
 
   const submitPipeline = () => {
     if (!canSave) return;
-    createMutation.mutate({ name: pipelineName.trim(), prompt_ids: selectedPromptIds });
+    if (editingPipeline) {
+      updateMutation.mutate({ id: editingPipeline.id, name: pipelineName.trim(), prompt_ids: selectedPromptIds });
+    } else {
+      createMutation.mutate({ name: pipelineName.trim(), prompt_ids: selectedPromptIds });
+    }
   };
 
   return {
@@ -2031,10 +2055,12 @@ function useProjectPipelines(project: ProjectSummary | null) {
     pipelineName,
     setPipelineName,
     builderOpen,
+    editingPipeline,
     openBuilder,
+    openEditor,
     closeBuilder,
     canSave,
-    isSaving: createMutation.isPending,
+    isSaving: createMutation.isPending || updateMutation.isPending,
     submitPipeline,
     deleteMutation,
   };
@@ -2046,6 +2072,7 @@ function ProjectPipelineList({
   isLoading,
   hasProject,
   deletePending,
+  onEdit,
   onDelete,
 }: {
   pipelines: ProjectPipeline[] | undefined;
@@ -2053,6 +2080,7 @@ function ProjectPipelineList({
   isLoading: boolean;
   hasProject: boolean;
   deletePending: boolean;
+  onEdit: (pipeline: ProjectPipeline) => void;
   onDelete: (pipeline: ProjectPipeline) => void;
 }) {
   if (!hasProject) {
@@ -2080,6 +2108,14 @@ function ProjectPipelineList({
               type="button"
               className="secondary"
               style={{ fontSize: "0.75rem", padding: "4px 10px" }}
+              onClick={() => onEdit(pipeline)}
+            >
+              편집
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              style={{ fontSize: "0.75rem", padding: "4px 10px" }}
               disabled={deletePending}
               onClick={() => onDelete(pipeline)}
             >
@@ -2102,6 +2138,7 @@ function ProjectPipelineBuilder({
   onCancel,
   canSave,
   isSaving,
+  isEditing = false,
 }: {
   prompts: ProjectPrompt[] | undefined;
   selectedPromptIds: string[];
@@ -2112,6 +2149,7 @@ function ProjectPipelineBuilder({
   onCancel: () => void;
   canSave: boolean;
   isSaving: boolean;
+  isEditing?: boolean;
 }) {
   return (
     <form
@@ -2168,7 +2206,7 @@ function ProjectPipelineBuilder({
         })}
       </div>
       <button type="submit" disabled={!canSave || isSaving}>
-        {isSaving ? "저장 중..." : "파이프라인 저장"}
+        {isSaving ? "저장 중..." : isEditing ? "변경사항 저장" : "파이프라인 저장"}
       </button>
       <button type="button" className="secondary" onClick={onCancel}>
         취소
@@ -2348,6 +2386,7 @@ function ProjectPromptsScreen({
             isLoading={pl.pipelinesQuery.isLoading}
             hasProject={Boolean(project)}
             deletePending={pl.deleteMutation.isPending}
+            onEdit={pl.openEditor}
             onDelete={(pipeline) => {
               if (confirm(`"${pipeline.name}" 파이프라인을 삭제할까요?`)) {
                 pl.deleteMutation.mutate(pipeline.id);
@@ -2370,7 +2409,7 @@ function ProjectPromptsScreen({
         />
       </Modal>
 
-      <Modal title="새 파이프라인" open={pl.builderOpen} onClose={pl.closeBuilder}>
+      <Modal title={pl.editingPipeline ? "파이프라인 편집" : "새 파이프라인"} open={pl.builderOpen} onClose={pl.closeBuilder}>
         <ProjectPipelineBuilder
           prompts={pm.promptsQuery.data}
           selectedPromptIds={pl.selectedPromptIds}
@@ -2381,6 +2420,7 @@ function ProjectPromptsScreen({
           onCancel={pl.closeBuilder}
           canSave={pl.canSave}
           isSaving={pl.isSaving}
+          isEditing={Boolean(pl.editingPipeline)}
         />
       </Modal>
     </section>
@@ -2405,7 +2445,9 @@ function ProjectPromptsModal({
       ? "Edit prompt"
       : "New prompt"
     : pl.builderOpen
-      ? "New pipeline"
+      ? pl.editingPipeline
+        ? "Edit pipeline"
+        : "New pipeline"
       : project
         ? `${project.name} ${tab === "prompts" ? "Prompts" : "Pipelines"}`
         : "Prompts";
@@ -2442,6 +2484,7 @@ function ProjectPromptsModal({
           onCancel={pl.closeBuilder}
           canSave={pl.canSave}
           isSaving={pl.isSaving}
+          isEditing={Boolean(pl.editingPipeline)}
         />
       ) : (
         <>
@@ -2485,6 +2528,7 @@ function ProjectPromptsModal({
                 isLoading={pl.pipelinesQuery.isLoading}
                 hasProject={Boolean(project)}
                 deletePending={pl.deleteMutation.isPending}
+                onEdit={pl.openEditor}
                 onDelete={(pipeline) => {
                   if (confirm(`"${pipeline.name}" 파이프라인을 삭제할까요?`)) {
                     pl.deleteMutation.mutate(pipeline.id);
