@@ -27,6 +27,8 @@ Base.metadata.create_all(bind=engine)
 
 client = TestClient(app)
 
+ACTIVE_STATUSES_FOR_TEST = {"queued", "starting", "running", "waiting_user_input", "waiting_result_approval"}
+
 
 def init_repo(tmpdir: str) -> Path:
     repo = Path(tmpdir) / "repo"
@@ -1845,3 +1847,106 @@ def test_approve_does_not_attempt_merge_for_plan_mode_tasks(monkeypatch):
         # Plan tasks complete without a result-approval step, so there is
         # nothing to approve -- the point is simply that no merge was tried.
         assert calls == []
+
+
+def test_retry_marks_task_failed_when_starting_a_fresh_session_raises(monkeypatch):
+    # Regression: retry_task moves the task to "starting" before opening the
+    # runtime session. If that raised, the task used to be stranded in
+    # "starting" with no session -- an ACTIVE status, so the UI showed it as
+    # perpetually in progress and it could never be retried again.
+    from app.main import orchestrator
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Retry Stuck", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Retry me", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        # Get it into a retryable terminal state first.
+        client.post(f"/tasks/{task['id']}/stop", json={"actor": "pytest"})
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            current.runtime_session_id = None
+            db.add(current)
+            db.commit()
+
+        async def boom(request):
+            raise RuntimeError("runtime refused to start")
+
+        monkeypatch.setattr(orchestrator.adapter, "start_task", boom)
+
+        response = client.post(f"/tasks/{task['id']}/retry", json={"actor": "pytest"})
+        assert response.status_code == 409
+
+        after = client.get(f"/tasks/{task['id']}").json()
+        assert after["status"] == "failed"
+        assert after["status"] not in ACTIVE_STATUSES_FOR_TEST
+
+
+def test_reconcile_heals_active_task_left_without_a_runtime_session():
+    # An active status is only ever set alongside opening a session, so an
+    # active task with no session means the process died in between. Nothing
+    # else can heal it: reconcile's main query requires a session and
+    # reconcile_task_runtime_session early-returns without one.
+    from app.main import orchestrator
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Orphan Heal", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Orphan", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            current.status = "starting"
+            current.runtime_session_id = None
+            db.add(current)
+            db.commit()
+
+        healed = asyncio.run(orchestrator.reconcile_active_tasks())
+        assert healed >= 1
+
+        after = client.get(f"/tasks/{task['id']}").json()
+        assert after["status"] == "failed"
+
+        events = client.get(f"/tasks/{task['id']}/events").json()
+        assert any(
+            e["payload_json"] and e["payload_json"].get("reason") == "orphaned_active_task_no_session"
+            for e in events
+        )
+
+
+def test_reconcile_leaves_healthy_active_tasks_alone():
+    from app.main import orchestrator
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Healthy Active", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Healthy", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        # Task has a live mock session and is waiting on approval -- must not
+        # be swept up by the orphan healing.
+        before = client.get(f"/tasks/{task['id']}").json()
+        assert before["runtime_session_id"]
+
+        asyncio.run(orchestrator.reconcile_active_tasks())
+
+        after = client.get(f"/tasks/{task['id']}").json()
+        assert after["status"] == before["status"]

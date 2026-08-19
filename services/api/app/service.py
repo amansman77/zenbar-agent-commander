@@ -417,6 +417,39 @@ class TaskOrchestrator:
                 task = await self.reconcile_task_runtime_session(db, task)
                 if status_before != task.status and task.status == "failed":
                     reconciled += 1
+
+            # Tasks in an active status with NO runtime session at all can't
+            # be running: an active status is only ever set alongside opening
+            # a session, so this means the process died between the two (e.g.
+            # a start/retry that raised, or the server being killed mid-start).
+            # The query above deliberately requires a session, and
+            # reconcile_task_runtime_session early-returns without one, so
+            # nothing else can ever heal these -- they'd stay "in progress"
+            # forever and refuse follow-ups/retries. Safe to do here because
+            # reconcile_active_tasks only runs at startup, when no task in
+            # this process can legitimately be mid-start.
+            orphan_ids = list(
+                db.scalars(
+                    select(Task.id).where(
+                        Task.status.in_(self.ACTIVE_TASK_STATUSES),
+                        Task.runtime_session_id.is_(None),
+                    )
+                )
+            )
+            for task_id in orphan_ids:
+                task = get_task(db, task_id)
+                if task is None:
+                    continue
+                append_event(
+                    db,
+                    task,
+                    RuntimeEvent(
+                        type="failed",
+                        message="Task was left without a runtime session (interrupted while starting). Retry to continue.",
+                        payload={"reason": "orphaned_active_task_no_session"},
+                    ),
+                )
+                reconciled += 1
             return reconciled
 
     async def commit_workspace(self, db: Session, task: Task, payload: TaskCommitRequest) -> TaskGitActionResponse:

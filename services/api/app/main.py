@@ -748,6 +748,15 @@ async def retry_task(task_id: str, payload: TaskApprovalRequest, db: Session = D
     try:
         await orchestrator.retry_task(db, task, model_override=payload.model, profile_override=payload.profile)
     except Exception as exc:
+        # retry_task moves the task to "starting" before it opens the runtime
+        # session; if that open fails, the task would otherwise be stranded in
+        # "starting" with no session -- an active status the UI shows as
+        # "in progress" forever, and which nothing (not even a restart, see
+        # reconcile_active_tasks) can heal, leaving the task un-retryable.
+        # POST /tasks already does this on its own start failure; retry has to
+        # do the same.
+        task = _require_task(get_task(db, task_id))
+        set_task_status(db, task, "failed")
         detail = _safe_runtime_error_detail("Retry failed", exc)
         raise HTTPException(status_code=409, detail=detail) from exc
     task = _require_task(get_task(db, task_id))
