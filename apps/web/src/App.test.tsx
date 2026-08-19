@@ -19,6 +19,16 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
       { status: 200 }
     );
   }
+  if (url.includes("/fs/browse")) {
+    return new Response(
+      JSON.stringify({
+        path: "/Users/hosung/Workspace/zenbar/agent-commander",
+        parent: "/Users/hosung/Workspace/zenbar",
+        entries: []
+      }),
+      { status: 200 }
+    );
+  }
   if (url.endsWith("/projects/discover")) {
     return new Response(
       JSON.stringify({
@@ -198,7 +208,13 @@ describe("App", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "New Project" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Choose folder" }));
+    // Picking a repo goes through the folder browser: open it, then confirm
+    // the folder it lands on, which is what triggers discovery.
+    fireEvent.click(await screen.findByRole("button", { name: "Browse folder" }));
+    const confirmFolder = await screen.findByRole("button", { name: "이 폴더 선택" });
+    // Disabled until the browse query resolves — clicking early is a no-op.
+    await waitFor(() => expect(confirmFolder).toBeEnabled());
+    fireEvent.click(confirmFolder);
 
     await waitFor(() => {
       expect(screen.getByDisplayValue("agent-commander")).toBeInTheDocument();
@@ -370,6 +386,8 @@ describe("App", () => {
       </QueryClientProvider>
     );
 
+    // Mobile opens on Conversations; projects live one tap away.
+    fireEvent.click(await screen.findByRole("button", { name: "Projects" }));
     fireEvent.click(await screen.findByRole("button", { name: /agent-commander/i }));
     fireEvent.click((await screen.findAllByRole("button", { name: "New Task" }))[0]);
 
@@ -736,7 +754,8 @@ describe("App", () => {
       </QueryClientProvider>
     );
 
-    expect(await screen.findByText("Projects")).toBeInTheDocument();
+    // Mobile opens on Conversations; step into the Projects screen first.
+    fireEvent.click(await screen.findByRole("button", { name: "Projects" }));
     fireEvent.click((await screen.findAllByRole("button", { name: "New Project" }))[1]);
     fireEvent.change(screen.getByLabelText("Project name"), { target: { value: "agent-commander" } });
     fireEvent.change(screen.getByLabelText("Repository path"), { target: { value: "/Users/hosung/Workspace/zenbar/agent-commander" } });
