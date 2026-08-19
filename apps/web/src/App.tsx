@@ -2319,6 +2319,118 @@ function ProjectPromptForm({
   );
 }
 
+// Single source of truth for the prompts/pipelines UI. Both the mobile
+// full-screen and the desktop modal presentations are thin shells around
+// this — previously they were two ~110-line near-copies, which is how the
+// desktop side kept drifting behind (every prompts/pipelines change had to
+// be made twice, by hand, in two places).
+function useProjectPromptsWorkspace(project: ProjectSummary | null) {
+  const pm = useProjectPrompts(project);
+  const pl = useProjectPipelines(project);
+  const [tab, setTab] = useState<"prompts" | "pipelines">("prompts");
+
+  // Returned unwrapped: `.inline-actions` is inline-flex, so sibling
+  // instances lay out side by side. Each shell supplies its own
+  // `.inline-actions` wrapper (with its own spacing) — adding one here as
+  // well would nest a block element and break that row onto two lines.
+  const tabButtons = (
+    <>
+      <button type="button" className={tab === "prompts" ? undefined : "secondary"} onClick={() => setTab("prompts")}>
+        프롬프트
+      </button>
+      <button type="button" className={tab === "pipelines" ? undefined : "secondary"} onClick={() => setTab("pipelines")}>
+        파이프라인
+      </button>
+    </>
+  );
+
+  const addButton = (labels: { prompt: string; pipeline: string }) =>
+    tab === "prompts" ? (
+      <button type="button" onClick={pm.openCreateForm} disabled={!project}>
+        {labels.prompt}
+      </button>
+    ) : (
+      <button type="button" onClick={pl.openBuilder} disabled={!project}>
+        {labels.pipeline}
+      </button>
+    );
+
+  const list =
+    tab === "prompts" ? (
+      <ProjectPromptList
+        prompts={pm.promptsQuery.data}
+        isLoading={pm.promptsQuery.isLoading}
+        hasProject={Boolean(project)}
+        deletePending={pm.deleteMutation.isPending}
+        onEdit={pm.openEditForm}
+        onDelete={(prompt) => {
+          if (confirm(`"${prompt.title}" 프롬프트를 삭제할까요?`)) {
+            pm.deleteMutation.mutate(prompt.id);
+          }
+        }}
+      />
+    ) : (
+      <ProjectPipelineList
+        pipelines={pl.pipelinesQuery.data}
+        prompts={pm.promptsQuery.data}
+        isLoading={pl.pipelinesQuery.isLoading}
+        hasProject={Boolean(project)}
+        deletePending={pl.deleteMutation.isPending}
+        onEdit={pl.openEditor}
+        onDelete={(pipeline) => {
+          if (confirm(`"${pipeline.name}" 파이프라인을 삭제할까요?`)) {
+            pl.deleteMutation.mutate(pipeline.id);
+          }
+        }}
+      />
+    );
+
+  const promptForm = (
+    <ProjectPromptForm
+      title={pm.title}
+      setTitle={pm.setTitle}
+      content={pm.content}
+      setContent={pm.setContent}
+      onSubmit={pm.submitForm}
+      onCancel={pm.closeForm}
+      canSubmit={pm.canSubmit}
+      isSaving={pm.isSaving}
+    />
+  );
+
+  const pipelineBuilder = (
+    <ProjectPipelineBuilder
+      prompts={pm.promptsQuery.data}
+      selectedPromptIds={pl.selectedPromptIds}
+      onTogglePrompt={pl.togglePrompt}
+      name={pl.pipelineName}
+      setName={pl.setPipelineName}
+      onSubmit={pl.submitPipeline}
+      onCancel={pl.closeBuilder}
+      canSave={pl.canSave}
+      isSaving={pl.isSaving}
+      isEditing={Boolean(pl.editingPipeline)}
+    />
+  );
+
+  return {
+    pm,
+    pl,
+    tab,
+    tabButtons,
+    addButton,
+    list,
+    promptForm,
+    pipelineBuilder,
+    promptFormTitle: pm.editingPrompt ? "Edit prompt" : "New prompt",
+    pipelineFormTitle: pl.editingPipeline ? "파이프라인 편집" : "새 파이프라인",
+    closeAll: () => {
+      pm.closeForm();
+      pl.closeBuilder();
+    },
+  };
+}
+
 function ProjectPromptsScreen({
   project,
   onBack,
@@ -2326,9 +2438,7 @@ function ProjectPromptsScreen({
   project: ProjectSummary | null;
   onBack: () => void;
 }) {
-  const pm = useProjectPrompts(project);
-  const pl = useProjectPipelines(project);
-  const [tab, setTab] = useState<"prompts" | "pipelines">("prompts");
+  const w = useProjectPromptsWorkspace(project);
 
   return (
     <section className="panel mobile-screen">
@@ -2340,88 +2450,22 @@ function ProjectPromptsScreen({
                 Back
               </button>
               <h2 className="truncate" style={{ minWidth: 0 }}>
-                {project ? `${project.name} ${tab === "prompts" ? "프롬프트" : "파이프라인"}` : "Prompts"}
+                {project ? `${project.name} ${w.tab === "prompts" ? "프롬프트" : "파이프라인"}` : "Prompts"}
               </h2>
             </div>
           </div>
-          <div className="inline-actions">
-            {tab === "prompts" ? (
-              <button type="button" onClick={pm.openCreateForm} disabled={!project}>
-                + Add
-              </button>
-            ) : (
-              <button type="button" onClick={pl.openBuilder} disabled={!project}>
-                + New
-              </button>
-            )}
-          </div>
+          <div className="inline-actions">{w.addButton({ prompt: "+ Add", pipeline: "+ New" })}</div>
         </div>
-        <div className="inline-actions" style={{ marginTop: "8px" }}>
-          <button type="button" className={tab === "prompts" ? undefined : "secondary"} onClick={() => setTab("prompts")}>
-            프롬프트
-          </button>
-          <button type="button" className={tab === "pipelines" ? undefined : "secondary"} onClick={() => setTab("pipelines")}>
-            파이프라인
-          </button>
-        </div>
+        <div className="inline-actions" style={{ marginTop: "8px" }}>{w.tabButtons}</div>
       </div>
-      <div className="panel-scroll">
-        {tab === "prompts" ? (
-          <ProjectPromptList
-            prompts={pm.promptsQuery.data}
-            isLoading={pm.promptsQuery.isLoading}
-            hasProject={Boolean(project)}
-            deletePending={pm.deleteMutation.isPending}
-            onEdit={pm.openEditForm}
-            onDelete={(prompt) => {
-              if (confirm(`"${prompt.title}" 프롬프트를 삭제할까요?`)) {
-                pm.deleteMutation.mutate(prompt.id);
-              }
-            }}
-          />
-        ) : (
-          <ProjectPipelineList
-            pipelines={pl.pipelinesQuery.data}
-            prompts={pm.promptsQuery.data}
-            isLoading={pl.pipelinesQuery.isLoading}
-            hasProject={Boolean(project)}
-            deletePending={pl.deleteMutation.isPending}
-            onEdit={pl.openEditor}
-            onDelete={(pipeline) => {
-              if (confirm(`"${pipeline.name}" 파이프라인을 삭제할까요?`)) {
-                pl.deleteMutation.mutate(pipeline.id);
-              }
-            }}
-          />
-        )}
-      </div>
+      <div className="panel-scroll">{w.list}</div>
 
-      <Modal title={pm.editingPrompt ? "Edit prompt" : "New prompt"} open={pm.formOpen} onClose={pm.closeForm}>
-        <ProjectPromptForm
-          title={pm.title}
-          setTitle={pm.setTitle}
-          content={pm.content}
-          setContent={pm.setContent}
-          onSubmit={pm.submitForm}
-          onCancel={pm.closeForm}
-          canSubmit={pm.canSubmit}
-          isSaving={pm.isSaving}
-        />
+      <Modal title={w.promptFormTitle} open={w.pm.formOpen} onClose={w.pm.closeForm}>
+        {w.promptForm}
       </Modal>
 
-      <Modal title={pl.editingPipeline ? "파이프라인 편집" : "새 파이프라인"} open={pl.builderOpen} onClose={pl.closeBuilder}>
-        <ProjectPipelineBuilder
-          prompts={pm.promptsQuery.data}
-          selectedPromptIds={pl.selectedPromptIds}
-          onTogglePrompt={pl.togglePrompt}
-          name={pl.pipelineName}
-          setName={pl.setPipelineName}
-          onSubmit={pl.submitPipeline}
-          onCancel={pl.closeBuilder}
-          canSave={pl.canSave}
-          isSaving={pl.isSaving}
-          isEditing={Boolean(pl.editingPipeline)}
-        />
+      <Modal title={w.pipelineFormTitle} open={w.pl.builderOpen} onClose={w.pl.closeBuilder}>
+        {w.pipelineBuilder}
       </Modal>
     </section>
   );
@@ -2436,20 +2480,17 @@ function ProjectPromptsModal({
   open: boolean;
   onClose: () => void;
 }) {
-  const pm = useProjectPrompts(project);
-  const pl = useProjectPipelines(project);
-  const [tab, setTab] = useState<"prompts" | "pipelines">("prompts");
+  const w = useProjectPromptsWorkspace(project);
 
-  const modalTitle = pm.formOpen
-    ? pm.editingPrompt
-      ? "Edit prompt"
-      : "New prompt"
-    : pl.builderOpen
-      ? pl.editingPipeline
-        ? "Edit pipeline"
-        : "New pipeline"
+  // A modal can't usefully nest another modal, so unlike the mobile screen
+  // the editors replace the list inline here and the modal's own title
+  // doubles as the editor's title.
+  const modalTitle = w.pm.formOpen
+    ? w.promptFormTitle
+    : w.pl.builderOpen
+      ? w.pipelineFormTitle
       : project
-        ? `${project.name} ${tab === "prompts" ? "Prompts" : "Pipelines"}`
+        ? `${project.name} ${w.tab === "prompts" ? "Prompts" : "Pipelines"}`
         : "Prompts";
 
   return (
@@ -2457,85 +2498,22 @@ function ProjectPromptsModal({
       title={modalTitle}
       open={open}
       onClose={() => {
-        pm.closeForm();
-        pl.closeBuilder();
+        w.closeAll();
         onClose();
       }}
     >
-      {pm.formOpen ? (
-        <ProjectPromptForm
-          title={pm.title}
-          setTitle={pm.setTitle}
-          content={pm.content}
-          setContent={pm.setContent}
-          onSubmit={pm.submitForm}
-          onCancel={pm.closeForm}
-          canSubmit={pm.canSubmit}
-          isSaving={pm.isSaving}
-        />
-      ) : pl.builderOpen ? (
-        <ProjectPipelineBuilder
-          prompts={pm.promptsQuery.data}
-          selectedPromptIds={pl.selectedPromptIds}
-          onTogglePrompt={pl.togglePrompt}
-          name={pl.pipelineName}
-          setName={pl.setPipelineName}
-          onSubmit={pl.submitPipeline}
-          onCancel={pl.closeBuilder}
-          canSave={pl.canSave}
-          isSaving={pl.isSaving}
-          isEditing={Boolean(pl.editingPipeline)}
-        />
+      {w.pm.formOpen ? (
+        w.promptForm
+      ) : w.pl.builderOpen ? (
+        w.pipelineBuilder
       ) : (
         <>
+          <div className="inline-actions" style={{ marginBottom: "0.6rem" }}>{w.tabButtons}</div>
           <div className="inline-actions" style={{ marginBottom: "0.6rem" }}>
-            <button type="button" className={tab === "prompts" ? undefined : "secondary"} onClick={() => setTab("prompts")}>
-              프롬프트
-            </button>
-            <button type="button" className={tab === "pipelines" ? undefined : "secondary"} onClick={() => setTab("pipelines")}>
-              파이프라인
-            </button>
-          </div>
-          <div className="inline-actions" style={{ marginBottom: "0.6rem" }}>
-            {tab === "prompts" ? (
-              <button type="button" onClick={pm.openCreateForm} disabled={!project}>
-                + Add prompt
-              </button>
-            ) : (
-              <button type="button" onClick={pl.openBuilder} disabled={!project}>
-                + New pipeline
-              </button>
-            )}
+            {w.addButton({ prompt: "+ Add prompt", pipeline: "+ New pipeline" })}
           </div>
           <div className="panel-scroll" style={{ maxHeight: "50vh" }}>
-            {tab === "prompts" ? (
-              <ProjectPromptList
-                prompts={pm.promptsQuery.data}
-                isLoading={pm.promptsQuery.isLoading}
-                hasProject={Boolean(project)}
-                deletePending={pm.deleteMutation.isPending}
-                onEdit={pm.openEditForm}
-                onDelete={(prompt) => {
-                  if (confirm(`"${prompt.title}" 프롬프트를 삭제할까요?`)) {
-                    pm.deleteMutation.mutate(prompt.id);
-                  }
-                }}
-              />
-            ) : (
-              <ProjectPipelineList
-                pipelines={pl.pipelinesQuery.data}
-                prompts={pm.promptsQuery.data}
-                isLoading={pl.pipelinesQuery.isLoading}
-                hasProject={Boolean(project)}
-                deletePending={pl.deleteMutation.isPending}
-                onEdit={pl.openEditor}
-                onDelete={(pipeline) => {
-                  if (confirm(`"${pipeline.name}" 파이프라인을 삭제할까요?`)) {
-                    pl.deleteMutation.mutate(pipeline.id);
-                  }
-                }}
-              />
-            )}
+            {w.list}
           </div>
         </>
       )}
