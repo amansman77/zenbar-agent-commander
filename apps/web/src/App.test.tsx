@@ -141,6 +141,40 @@ describe("App", () => {
     });
     Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: 1024 });
     window.dispatchEvent(new Event("resize"));
+    // Desktop now lands on the conversation view (matching mobile), but most
+    // tests below exercise the project/task workspace surface. Seed the
+    // persisted view so they open directly on it; the desktop chat view has
+    // its own test that clears this.
+    window.localStorage.setItem(
+      "zenbar:lastView",
+      JSON.stringify({
+        mobileScreen: "conversations",
+        desktopView: "workspace",
+        selectedConversationId: null,
+        selectedProjectId: null,
+        selectedTaskId: null
+      })
+    );
+  });
+
+  it("shows the conversation view by default on desktop", async () => {
+    // Desktop parity with mobile: conversations are the landing surface, and
+    // the chat components rendered here are the same ones the mobile shell
+    // uses (so pipelines/skills/prompt pickers exist on both by construction).
+    window.localStorage.clear();
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <App />
+      </QueryClientProvider>
+    );
+
+    expect(await screen.findByText("Conversations")).toBeInTheDocument();
+    // The project workspace is reachable, but not what desktop opens on.
+    expect(screen.queryByText("Task Detail")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "프로젝트" }));
+    expect(await screen.findByText("Task Detail")).toBeInTheDocument();
   });
 
   it("renders Web Commander shell", async () => {

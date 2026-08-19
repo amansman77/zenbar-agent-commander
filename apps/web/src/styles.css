@@ -143,6 +143,26 @@ textarea {
   gap: 0.9rem;
 }
 
+/* Desktop conversation view: the same conversation list + chat components
+   the mobile shell renders one-at-a-time, shown side by side. */
+.chat-grid {
+  height: calc(100vh - var(--header-height) - 2.6rem);
+  min-height: 620px;
+  display: grid;
+  grid-template-columns: 340px minmax(520px, 1fr);
+  gap: 0.9rem;
+}
+
+/* Those components carry .mobile-screen/.chat-screen, which pin their own
+   viewport-relative heights for the mobile single-panel shell. Inside this
+   grid the track already supplies the height, so let them fill their cell
+   instead of overflowing it. */
+.chat-grid > .mobile-screen,
+.chat-grid > .chat-screen {
+  height: 100%;
+  min-height: 0;
+}
+
 .panel {
   min-width: 0;
   min-height: 0;
@@ -418,6 +438,13 @@ textarea {
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
+}
+
+/* Without the Back button (desktop, where the conversation list stays
+   visible) there are only two children, so the trailing action would land
+   in the 1fr column and stretch across the header. */
+.mobile-detail-control-top-no-back {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .mobile-detail-action-row {

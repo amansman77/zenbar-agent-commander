@@ -30,8 +30,11 @@ const actor = "web-commander";
 const LAST_TASK_MODEL_KEY = "zenbar:lastTaskModel";
 const LAST_VIEW_KEY = "zenbar:lastView";
 
+type DesktopView = "chat" | "workspace";
+
 type LastView = {
   mobileScreen: MobileScreen;
+  desktopView?: DesktopView;
   selectedConversationId: string | null;
   selectedProjectId: string | null;
   selectedTaskId: string | null;
@@ -880,7 +883,8 @@ function ConversationListScreen({
   onSelect: (id: string) => void;
   onCreate: (projectId: string) => void;
   onDelete: (id: string) => void;
-  onManageProjects: () => void;
+  // Omitted on desktop, which reaches projects via its own view switcher.
+  onManageProjects?: () => void;
 }) {
   const [projectSheetOpen, setProjectSheetOpen] = useState(false);
 
@@ -890,7 +894,9 @@ function ConversationListScreen({
         <div className="row-header">
           <h2>Conversations</h2>
           <div style={{ display: "flex", gap: "8px" }}>
-            <button type="button" className="secondary" onClick={onManageProjects} style={{ fontSize: "0.8rem", padding: "4px 10px" }}>Projects</button>
+            {onManageProjects ? (
+              <button type="button" className="secondary" onClick={onManageProjects} style={{ fontSize: "0.8rem", padding: "4px 10px" }}>Projects</button>
+            ) : null}
             <button type="button" onClick={() => setProjectSheetOpen(true)}>+</button>
           </div>
         </div>
@@ -1032,9 +1038,16 @@ const ACTIVE_TASK_STATUSES: TaskStatus[] = ["queued", "starting", "running", "wa
 function ConversationDetailScreen({
   conversationId,
   onBack,
+  showBackButton = true,
 }: {
   conversationId: string;
+  // Called when this conversation should be left — either via the Back
+  // button or because it was deleted. Desktop still needs it (to clear the
+  // now-dangling selection) even though it renders no Back button.
   onBack: () => void;
+  // Desktop keeps the conversation list visible beside the chat, so there
+  // is nowhere to navigate "back" to.
+  showBackButton?: boolean;
 }) {
   const queryClient = useQueryClient();
   const isMobile = useIsMobileBreakpoint();
@@ -1317,8 +1330,10 @@ function ConversationDetailScreen({
       style={{ display: "flex", flexDirection: "column", padding: 0, overflow: "hidden" }}
     >
       <div className="mobile-detail-control">
-        <div className="mobile-detail-control-top">
-          <button type="button" className="secondary mobile-back" onClick={onBack}>Back</button>
+        <div className={showBackButton ? "mobile-detail-control-top" : "mobile-detail-control-top mobile-detail-control-top-no-back"}>
+          {showBackButton ? (
+            <button type="button" className="secondary mobile-back" onClick={onBack}>Back</button>
+          ) : null}
           <div style={{ minWidth: 0 }}>
             <strong className="truncate" style={{ display: "block" }}>{conversation?.title ?? "Conversation"}</strong>
             {conversation?.project_name && (
@@ -3493,6 +3508,8 @@ export function App() {
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [promptsModalOpen, setPromptsModalOpen] = useState(false);
   const [mobileScreen, setMobileScreen] = useState<MobileScreen>(lastView?.mobileScreen ?? "conversations");
+  // Desktop mirrors mobile's default: conversations are the primary surface.
+  const [desktopView, setDesktopView] = useState<DesktopView>(lastView?.desktopView ?? "chat");
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(lastView?.selectedConversationId ?? null);
   const [mobileDetailTab, setMobileDetailTab] = useState<"log" | "diff">("log");
   const [mobilePromptExpanded, setMobilePromptExpanded] = useState(false);
@@ -3785,12 +3802,12 @@ export function App() {
     try {
       window.localStorage.setItem(
         LAST_VIEW_KEY,
-        JSON.stringify({ mobileScreen, selectedConversationId, selectedProjectId, selectedTaskId })
+        JSON.stringify({ mobileScreen, desktopView, selectedConversationId, selectedProjectId, selectedTaskId })
       );
     } catch {
       // Quota exceeded or private-mode storage — losing "resume where you left off" isn't worth surfacing an error for.
     }
-  }, [mobileScreen, selectedConversationId, selectedProjectId, selectedTaskId]);
+  }, [mobileScreen, desktopView, selectedConversationId, selectedProjectId, selectedTaskId]);
 
   const isHandlingPopState = useRef(false);
 
@@ -4422,6 +4439,24 @@ export function App() {
           <p className="hero-copy">Projects, tasks, and runtime detail in one stable control plane layout.</p>
         </div>
         <div className={isMobile ? "header-actions hidden-on-mobile" : "header-actions"}>
+          {!isMobile ? (
+            <div className="inline-actions" style={{ marginRight: "0.5rem" }}>
+              <button
+                type="button"
+                className={desktopView === "chat" ? undefined : "secondary"}
+                onClick={() => setDesktopView("chat")}
+              >
+                대화
+              </button>
+              <button
+                type="button"
+                className={desktopView === "workspace" ? undefined : "secondary"}
+                onClick={() => setDesktopView("workspace")}
+              >
+                프로젝트
+              </button>
+            </div>
+          ) : null}
           <button type="button" onClick={() => setProjectModalOpen(true)}>
             New Project
           </button>
@@ -4560,6 +4595,33 @@ export function App() {
               {renderTaskDetailContent(true)}
             </section>
           ) : null}
+        </main>
+      ) : desktopView === "chat" ? (
+        // Same ConversationListScreen/ConversationDetailScreen the mobile
+        // shell uses — desktop just shows them side by side instead of one
+        // at a time. Building this as its own desktop-only chat UI is
+        // exactly the duplication that let desktop fall behind before.
+        <main className="chat-grid">
+          <ConversationListScreen
+            conversations={conversationsQuery.data ?? []}
+            projects={projectsQuery.data ?? []}
+            isLoading={conversationsQuery.isLoading}
+            onSelect={(id) => setSelectedConversationId(id)}
+            onCreate={(projectId) => createConversationMutation.mutate(projectId)}
+            onDelete={(id) => deleteConversationMutation.mutate(id)}
+          />
+          {selectedConversationId ? (
+            <ConversationDetailScreen
+              key={selectedConversationId}
+              conversationId={selectedConversationId}
+              onBack={() => setSelectedConversationId(null)}
+              showBackButton={false}
+            />
+          ) : (
+            <section className="panel">
+              <p className="empty-state">대화를 선택하거나 새로 시작하세요.</p>
+            </section>
+          )}
         </main>
       ) : (
         <main className="workspace-grid">
