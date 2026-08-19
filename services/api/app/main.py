@@ -15,10 +15,12 @@ from .app_server_manager import ManagedAppServer
 from .codex_profiles import get_profile as get_codex_profile
 from .codex_profiles import list_profiles as list_codex_profiles
 from .codex_project_trust import add_project_trust_entry
+from .github_pr import MergeResult, merge_pull_request_for_branch
 from .model_catalog import RuntimeModelCatalog
 from .repository import (
     add_approval,
     add_conversation_message,
+    append_event,
     can_approve,
     can_retry,
     can_stop,
@@ -87,6 +89,7 @@ from .schemas import (
     ProjectSummary,
     RespondTaskRequest,
     RuntimeEngineOption,
+    RuntimeEvent,
     RuntimeEnginesResponse,
     RuntimeModelOption,
     RuntimeModelsResponse,
@@ -667,7 +670,42 @@ async def approve_task(task_id: str, payload: TaskApprovalRequest, db: Session =
         detail = _safe_runtime_error_detail("Approval failed", exc)
         raise HTTPException(status_code=409, detail=detail) from exc
     task = _require_task(get_task(db, task_id))
+    await _merge_task_pull_request(db, task)
+    task = _require_task(get_task(db, task_id))
     return serialize_task_detail(task)
+
+
+async def _merge_task_pull_request(db: Session, task) -> None:
+    """Approving a task also merges the pull request its agent opened.
+
+    Tasks are told to open a PR and explicitly not to merge it themselves
+    (see runtime._prompt_with_workspace), so this is what actually gets
+    approved work onto the default branch. Records the outcome as a task
+    event either way and never raises: the approval itself already
+    succeeded by this point, and a merge that can't happen (no PR,
+    conflicts, plan-mode task, missing credential) must not retroactively
+    fail it -- the event log is where the user sees why.
+    """
+    if task.execution_mode == "plan" or not task.workspace_path:
+        return
+    try:
+        result = await merge_pull_request_for_branch(task.workspace_path, task.workspace_ref)
+    except Exception as exc:  # defensive: helper is already non-raising
+        result = MergeResult(False, f"Unexpected error while merging: {exc}")
+    append_event(
+        db,
+        task,
+        RuntimeEvent(
+            type="agent_status",
+            message=result.message,
+            payload={
+                "source": "pull_request_merge",
+                "ok": result.ok,
+                "pr_number": result.pr_number,
+                "pr_url": result.pr_url,
+            },
+        ),
+    )
 
 
 @app.post("/tasks/{task_id}/respond", response_model=TaskDetail)

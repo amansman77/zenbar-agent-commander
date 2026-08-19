@@ -1681,3 +1681,167 @@ def test_pipeline_stops_and_reports_failure_when_a_step_fails():
         # Advanced to (and failed on) step index 1 -- the pipeline did not
         # silently skip ahead or retry.
         assert body["task_pipeline_step_index"] == 1
+
+
+def test_task_prompt_instructs_agent_to_open_a_pull_request():
+    from app.runtime import _prompt_with_workspace
+    from app.schemas import RuntimeStartRequest
+
+    request = RuntimeStartRequest(
+        task_id="t1",
+        title="Fix thing",
+        prompt="Fix the thing.",
+        model="default",
+        reasoning_effort="medium",
+        repo_path="/srv/repo",
+        working_directory="/tmp/ws",
+        default_branch="main",
+        execution_mode="execute",
+        workspace_type="worktree",
+        workspace_ref="proj/fix-thing-a1b2",
+    )
+
+    prompt = _prompt_with_workspace(request)
+
+    assert "pull request" in prompt.lower()
+    assert "proj/fix-thing-a1b2" in prompt
+    assert "main" in prompt
+    # The agent must not merge on its own -- zenbar merges on human approval.
+    assert "do not merge" in prompt.lower()
+
+
+def test_plan_mode_prompt_does_not_ask_for_a_pull_request():
+    from app.runtime import _prompt_with_workspace
+    from app.schemas import RuntimeStartRequest
+
+    request = RuntimeStartRequest(
+        task_id="t2",
+        title="Plan thing",
+        prompt="Plan the thing.",
+        model="default",
+        reasoning_effort="medium",
+        repo_path="/srv/repo",
+        working_directory="/tmp/ws",
+        default_branch="main",
+        execution_mode="plan",
+        workspace_type="worktree",
+        workspace_ref="proj/plan-thing-a1b2",
+    )
+
+    prompt = _prompt_with_workspace(request)
+
+    assert "pull request" not in prompt.lower()
+
+
+def test_parse_github_remote_handles_https_and_ssh_forms():
+    from app.github_pr import parse_github_remote
+
+    assert parse_github_remote("https://github.com/yna-team/ohso.git") == ("yna-team", "ohso")
+    assert parse_github_remote("https://github.com/yna-team/ohso") == ("yna-team", "ohso")
+    assert parse_github_remote("git@github.com:yna-team/ohso.git") == ("yna-team", "ohso")
+    assert parse_github_remote("https://x-access-token:tok@github.com/yna-team/ohso.git") == ("yna-team", "ohso")
+    # Non-GitHub remotes must not be treated as GitHub.
+    assert parse_github_remote("https://gitlab.example.com/team/repo.git") is None
+    assert parse_github_remote("/tmp/local/bare.git") is None
+
+
+def test_approve_records_merge_outcome_event_and_still_succeeds_without_a_pull_request():
+    # The approval itself must never fail just because the merge couldn't
+    # happen (here: the test repo's origin is a local path, not GitHub).
+    with TemporaryDirectory() as tmpdir:
+        repo, _ = init_repo_with_remote_paths(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Merge On Approve", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Merge me", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        approved = client.post(f"/tasks/{task['id']}/approve", json={"actor": "pytest"})
+        assert approved.status_code == 200
+        assert approved.json()["status"] == "completed"
+
+        events = client.get(f"/tasks/{task['id']}/events").json()
+        merge_events = [
+            e for e in events
+            if e["payload_json"] and e["payload_json"].get("source") == "pull_request_merge"
+        ]
+        assert len(merge_events) == 1
+        assert merge_events[0]["payload_json"]["ok"] is False
+
+
+def test_approve_merges_pull_request_when_one_exists(monkeypatch):
+    from app import main as main_module
+    from app.github_pr import MergeResult
+
+    calls: list[tuple[str, str]] = []
+
+    async def fake_merge(workspace_path: str, branch: str, merge_method: str = "squash"):
+        calls.append((workspace_path, branch))
+        return MergeResult(True, "Merged pull request #42", 42, "https://github.com/o/r/pull/42")
+
+    monkeypatch.setattr(main_module, "merge_pull_request_for_branch", fake_merge)
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Merge Success", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Merge me", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        approved = client.post(f"/tasks/{task['id']}/approve", json={"actor": "pytest"})
+        assert approved.status_code == 200
+
+        # Merged the task's own branch, in its own workspace.
+        assert len(calls) == 1
+        assert calls[0][0] == task["workspace_path"]
+        assert calls[0][1] == task["workspace_ref"]
+
+        events = client.get(f"/tasks/{task['id']}/events").json()
+        merge_events = [
+            e for e in events
+            if e["payload_json"] and e["payload_json"].get("source") == "pull_request_merge"
+        ]
+        assert len(merge_events) == 1
+        assert merge_events[0]["payload_json"]["ok"] is True
+        assert merge_events[0]["payload_json"]["pr_number"] == 42
+
+
+def test_approve_does_not_attempt_merge_for_plan_mode_tasks(monkeypatch):
+    from app import main as main_module
+
+    calls: list[str] = []
+
+    async def fake_merge(workspace_path: str, branch: str, merge_method: str = "squash"):
+        calls.append(branch)
+        raise AssertionError("plan-mode tasks must not attempt a merge")
+
+    monkeypatch.setattr(main_module, "merge_pull_request_for_branch", fake_merge)
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Plan No Merge", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={
+                "project_id": project["id"],
+                "title": "Plan it",
+                "prompt": "Plan work",
+                "model": "default",
+                "execution_mode": "plan",
+            },
+        ).json()
+
+        asyncio.run(asyncio.sleep(0.08))
+        # Plan tasks complete without a result-approval step, so there is
+        # nothing to approve -- the point is simply that no merge was tried.
+        assert calls == []

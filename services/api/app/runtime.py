@@ -147,13 +147,30 @@ def _prompt_with_workspace(request: RuntimeStartRequest) -> str:
         else "Operate inside the current repository working directory."
     )
     skill_line = f"\nRequested skill: {request.selected_skill}" if request.selected_skill else ""
+    # Plan-mode tasks never write code, so there is nothing to open a PR for.
+    # For execute-mode tasks this is the *only* place a PR gets requested:
+    # zenbar task workspaces are throwaway branches, and repos don't
+    # necessarily carry their own AGENTS.md telling the agent to open one --
+    # without this, completed work pushed a branch and then silently stranded
+    # it with no PR, so nothing ever reached the default branch.
+    delivery = (
+        ""
+        if request.execution_mode == "plan"
+        else (
+            f"\n\nWhen the code changes are complete, commit them on the '{request.workspace_ref}' branch, "
+            f"push that branch to origin, and open a GitHub pull request targeting '{request.default_branch}'. "
+            "Include the pull request URL in your final message. "
+            "Do not merge the pull request yourself -- it is merged only after human approval."
+        )
+    )
     return (
         f"Task title: {request.title}\n"
         f"Task workspace: {request.workspace_ref}\n"
         f"Task working directory: {request.working_directory}\n"
         f"Default branch: {request.default_branch}\n\n"
         f"{request.prompt}{skill_line}\n\n"
-        f"{operation} "
+        f"{operation}"
+        f"{delivery} "
         "Human approval is required before the task result is accepted as final."
     )
 
