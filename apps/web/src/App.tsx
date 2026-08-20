@@ -103,6 +103,31 @@ function extractFailureReason(events: TaskEvent[] | undefined): string | null {
   return last.message;
 }
 
+const CONVERSATION_GROUP_PREVIEW_COUNT = 3;
+
+type ConversationGroup = { key: string; projectName: string | null; conversations: ConversationSummary[] };
+
+function groupConversationsByProject(conversations: ConversationSummary[]): ConversationGroup[] {
+  // Conversations already arrive sorted by recency (updated_at desc), so
+  // grouping by first-appearance order (rather than re-sorting) keeps that
+  // property at the group level too: the project with the most recently
+  // active conversation ends up as the first group, with no separate sort
+  // step needed.
+  const groups: ConversationGroup[] = [];
+  const indexByKey = new Map<string, number>();
+  for (const conv of conversations) {
+    const key = conv.project_id ?? "__no_project__";
+    let groupIndex = indexByKey.get(key);
+    if (groupIndex === undefined) {
+      groupIndex = groups.length;
+      indexByKey.set(key, groupIndex);
+      groups.push({ key, projectName: conv.project_name, conversations: [] });
+    }
+    groups[groupIndex].conversations.push(conv);
+  }
+  return groups;
+}
+
 type PlanStep = { step: string; status: string };
 type PlanSnapshot = { explanation: string | null; steps: PlanStep[]; text: string | null };
 type MobileScreen = "conversations" | "conversation-detail" | "projects" | "project-prompts" | "tasks" | "detail";
@@ -887,6 +912,8 @@ function ConversationListScreen({
   onManageProjects?: () => void;
 }) {
   const [projectSheetOpen, setProjectSheetOpen] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const groups = useMemo(() => groupConversationsByProject(conversations), [conversations]);
 
   return (
     <section className="panel mobile-screen">
@@ -906,32 +933,59 @@ function ConversationListScreen({
         {!isLoading && conversations.length === 0 && (
           <p className="empty-state">No conversations yet. Tap + to start.</p>
         )}
-        {conversations.map((conv) => (
-          <div key={conv.id} style={{ display: "flex", alignItems: "stretch", gap: "4px" }}>
-            <button className="list-item" style={{ flex: 1, minWidth: 0 }} onClick={() => onSelect(conv.id)}>
-              <div className="list-row">
-                <strong className="truncate">{conv.title}</strong>
-                {conv.project_name && (
-                  <span className="status status-slate" style={{ fontSize: "0.7rem" }}>{conv.project_name}</span>
-                )}
-              </div>
-              {conv.last_message && (
-                <span className="item-secondary truncate">{conv.last_message}</span>
-              )}
-              <span className="item-secondary" style={{ fontSize: "0.75rem" }}>
-                {new Date(conv.updated_at).toLocaleString()}
-              </span>
-            </button>
-            <button
-              className="secondary"
-              style={{ padding: "0 10px", fontSize: "0.8rem", flexShrink: 0, alignSelf: "center" }}
-              onClick={() => onDelete(conv.id)}
-              title="대화 삭제"
-            >
-              ✕
-            </button>
-          </div>
-        ))}
+        {groups.map((group) => {
+          const isExpanded = Boolean(expandedGroups[group.key]);
+          const visibleConversations = isExpanded
+            ? group.conversations
+            : group.conversations.slice(0, CONVERSATION_GROUP_PREVIEW_COUNT);
+          const hiddenCount = group.conversations.length - visibleConversations.length;
+          return (
+            <div key={group.key}>
+              <div className="conversation-group-header">{group.projectName ?? "프로젝트 없음"}</div>
+              {visibleConversations.map((conv) => (
+                <div key={conv.id} style={{ display: "flex", alignItems: "stretch", gap: "4px" }}>
+                  <button className="list-item" style={{ flex: 1, minWidth: 0 }} onClick={() => onSelect(conv.id)}>
+                    <div className="list-row">
+                      <strong className="truncate">{conv.title}</strong>
+                    </div>
+                    {conv.last_message && (
+                      <span className="item-secondary truncate">{conv.last_message}</span>
+                    )}
+                    <span className="item-secondary" style={{ fontSize: "0.75rem" }}>
+                      {new Date(conv.updated_at).toLocaleString()}
+                    </span>
+                  </button>
+                  <button
+                    className="secondary"
+                    style={{ padding: "0 10px", fontSize: "0.8rem", flexShrink: 0, alignSelf: "center" }}
+                    onClick={() => onDelete(conv.id)}
+                    title="대화 삭제"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              {hiddenCount > 0 ? (
+                <button
+                  type="button"
+                  className="secondary conversation-group-more-button"
+                  onClick={() => setExpandedGroups((prev) => ({ ...prev, [group.key]: true }))}
+                >
+                  더보기 ({hiddenCount})
+                </button>
+              ) : null}
+              {isExpanded && group.conversations.length > CONVERSATION_GROUP_PREVIEW_COUNT ? (
+                <button
+                  type="button"
+                  className="secondary conversation-group-more-button"
+                  onClick={() => setExpandedGroups((prev) => ({ ...prev, [group.key]: false }))}
+                >
+                  접기
+                </button>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
 
       {projectSheetOpen && (

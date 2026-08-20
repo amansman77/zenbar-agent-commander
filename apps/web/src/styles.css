@@ -244,6 +244,26 @@ textarea {
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
 }
 
+.conversation-group-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0.4rem 0 0.3rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-soft);
+  background: var(--bg-bottom);
+  border-radius: 8px;
+}
+
+.conversation-group-more-button {
+  width: 100%;
+  margin-top: 4px;
+  font-size: 0.78rem;
+  padding: 0.4rem 0.7rem;
+}
+
 .list-item,
 .task-row {
   width: 100%;
