@@ -1685,7 +1685,18 @@ def test_pipeline_stops_and_reports_failure_when_a_step_fails():
         assert body["task_pipeline_step_index"] == 1
 
 
-def test_task_prompt_instructs_agent_to_open_a_pull_request():
+def test_task_prompt_no_longer_auto_instructs_commit_push_or_pull_request():
+    # Regression: this prompt used to unconditionally tell execute-mode
+    # tasks to "commit, push, and open a GitHub pull request" once done,
+    # regardless of what the user's own prompt actually asked for. Removed
+    # at the user's explicit request after it caused real problems: it fired
+    # even for purely informational requests with no code-change intent
+    # (pushing the agent to manufacture a change just to have something to
+    # commit/PR against), and it hardcoded "GitHub pull request", which
+    # doesn't hold for GitLab-backed projects -- the agent adapted by
+    # opening a GitLab MR on its own, via ad-hoc token-based push auth whose
+    # token then ended up logged in the task's event history. The user now
+    # asks for commit/push/PR explicitly in the prompt itself when wanted.
     from app.runtime import _prompt_with_workspace
     from app.schemas import RuntimeStartRequest
 
@@ -1705,18 +1716,14 @@ def test_task_prompt_instructs_agent_to_open_a_pull_request():
 
     prompt = _prompt_with_workspace(request)
 
-    assert "pull request" in prompt.lower()
+    assert "pull request" not in prompt.lower()
+    assert "commit" not in prompt.lower()
+    assert "push" not in prompt.lower()
+    assert "do not merge" not in prompt.lower()
+    # The workspace context and the user's own prompt text are still there.
     assert "proj/fix-thing-a1b2" in prompt
     assert "main" in prompt
-    # Regression: this used to also forbid the agent from merging the PR
-    # itself, appended *after* the user's own prompt text -- so a prompt
-    # that explicitly asked Codex to merge (and deploy) got silently
-    # overridden, since the fixed instruction read as the more recent one.
-    # Removed at the user's explicit request: the agent should follow
-    # whatever the user's own prompt actually asks for. zenbar's "approve"
-    # button still merges independently either way (see
-    # _merge_task_pull_request in main.py).
-    assert "do not merge" not in prompt.lower()
+    assert "Fix the thing." in prompt
 
 
 def test_plan_mode_prompt_does_not_ask_for_a_pull_request():

@@ -147,40 +147,25 @@ def _prompt_with_workspace(request: RuntimeStartRequest) -> str:
         else "Operate inside the current repository working directory."
     )
     skill_line = f"\nRequested skill: {request.selected_skill}" if request.selected_skill else ""
-    # Plan-mode tasks never write code, so there is nothing to open a PR for.
-    # For execute-mode tasks this is the *only* place a PR gets requested:
-    # zenbar task workspaces are throwaway branches, and repos don't
-    # necessarily carry their own AGENTS.md telling the agent to open one --
-    # without this, completed work pushed a branch and then silently stranded
-    # it with no PR, so nothing ever reached the default branch.
-    #
-    # This used to also say "do not merge the pull request yourself -- it is
-    # merged only after human approval." That guardrail was removed on the
-    # user's explicit request: it was appended *after* the user's own prompt
-    # text, so when a prompt explicitly asked Codex to merge (and deploy),
-    # Codex read this fixed instruction as the more recent/authoritative one
-    # and refused, silently overriding what was actually asked for. zenbar's
-    # own "approve" button still merges the PR independently of whatever the
-    # agent did or didn't do (see _merge_task_pull_request in main.py), so
-    # removing this doesn't remove that path -- it just stops overruling an
-    # explicit user request not to wait for it.
-    delivery = (
-        ""
-        if request.execution_mode == "plan"
-        else (
-            f"\n\nWhen the code changes are complete, commit them on the '{request.workspace_ref}' branch, "
-            f"push that branch to origin, and open a GitHub pull request targeting '{request.default_branch}'. "
-            "Include the pull request URL in your final message."
-        )
-    )
+    # This used to unconditionally instruct execute-mode tasks to "commit,
+    # push, and open a GitHub pull request" once done, regardless of what the
+    # user's own prompt actually asked for. Removed at the user's explicit
+    # request ("commit/PR 요청은 내가 명시적으로 할테니까 해당 프롬프트는
+    # 제거해줘") after it caused two real problems: (1) it fired even for
+    # purely informational requests with no code-change intent, pushing the
+    # agent to manufacture a change just to have something to commit/PR
+    # against; (2) it hardcoded "GitHub pull request", which doesn't hold for
+    # GitLab-backed projects -- the agent adapted on its own by opening a
+    # GitLab MR instead, using ad-hoc token-based push auth whose token then
+    # ended up logged in plaintext in the task's event history. The user now
+    # asks for commit/push/PR explicitly in the prompt itself when wanted.
     return (
         f"Task title: {request.title}\n"
         f"Task workspace: {request.workspace_ref}\n"
         f"Task working directory: {request.working_directory}\n"
         f"Default branch: {request.default_branch}\n\n"
         f"{request.prompt}{skill_line}\n\n"
-        f"{operation}"
-        f"{delivery} "
+        f"{operation} "
         "Human approval is required before the task result is accepted as final."
     )
 
