@@ -1127,7 +1127,7 @@ function ConversationDetailScreen({
   // Profiles read ~/.codex/*.config.toml — a Codex-only concept, meaningless for other engines.
   const engineSupportsProfiles = effectiveEngine == null || effectiveEngine === "codex";
 
-  const { data: modelsData } = useQuery({
+  const { data: modelsData, isLoading: modelsLoading } = useQuery({
     queryKey: ["runtime-models", effectiveEngine],
     queryFn: () => api.listRuntimeModels(effectiveEngine),
     staleTime: 0,
@@ -1519,6 +1519,16 @@ function ConversationDetailScreen({
             <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }} title="Model is set by the selected profile">
               ◎ {selectedProfileOption?.model}
             </span>
+          ) : modelsLoading ? (
+            // Engines whose model list comes from a real CLI subprocess call
+            // (e.g. Antigravity's `agy models`, ~3s wall time) leave this
+            // spot empty for long enough after switching engines that it
+            // reads as "this engine has no model picker" rather than
+            // "still loading" -- reproduced live by switching the engine
+            // dropdown and watching the selector vanish for several
+            // seconds. Codex's own list resolves near-instantly, which is
+            // why this was never noticed there.
+            <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }}>◎ Loading models...</span>
           ) : (
             availableModels.length > 0 && (
               <label style={{ display: "flex", alignItems: "center", gap: "3px", fontSize: "0.73rem", color: "var(--text-soft)" }}>
