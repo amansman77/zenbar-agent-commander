@@ -956,10 +956,10 @@ function ConversationListScreen({
                     </span>
                   </button>
                   <button
-                    className="secondary"
-                    style={{ padding: "0 10px", fontSize: "0.8rem", flexShrink: 0, alignSelf: "center" }}
+                    className="conversation-delete-button"
                     onClick={() => onDelete(conv.id)}
                     title="대화 삭제"
+                    aria-label="대화 삭제"
                   >
                     ✕
                   </button>

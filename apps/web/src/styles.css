@@ -245,16 +245,24 @@ textarea {
 }
 
 .conversation-group-header {
+  /* Matches .eyebrow's typographic treatment (the app's existing idiom for
+     a muted section label) rather than a colored chip -- a chip here read
+     as just another button sitting in a list already full of them (row
+     cards, the delete button, the show-more button), instead of a section
+     divider. Solid background is still needed since it's sticky and must
+     mask rows scrolling underneath it. */
   position: sticky;
   top: 0;
   z-index: 2;
-  margin: 0.4rem 0 0.3rem;
-  padding: 0.35rem 0.5rem;
-  font-size: 0.78rem;
-  font-weight: 600;
+  margin: 0.7rem 0 0.3rem;
+  padding: 0.25rem 0.15rem 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--text-soft);
-  background: var(--bg-bottom);
-  border-radius: 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
 }
 
 .conversation-group-more-button {
@@ -262,6 +270,34 @@ textarea {
   margin-top: 4px;
   font-size: 0.78rem;
   padding: 0.4rem 0.7rem;
+}
+
+.conversation-delete-button {
+  /* A quiet icon button (transparent until hovered) instead of a solid gray
+     chip -- the chip version was the same visual weight as the group
+     header and show-more button, so every row read as "button, button,
+     button" instead of one primary action (open) plus one minor one. */
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0;
+  flex-shrink: 0;
+  align-self: center;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 0.8rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.conversation-delete-button:hover {
+  background: #fdecea;
+  border-color: #f6c9cb;
+  color: #b12a34;
 }
 
 .list-item,
