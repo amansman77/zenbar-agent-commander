@@ -93,3 +93,22 @@ def test_approve_and_respond_are_unsupported_in_headless_mode():
             assert False, "expected RuntimeError"
         except RuntimeError:
             pass
+
+
+def test_run_turn_uses_a_generous_readline_limit():
+    # Regression: hit for real against the live CLI -- a turn touching a
+    # large file failed with asyncio.LimitOverrunError ("Separator is
+    # found, but chunk is longer than limit") because a single NDJSON line
+    # can carry a full tool_call_update (e.g. a whole file's before/after
+    # content), comfortably past asyncio's 64KiB readline() default. This
+    # doesn't spawn a real process; it just confirms the source actually
+    # passes a raised limit to create_subprocess_exec, since the failure
+    # mode only reproduces against a real large file over a real subprocess
+    # (verified manually, not worth a slow/flaky test double for CI).
+    import inspect
+
+    from app import grok_adapter
+
+    source = inspect.getsource(grok_adapter.GrokCliAdapter._run_turn)
+    assert "limit=" in source
+    assert "65536" not in source, "must not be left at asyncio's default"

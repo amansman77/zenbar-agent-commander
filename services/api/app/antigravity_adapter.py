@@ -235,6 +235,14 @@ class AntigravityCliAdapter(RuntimeAdapter):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env={**os.environ, "NO_COLOR": "1", "TERM": "dumb"},
+                # A single NDJSON line can carry a full tool_call_update --
+                # e.g. a large file's complete before/after content in a
+                # write diff -- comfortably past asyncio's 64KiB default
+                # readline() limit. Hit for real: a Grok turn on a large
+                # file failed with "Separator is found, but chunk is longer
+                # than limit" (asyncio.LimitOverrunError). Same readline()
+                # loop shape here, so the same ceiling applies.
+                limit=1024 * 1024 * 20,
             )
             session.current_process = proc
             assert proc.stdout is not None
