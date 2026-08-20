@@ -3540,12 +3540,6 @@ export function App() {
     queryFn: api.listProjects
   });
 
-  const runtimeModelsQuery = useQuery({
-    queryKey: ["runtime-models"],
-    queryFn: () => api.listRuntimeModels(),
-    staleTime: 0
-  });
-
   const runtimeProfilesQuery = useQuery({
     queryKey: ["runtime-profiles"],
     queryFn: api.listRuntimeProfiles,
@@ -3567,6 +3561,18 @@ export function App() {
     queryKey: ["task", selectedTaskId],
     queryFn: () => api.getTask(selectedTaskId!),
     enabled: Boolean(selectedTaskId)
+  });
+
+  const runtimeModelsQuery = useQuery({
+    // Keyed and filtered on the selected task's own engine -- without this,
+    // the query always fetched Codex's model list (the backend's default
+    // when no `engine` is given) regardless of which engine the task
+    // actually ran on, so the "Retry model" dropdown for an Antigravity or
+    // Grok task silently offered Codex model ids instead.
+    queryKey: ["runtime-models", selectedTaskId, taskDetailQuery.data?.engine],
+    queryFn: () => api.listRuntimeModels(taskDetailQuery.data?.engine),
+    enabled: Boolean(selectedTaskId),
+    staleTime: 0
   });
 
   const taskEventsQuery = useQuery({

@@ -10,6 +10,15 @@ let taskDiff: Record<string, unknown> = { files_changed: [], summary: "", raw_di
 
 const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = input.toString();
+  if (url.endsWith("/runtime/models?engine=antigravity")) {
+    return new Response(
+      JSON.stringify({
+        source: "runtime",
+        models: [{ id: "default" }, { id: "gemini-3.7-flash-high" }]
+      }),
+      { status: 200 }
+    );
+  }
   if (url.endsWith("/runtime/models")) {
     return new Response(
       JSON.stringify({
@@ -277,7 +286,7 @@ describe("App", () => {
     });
   });
 
-  it("preloads runtime models and requires explicit model selection before task creation", async () => {
+  it("requires explicit model selection before task creation", async () => {
     projects = [
       {
         id: "project-1",
@@ -294,9 +303,11 @@ describe("App", () => {
       </QueryClientProvider>
     );
 
-    await waitFor(() => {
-      expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/runtime/models"))).toBe(true);
-    });
+    // The desktop Task Detail view's own runtime-models query (for its
+    // "Retry model" dropdown) is scoped to the selected task's engine and
+    // only fires once a task is selected -- see runtimeModelsQuery in
+    // App(). Nothing here selects a task, so it deliberately does not fire;
+    // this test only cares about the New Task form's own per-engine query.
 
     fireEvent.click(await screen.findByRole("button", { name: /agent-commander/i }));
     fireEvent.click(await screen.findByRole("button", { name: "New Task" }));
@@ -313,6 +324,81 @@ describe("App", () => {
     await waitFor(() => {
       expect(createButton).toBeEnabled();
     });
+  });
+
+  it("scopes the desktop Retry model dropdown to the selected task's own engine", async () => {
+    // Regression: this query used to omit the `engine` param entirely, so
+    // the backend's default (Codex) model list was fetched regardless of
+    // which engine the task actually ran on -- an Antigravity or Grok
+    // task's "Retry model" dropdown silently offered Codex model ids.
+    // Reproduced live against the real app before this fix.
+    projects = [
+      {
+        id: "project-1",
+        name: "agent-commander",
+        repo_path: "/Users/hosung/Workspace/zenbar/agent-commander",
+        default_branch: "main",
+        created_at: new Date().toISOString()
+      }
+    ];
+    taskDetail = {
+      id: "task-1",
+      project_id: "project-1",
+      title: "Explain the repo",
+      prompt: "Explain the repo",
+      execution_mode: "execute",
+      engine: "antigravity",
+      model: "gemini-3.7-flash-high",
+      effective_model: "gemini-3.7-flash-high",
+      reasoning_effort: "medium",
+      status: "completed",
+      workspace_type: "worktree",
+      workspace_ref: "agent-commander/task-abcd",
+      workspace_path: "/tmp/workspace",
+      runtime_session_id: "mock-task-1",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      project: projects[0],
+      approvals: [],
+      latest_diff: { files_changed: [], summary: "", raw_diff: null },
+      pending_interaction_type: null,
+      pending_request_id: null,
+      pending_request_payload_json: null,
+      pending_questions: []
+    };
+
+    // Seed initial selection directly (App reads this once on mount) rather
+    // than driving the click-through, since the point of this test is the
+    // query the selection triggers, not the navigation itself.
+    window.localStorage.setItem(
+      "zenbar:lastView",
+      JSON.stringify({
+        mobileScreen: "conversations",
+        desktopView: "workspace",
+        selectedConversationId: null,
+        selectedProjectId: "project-1",
+        selectedTaskId: "task-1"
+      })
+    );
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <App />
+      </QueryClientProvider>
+    );
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).endsWith("/runtime/models?engine=antigravity"))
+      ).toBe(true);
+    });
+
+    // And the dropdown itself ends up populated with Antigravity's models,
+    // not Codex's.
+    await waitFor(() => {
+      expect(screen.getByLabelText("Retry model")).toHaveTextContent("gemini-3.7-flash-high");
+    });
+    expect(screen.getByLabelText("Retry model")).not.toHaveTextContent("GPT-5.4");
   });
 
   it("does not submit the desktop task form via Enter before a model is selected", async () => {
