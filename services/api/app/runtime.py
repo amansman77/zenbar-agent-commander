@@ -153,14 +153,24 @@ def _prompt_with_workspace(request: RuntimeStartRequest) -> str:
     # necessarily carry their own AGENTS.md telling the agent to open one --
     # without this, completed work pushed a branch and then silently stranded
     # it with no PR, so nothing ever reached the default branch.
+    #
+    # This used to also say "do not merge the pull request yourself -- it is
+    # merged only after human approval." That guardrail was removed on the
+    # user's explicit request: it was appended *after* the user's own prompt
+    # text, so when a prompt explicitly asked Codex to merge (and deploy),
+    # Codex read this fixed instruction as the more recent/authoritative one
+    # and refused, silently overriding what was actually asked for. zenbar's
+    # own "approve" button still merges the PR independently of whatever the
+    # agent did or didn't do (see _merge_task_pull_request in main.py), so
+    # removing this doesn't remove that path -- it just stops overruling an
+    # explicit user request not to wait for it.
     delivery = (
         ""
         if request.execution_mode == "plan"
         else (
             f"\n\nWhen the code changes are complete, commit them on the '{request.workspace_ref}' branch, "
             f"push that branch to origin, and open a GitHub pull request targeting '{request.default_branch}'. "
-            "Include the pull request URL in your final message. "
-            "Do not merge the pull request yourself -- it is merged only after human approval."
+            "Include the pull request URL in your final message."
         )
     )
     return (

@@ -1708,8 +1708,15 @@ def test_task_prompt_instructs_agent_to_open_a_pull_request():
     assert "pull request" in prompt.lower()
     assert "proj/fix-thing-a1b2" in prompt
     assert "main" in prompt
-    # The agent must not merge on its own -- zenbar merges on human approval.
-    assert "do not merge" in prompt.lower()
+    # Regression: this used to also forbid the agent from merging the PR
+    # itself, appended *after* the user's own prompt text -- so a prompt
+    # that explicitly asked Codex to merge (and deploy) got silently
+    # overridden, since the fixed instruction read as the more recent one.
+    # Removed at the user's explicit request: the agent should follow
+    # whatever the user's own prompt actually asks for. zenbar's "approve"
+    # button still merges independently either way (see
+    # _merge_task_pull_request in main.py).
+    assert "do not merge" not in prompt.lower()
 
 
 def test_plan_mode_prompt_does_not_ask_for_a_pull_request():
