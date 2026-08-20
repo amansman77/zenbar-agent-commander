@@ -15,6 +15,25 @@ def _run_git(working_directory: str, args: list[str], check: bool = True, timeou
     )
 
 
+def summarize_stderr_for_failure(stderr_text: str) -> str | None:
+    """Pick the most useful single line out of a CLI's captured stderr tail
+    for folding into a failure event's user-facing `message`.
+
+    Hit for real: a Grok turn failed with the generic "Grok exited with code
+    1" and "(Grok produced no text response.)" -- the actual reason (a free
+    plan usage-limit error) was captured correctly in the `failed` event's
+    `payload.stderr`, but the frontend's failure banner only ever reads the
+    event `message`, never `payload`, so the real cause was invisible to the
+    user. CLIs conventionally put their own summary/error line last, so take
+    the last non-blank line and cap it so it doesn't blow out a chat bubble.
+    """
+    for line in reversed(stderr_text.strip().splitlines()):
+        line = line.strip()
+        if line:
+            return line[:300]
+    return None
+
+
 def compute_workspace_diff(working_directory: str, default_branch: str, engine_label: str) -> TaskDiff:
     """Uncommitted-changes diff for a CLI-based engine's workspace.
 

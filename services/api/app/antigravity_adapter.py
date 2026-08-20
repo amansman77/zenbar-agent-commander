@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .cli_adapter_git import compute_workspace_diff
+from .cli_adapter_git import compute_workspace_diff, summarize_stderr_for_failure
 from .runtime import RuntimeAdapter, _is_default_model_alias
 from .schemas import RuntimeEvent, RuntimeSession, RuntimeSkill, RuntimeStartRequest, TaskDiff
 
@@ -295,12 +295,13 @@ class AntigravityCliAdapter(RuntimeAdapter):
         if returncode == 0:
             await session.queue.put(RuntimeEvent(type="completed", message="Antigravity turn completed"))
         else:
+            stderr_text = stderr_tail.decode("utf-8", errors="ignore")
+            reason = summarize_stderr_for_failure(stderr_text)
+            message = f"Antigravity exited with code {returncode}"
+            if reason:
+                message += f": {reason}"
             await session.queue.put(
-                RuntimeEvent(
-                    type="failed",
-                    message=f"Antigravity exited with code {returncode}",
-                    payload={"stderr": stderr_tail.decode("utf-8", errors="ignore")},
-                )
+                RuntimeEvent(type="failed", message=message, payload={"stderr": stderr_text})
             )
 
     async def _handle_stream_event(self, session: _AntigravitySession, item: dict[str, Any], text_buffer: str) -> str:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 os.environ.setdefault("ZENBAR_RUNTIME_MODE", "mock")
 
-from app.cli_adapter_git import compute_workspace_diff
+from app.cli_adapter_git import compute_workspace_diff, summarize_stderr_for_failure
 
 
 def _init_git_repo(path: Path) -> None:
@@ -68,6 +68,37 @@ def test_compute_workspace_diff_includes_new_untracked_files(tmp_path: Path):
     assert diff.files_changed == ["new_file.txt"]
     assert "brand new, never staged" in (diff.raw_diff or "")
     assert "1 file(s)" in diff.summary
+
+
+def test_summarize_stderr_for_failure_picks_the_actual_error_line():
+    # Regression: hit for real -- a Grok turn failed with a free-plan usage
+    # limit, correctly captured in stderr, but the frontend's failure banner
+    # only reads the `failed` event's `message`, never `payload.stderr`, so
+    # the user only ever saw the generic "Grok exited with code 1" and had
+    # no idea why. This is what folds the real reason into that message.
+    stderr = (
+        "Error: You’ve reached your free Grok Build usage limit for now. "
+        "Get SuperGrok for much higher limits, or try again later: "
+        "https://grok.com/supergrok?referrer=grok-build\n"
+    )
+    assert summarize_stderr_for_failure(stderr) == stderr.strip()
+
+
+def test_summarize_stderr_for_failure_takes_the_last_non_blank_line():
+    stderr = "stack frame 1\nstack frame 2\nError: the actual problem\n\n"
+    assert summarize_stderr_for_failure(stderr) == "Error: the actual problem"
+
+
+def test_summarize_stderr_for_failure_truncates_long_lines():
+    stderr = "x" * 500
+    result = summarize_stderr_for_failure(stderr)
+    assert result is not None
+    assert len(result) == 300
+
+
+def test_summarize_stderr_for_failure_empty_text_returns_none():
+    assert summarize_stderr_for_failure("") is None
+    assert summarize_stderr_for_failure("   \n  \n") is None
 
 
 def test_compute_workspace_diff_combines_tracked_and_untracked_changes(tmp_path: Path):
