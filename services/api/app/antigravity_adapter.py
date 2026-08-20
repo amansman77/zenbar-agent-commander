@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import subprocess
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .cli_adapter_git import compute_workspace_diff
 from .runtime import RuntimeAdapter, _is_default_model_alias
 from .schemas import RuntimeEvent, RuntimeSession, RuntimeSkill, RuntimeStartRequest, TaskDiff
 
@@ -95,31 +95,6 @@ def _last_model_response(conversation_id: str, min_step_index: int = -1) -> str 
         ):
             last = content
     return last
-
-
-def _diff_payload(working_directory: str, default_branch: str) -> TaskDiff:
-    try:
-        result = subprocess.run(
-            ["git", "diff", default_branch],
-            cwd=working_directory,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return TaskDiff()
-    diff = result.stdout
-    if not diff.strip():
-        return TaskDiff()
-    files: list[str] = []
-    for line in diff.splitlines():
-        if line.startswith("diff --git "):
-            parts = line.split()
-            if len(parts) >= 4:
-                files.append(parts[3].removeprefix("b/"))
-    files = list(dict.fromkeys(files))
-    summary = f"Updated {len(files)} file(s) in the Task Workspace." if files else "Antigravity produced no file changes."
-    return TaskDiff(files_changed=files, summary=summary, raw_diff=diff)
 
 
 @dataclass
@@ -302,7 +277,7 @@ class AntigravityCliAdapter(RuntimeAdapter):
             )
         )
 
-        diff = _diff_payload(session.working_directory, session.default_branch)
+        diff = compute_workspace_diff(session.working_directory, session.default_branch, "Antigravity")
         session.latest_diff = diff
         if diff.files_changed:
             await session.queue.put(

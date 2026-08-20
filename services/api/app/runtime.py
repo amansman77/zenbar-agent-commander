@@ -1015,7 +1015,7 @@ def create_runtime_adapter() -> RuntimeAdapter:
     return AppServerWebSocketAdapter(os.getenv("ZENBAR_APP_SERVER_WS_URL", "ws://127.0.0.1:18765"))
 
 
-ENGINE_LABELS = {"codex": "Codex", "antigravity": "Antigravity"}
+ENGINE_LABELS = {"codex": "Codex", "antigravity": "Antigravity", "grok": "Grok"}
 
 
 def create_engine_adapters() -> tuple[dict[str, RuntimeAdapter], str]:
@@ -1034,13 +1034,15 @@ def create_engine_adapters() -> tuple[dict[str, RuntimeAdapter], str]:
     mode = os.getenv("ZENBAR_RUNTIME_MODE", "app_server_ws")
     if mode == "mock":
         mock = MockRuntimeAdapter()
-        return {"codex": mock, "antigravity": mock}, "codex"
+        return {"codex": mock, "antigravity": mock, "grok": mock}, "codex"
 
     from .antigravity_adapter import AntigravityCliAdapter  # deferred: avoids a module-level circular import
+    from .grok_adapter import GrokCliAdapter  # deferred: avoids a module-level circular import
 
     adapters: dict[str, RuntimeAdapter] = {
         "codex": AppServerWebSocketAdapter(os.getenv("ZENBAR_APP_SERVER_WS_URL", "ws://127.0.0.1:18765")),
         "antigravity": AntigravityCliAdapter(),
+        "grok": GrokCliAdapter(),
     }
-    default_engine = "antigravity" if mode == "antigravity_cli" else "codex"
+    default_engine = {"antigravity_cli": "antigravity", "grok_cli": "grok"}.get(mode, "codex")
     return adapters, default_engine

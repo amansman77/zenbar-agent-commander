@@ -1,6 +1,5 @@
 import json
 import os
-import subprocess
 from pathlib import Path
 
 # app/__init__.py does `from .main import app`, which eagerly constructs the
@@ -12,7 +11,6 @@ from pathlib import Path
 os.environ.setdefault("ZENBAR_RUNTIME_MODE", "mock")
 
 from app.antigravity_adapter import (
-    _diff_payload,
     _last_model_response,
     _max_step_index,
     _read_conversation_id_for_cwd,
@@ -71,31 +69,3 @@ def test_read_conversation_id_for_cwd(tmp_path: Path, monkeypatch):
 def test_read_conversation_id_missing_cache_file(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGY_HOME", str(tmp_path))
     assert _read_conversation_id_for_cwd("/anything") is None
-
-
-def _init_git_repo(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-b", "main"], cwd=path, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Zenbar Test"], cwd=path, check=True, capture_output=True)
-    (path / "math_utils.py").write_text("def add(a, b): return a + b\n")
-    subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=path, check=True, capture_output=True)
-
-
-def test_diff_payload_reports_no_changes(tmp_path: Path):
-    _init_git_repo(tmp_path)
-    diff = _diff_payload(str(tmp_path), "main")
-    assert diff.files_changed == []
-    assert diff.raw_diff is None
-
-
-def test_diff_payload_reports_real_changes(tmp_path: Path):
-    _init_git_repo(tmp_path)
-    (tmp_path / "math_utils.py").write_text("def add(a, b): return a + b\n\n\ndef subtract(a, b): return a - b\n")
-
-    diff = _diff_payload(str(tmp_path), "main")
-
-    assert diff.files_changed == ["math_utils.py"]
-    assert "subtract" in (diff.raw_diff or "")
-    assert "1 file(s)" in diff.summary
