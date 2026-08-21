@@ -6,6 +6,7 @@ import os
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from itertools import count
 from typing import Any
 
@@ -13,7 +14,15 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from .codex_profiles import RuntimeProfile, get_profile
-from .schemas import RuntimeEvent, RuntimeSession, RuntimeSkill, RuntimeStartRequest, RuntimeUsageInfo, TaskDiff
+from .schemas import (
+    RuntimeEvent,
+    RuntimeSession,
+    RuntimeSkill,
+    RuntimeStartRequest,
+    RuntimeUsageInfo,
+    RuntimeUsageWindow,
+    TaskDiff,
+)
 
 
 def _sandbox_policy_for_mode(mode: str, working_directory: str) -> dict[str, Any]:
@@ -179,6 +188,51 @@ def _is_default_model_alias(model: str | None) -> bool:
 def _is_unsupported_model_error(message: str) -> bool:
     lowered = message.lower()
     return "model is not supported" in lowered or "not supported when using codex with a chatgpt account" in lowered
+
+
+# `account/rateLimits/read`'s `primary`/`secondary` RateLimitWindow fields
+# aren't labeled "session" vs "week" -- only distinguishable by
+# windowDurationMins. Verified live against the real running App Server:
+# a weekly window reported 10080 (= 7 * 24 * 60). No 5h-window example was
+# available to confirm its exact minute count, so this classifies by
+# threshold (<=360 min ~ session-scale, >=10000 min ~ week-scale) rather
+# than an exact match, and drops anything in between as unrecognized.
+_SESSION_WINDOW_MAX_MINUTES = 360
+_WEEK_WINDOW_MIN_MINUTES = 10000
+
+
+def _rate_limit_window_to_usage_window(window: dict[str, Any] | None) -> RuntimeUsageWindow | None:
+    if not isinstance(window, dict):
+        return None
+    used_percent = window.get("usedPercent")
+    if not isinstance(used_percent, (int, float)):
+        return None
+    resets_label: str | None = None
+    resets_at = window.get("resetsAt")
+    if isinstance(resets_at, (int, float)):
+        try:
+            resets_label = datetime.fromtimestamp(resets_at).astimezone().strftime("%b %d, %H:%M %Z")
+        except (OverflowError, OSError, ValueError):
+            resets_label = None
+    return RuntimeUsageWindow(percent_used=round(used_percent), resets_label=resets_label)
+
+
+def _classify_rate_limit_windows(
+    primary: dict[str, Any] | None, secondary: dict[str, Any] | None
+) -> tuple[RuntimeUsageWindow | None, RuntimeUsageWindow | None]:
+    session_window: RuntimeUsageWindow | None = None
+    week_window: RuntimeUsageWindow | None = None
+    for raw in (primary, secondary):
+        if not isinstance(raw, dict):
+            continue
+        duration = raw.get("windowDurationMins")
+        if not isinstance(duration, (int, float)):
+            continue
+        if duration <= _SESSION_WINDOW_MAX_MINUTES:
+            session_window = _rate_limit_window_to_usage_window(raw)
+        elif duration >= _WEEK_WINDOW_MIN_MINUTES:
+            week_window = _rate_limit_window_to_usage_window(raw)
+    return session_window, week_window
 
 
 @dataclass
@@ -391,9 +445,17 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         return skills or None
 
     async def get_usage(self) -> RuntimeUsageInfo | None:
-        # No known App Server RPC method for account-level rate-limit
-        # status yet.
-        return None
+        try:
+            result = await self._rpc("account/rateLimits/read", None)
+        except RuntimeError:
+            return None
+        snapshot = result.get("rateLimits")
+        if not isinstance(snapshot, dict):
+            return None
+        session_window, week_window = _classify_rate_limit_windows(snapshot.get("primary"), snapshot.get("secondary"))
+        if session_window is None and week_window is None:
+            return None
+        return RuntimeUsageInfo(session=session_window, week=week_window)
 
     async def stop_task(self, session_id: str) -> None:
         state = self._require_session(session_id)

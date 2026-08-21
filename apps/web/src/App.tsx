@@ -105,6 +105,13 @@ function extractFailureReason(events: TaskEvent[] | undefined): string | null {
 
 const CONVERSATION_GROUP_PREVIEW_COUNT = 3;
 
+// Engines whose adapter implements get_usage() for real -- see
+// ClaudeCliAdapter/AntigravityCliAdapter/AppServerWebSocketAdapter.
+// GrokCliAdapter always returns null (confirmed no equivalent CLI/RPC
+// exists), so it's deliberately excluded here rather than just letting the
+// query fire and return null every time.
+const USAGE_SUPPORTED_ENGINES = ["codex", "antigravity", "claude"];
+
 type ConversationGroup = { key: string; projectName: string | null; conversations: ConversationSummary[] };
 
 function groupConversationsByProject(conversations: ConversationSummary[]): ConversationGroup[] {
@@ -1182,19 +1189,21 @@ function ConversationDetailScreen({
   // Profiles read ~/.codex/*.config.toml — a Codex-only concept, meaningless for other engines.
   const engineSupportsProfiles = effectiveEngine == null || effectiveEngine === "codex";
 
-  // Account-level rate-limit status -- only Claude supports this today (see
-  // ClaudeCliAdapter.get_usage); other engines' /runtime/usage calls are
-  // simply never made. Once a task exists, its own engine is authoritative
-  // over whatever's currently selected in the (now-hidden) engine picker.
+  // Account-level rate-limit status -- Codex, Antigravity, and Claude all
+  // support this (see each adapter's get_usage); Grok doesn't expose an
+  // equivalent anywhere, so its /runtime/usage calls are simply never made.
+  // Once a task exists, its own engine is authoritative over whatever's
+  // currently selected in the (now-hidden) engine picker.
   const usageEngine = taskStarted ? conversation?.task_engine ?? null : effectiveEngine;
+  const usageEngineSupported = usageEngine != null && USAGE_SUPPORTED_ENGINES.includes(usageEngine);
   const { data: usageData } = useQuery({
     queryKey: ["runtime-usage", usageEngine],
     queryFn: () => api.getRuntimeUsage(usageEngine!),
-    enabled: usageEngine === "claude",
+    enabled: usageEngineSupported,
     staleTime: 5 * 60 * 1000,
     refetchInterval: 5 * 60 * 1000,
   });
-  const usageInfo = usageEngine === "claude" ? usageData?.usage ?? null : null;
+  const usageInfo = usageEngineSupported ? usageData?.usage ?? null : null;
 
   const { data: modelsData, isLoading: modelsLoading } = useQuery({
     queryKey: ["runtime-models", effectiveEngine],

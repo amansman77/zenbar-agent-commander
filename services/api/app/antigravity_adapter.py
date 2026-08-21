@@ -10,7 +10,15 @@ from typing import Any
 
 from .cli_adapter_git import compute_workspace_diff, summarize_stderr_for_failure
 from .runtime import RuntimeAdapter, _is_default_model_alias
-from .schemas import RuntimeEvent, RuntimeSession, RuntimeSkill, RuntimeStartRequest, RuntimeUsageInfo, TaskDiff
+from .schemas import (
+    RuntimeEvent,
+    RuntimeSession,
+    RuntimeSkill,
+    RuntimeStartRequest,
+    RuntimeUsageInfo,
+    RuntimeUsageWindow,
+    TaskDiff,
+)
 
 
 def _agy_bin() -> str:
@@ -97,6 +105,57 @@ def _last_model_response(conversation_id: str, min_step_index: int = -1) -> str 
     return last
 
 
+# `agy -p "/usage" --output-format json` answers with real structured JSON
+# (unlike Claude's plain-prose /usage) -- confirmed live this is a free,
+# local status answer (num_turns: 0), grouped per model family since
+# Antigravity meters Gemini and Claude/GPT-family models separately:
+#   {"command": {"data": {"groups": [
+#     {"name": "Gemini Models", "buckets": [
+#       {"window": "weekly", "remaining_fraction": 0.999, "reset_time": "..."},
+#       {"window": "5h", "remaining_fraction": 1.0, "reset_time": "..."}]},
+#     {"name": "Claude and GPT models", "buckets": [...]}]}}}
+# RuntimeUsageInfo only has one session/week slot, so this picks the *worst*
+# (most-used) group per window and names it in the label -- a single number
+# an "am I about to hit a wall" glance still needs, without silently hiding
+# that one group might be far more depleted than another.
+def _worst_agy_bucket(groups: list[dict[str, Any]], window: str) -> RuntimeUsageWindow | None:
+    worst: tuple[int, Any] | None = None  # (percent_used, bucket)
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        for bucket in group.get("buckets") or []:
+            if not isinstance(bucket, dict) or bucket.get("window") != window:
+                continue
+            remaining = bucket.get("remaining_fraction")
+            if not isinstance(remaining, (int, float)):
+                continue
+            percent_used = round((1 - remaining) * 100)
+            if worst is None or percent_used > worst[0]:
+                worst = (percent_used, {**bucket, "_group_name": group.get("name")})
+    if worst is None:
+        return None
+    percent_used, bucket = worst
+    reset_time = bucket.get("reset_time")
+    group_name = bucket.get("_group_name")
+    label_parts = [part for part in (reset_time, f"({group_name})" if group_name else None) if part]
+    return RuntimeUsageWindow(percent_used=percent_used, resets_label=" ".join(label_parts) or None)
+
+
+def _parse_agy_usage_output(stdout_text: str) -> RuntimeUsageInfo | None:
+    try:
+        payload = json.loads(stdout_text.strip())
+    except json.JSONDecodeError:
+        return None
+    groups = ((payload.get("command") or {}).get("data") or {}).get("groups")
+    if not isinstance(groups, list):
+        return None
+    session_window = _worst_agy_bucket(groups, "5h")
+    week_window = _worst_agy_bucket(groups, "weekly")
+    if session_window is None and week_window is None:
+        return None
+    return RuntimeUsageInfo(session=session_window, week=week_window)
+
+
 @dataclass
 class _AntigravitySession:
     working_directory: str
@@ -153,8 +212,21 @@ class AntigravityCliAdapter(RuntimeAdapter):
         return None
 
     async def get_usage(self) -> RuntimeUsageInfo | None:
-        # `agy` has no known account-level rate-limit/quota query.
-        return None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                _agy_bin(),
+                "-p",
+                "/usage",
+                "--output-format",
+                "json",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env={**os.environ, "NO_COLOR": "1", "TERM": "dumb"},
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+        except (OSError, asyncio.TimeoutError):
+            return None
+        return _parse_agy_usage_output(stdout.decode("utf-8", errors="ignore"))
 
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
         session = _AntigravitySession(
