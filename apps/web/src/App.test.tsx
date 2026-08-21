@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { App } from "./App";
+import { App, isNotifyWorthyTransition } from "./App";
 
 let projects: Array<Record<string, unknown>> = [];
 let tasks: Array<Record<string, unknown>> = [];
@@ -142,6 +142,39 @@ vi.stubGlobal(
     close() {}
   }
 );
+
+describe("isNotifyWorthyTransition", () => {
+  it("notifies when an active task becomes terminal", () => {
+    expect(isNotifyWorthyTransition("running", "completed")).toBe(true);
+    expect(isNotifyWorthyTransition("queued", "failed")).toBe(true);
+    expect(isNotifyWorthyTransition("waiting_result_approval", "stopped")).toBe(true);
+  });
+
+  it("does not notify when the previous status was already terminal", () => {
+    // Regression: without this, every already-completed/failed task present
+    // on the very first poll after page load would fire at once (the
+    // "previous" snapshot in that case is really just "unknown", not
+    // "active" -- callers pass null for that case, covered below).
+    expect(isNotifyWorthyTransition("completed", "completed")).toBe(false);
+    expect(isNotifyWorthyTransition("failed", "failed")).toBe(false);
+  });
+
+  it("does not notify when there is no previous status to compare against", () => {
+    // This is what the very first snapshot after mount/reload looks like --
+    // must not fire for tasks that were already done before we started
+    // watching.
+    expect(isNotifyWorthyTransition(null, "completed")).toBe(false);
+  });
+
+  it("does not notify while a task is still active", () => {
+    expect(isNotifyWorthyTransition("running", "running")).toBe(false);
+    expect(isNotifyWorthyTransition("queued", "running")).toBe(false);
+  });
+
+  it("does not notify when there is no current status", () => {
+    expect(isNotifyWorthyTransition("running", null)).toBe(false);
+  });
+});
 
 describe("App", () => {
   beforeEach(() => {

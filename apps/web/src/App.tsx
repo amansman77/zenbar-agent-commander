@@ -1096,6 +1096,76 @@ function AssistantMessageGroup({
 
 const ACTIVE_TASK_STATUSES: TaskStatus[] = ["queued", "starting", "running", "waiting_user_input", "waiting_result_approval"];
 
+const TASK_NOTIFICATIONS_ENABLED_KEY = "zenbar:taskNotificationsEnabled";
+
+function isNotificationSupported(): boolean {
+  return typeof window !== "undefined" && "Notification" in window;
+}
+
+function loadTaskNotificationsEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(TASK_NOTIFICATIONS_ENABLED_KEY) === "true";
+}
+
+const TASK_STATUS_NOTIFICATION_LABEL: Partial<Record<TaskStatus, string>> = {
+  completed: "완료",
+  failed: "실패",
+  stopped: "중지",
+};
+
+// Watches every conversation's task_status (not just whichever one is open)
+// for a transition from an active status into a terminal one, and fires a
+// browser Notification for it -- scoped globally per the user's explicit
+// choice ("모든 진행 중인 작업 전체"), not just the currently-viewed
+// conversation. The first snapshot after mount/reload only *records*
+// statuses rather than firing: without that, every already-terminal task
+// present on initial load would notify at once.
+// Pure decision logic, split out from the effect below so it's testable
+// without touching React/timers/the Notification API: a transition is
+// notify-worthy exactly when the previous status was active, the current
+// one is terminal, and the two actually differ (guards against a status
+// staying e.g. "completed" -> "completed" across a poll from re-firing).
+export function isNotifyWorthyTransition(previousStatus: TaskStatus | null, currentStatus: TaskStatus | null): boolean {
+  const wasActive = previousStatus != null && ACTIVE_TASK_STATUSES.includes(previousStatus);
+  const isNowTerminal = currentStatus != null && !ACTIVE_TASK_STATUSES.includes(currentStatus);
+  return wasActive && isNowTerminal && previousStatus !== currentStatus;
+}
+
+function useTaskCompletionNotifications(conversations: ConversationSummary[] | undefined, enabled: boolean) {
+  const previousStatusesRef = useRef<Map<string, TaskStatus | null> | null>(null);
+
+  useEffect(() => {
+    if (!conversations) return;
+    const previous = previousStatusesRef.current;
+    const next = new Map(conversations.map((conv) => [conv.id, conv.task_status] as const));
+
+    if (previous === null) {
+      previousStatusesRef.current = next;
+      return;
+    }
+
+    if (enabled && isNotificationSupported() && Notification.permission === "granted") {
+      for (const conv of conversations) {
+        const prevStatus = previous.get(conv.id) ?? null;
+        const currentStatus = conv.task_status;
+        if (isNotifyWorthyTransition(prevStatus, currentStatus)) {
+          const label = (currentStatus && TASK_STATUS_NOTIFICATION_LABEL[currentStatus]) ?? currentStatus;
+          const notification = new Notification(`[${label}] ${conv.title}`, {
+            body: conv.last_message ?? undefined,
+            tag: `zenbar-task-${conv.id}`,
+          });
+          notification.onclick = () => {
+            window.focus();
+            notification.close();
+          };
+        }
+      }
+    }
+
+    previousStatusesRef.current = next;
+  }, [conversations, enabled]);
+}
+
 function ConversationDetailScreen({
   conversationId,
   onBack,
@@ -3723,6 +3793,33 @@ export function App() {
     refetchInterval: 5000,
   });
 
+  const [taskNotificationsEnabled, setTaskNotificationsEnabled] = useState(loadTaskNotificationsEnabled);
+  useTaskCompletionNotifications(conversationsQuery.data, taskNotificationsEnabled);
+
+  const handleToggleTaskNotifications = async () => {
+    if (!isNotificationSupported()) {
+      return;
+    }
+    if (taskNotificationsEnabled) {
+      setTaskNotificationsEnabled(false);
+      window.localStorage.setItem(TASK_NOTIFICATIONS_ENABLED_KEY, "false");
+      return;
+    }
+    // Browsers only honor a permission prompt triggered by a real user
+    // gesture (this click), not one fired from an effect on mount -- so the
+    // request has to happen here, not alongside the enabled-state read.
+    let permission = Notification.permission;
+    if (permission === "default") {
+      permission = await Notification.requestPermission();
+    }
+    if (permission === "granted") {
+      setTaskNotificationsEnabled(true);
+      window.localStorage.setItem(TASK_NOTIFICATIONS_ENABLED_KEY, "true");
+    } else {
+      alert("브라우저 알림 권한이 차단되어 있어요. 브라우저 설정에서 이 사이트의 알림을 허용해주세요.");
+    }
+  };
+
   const createConversationMutation = useMutation({
     mutationFn: (projectId: string) => api.createConversation({ project_id: projectId }),
     onSuccess: (conv) => {
@@ -4595,10 +4692,26 @@ export function App() {
   return (
     <div className="app-shell">
       <header className={isMobile ? "commander-header mobile-header" : "commander-header"}>
-        <div className="header-copy">
-          <p className="eyebrow">Web Commander</p>
-          <h1>Agent Supervision Console</h1>
-          <p className="hero-copy">Projects, tasks, and runtime detail in one stable control plane layout.</p>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", minWidth: 0 }}>
+          <div className="header-copy">
+            <p className="eyebrow">Web Commander</p>
+            <h1>Agent Supervision Console</h1>
+            <p className="hero-copy">Projects, tasks, and runtime detail in one stable control plane layout.</p>
+          </div>
+          {isNotificationSupported() ? (
+            <button
+              type="button"
+              className="secondary notification-toggle-button"
+              onClick={handleToggleTaskNotifications}
+              title={
+                taskNotificationsEnabled
+                  ? "진행 중인 모든 작업의 완료/실패 알림이 켜져 있어요. 클릭하면 꺼져요."
+                  : "켜면 지금 열려 있지 않은 대화를 포함해, 모든 작업이 끝날 때 브라우저 알림을 받아요."
+              }
+            >
+              {taskNotificationsEnabled ? "🔔" : "🔕"}
+            </button>
+          ) : null}
         </div>
         <div className={isMobile ? "header-actions hidden-on-mobile" : "header-actions"}>
           {!isMobile ? (
