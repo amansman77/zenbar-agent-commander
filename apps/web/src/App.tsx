@@ -3666,6 +3666,25 @@ export function App() {
     staleTime: 0
   });
 
+  // Same account-level rate-limit badge as the conversation compose bar
+  // (ConversationDetailScreen), but for this desktop Task Detail panel --
+  // reported as a real gap: the compose bar's badge only shows while a
+  // task's engine/model pickers are visible (i.e. before a task starts, or
+  // in the chat view once it has), but this panel has no such indicator at
+  // all, and it's the only place to inspect an already-running/completed
+  // task without an editable model field.
+  const taskDetailUsageEngine = taskDetailQuery.data?.engine ?? null;
+  const taskDetailUsageEngineSupported =
+    taskDetailUsageEngine != null && USAGE_SUPPORTED_ENGINES.includes(taskDetailUsageEngine);
+  const taskDetailUsageQuery = useQuery({
+    queryKey: ["runtime-usage", "task-detail", taskDetailUsageEngine],
+    queryFn: () => api.getRuntimeUsage(taskDetailUsageEngine!),
+    enabled: taskDetailUsageEngineSupported,
+    staleTime: 5 * 60 * 1000,
+    refetchInterval: 5 * 60 * 1000,
+  });
+  const taskDetailUsageInfo = taskDetailUsageEngineSupported ? taskDetailUsageQuery.data?.usage ?? null : null;
+
   const taskEventsQuery = useQuery({
     queryKey: ["task-events", selectedTaskId],
     queryFn: () => api.getEvents(selectedTaskId!),
@@ -4318,6 +4337,24 @@ export function App() {
             <span className="meta-label">Effective model</span>
             <strong className="break-value mono">{task.effective_model ?? "Unknown"}</strong>
           </div>
+          {taskDetailUsageInfo && (taskDetailUsageInfo.session || taskDetailUsageInfo.week) ? (
+            <div>
+              <span className="meta-label">Usage</span>
+              <strong
+                className="break-value"
+                title={[
+                  taskDetailUsageInfo.session ? `세션 리셋: ${taskDetailUsageInfo.session.resets_label ?? "-"}` : null,
+                  taskDetailUsageInfo.week ? `주간 리셋: ${taskDetailUsageInfo.week.resets_label ?? "-"}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" / ")}
+              >
+                {taskDetailUsageInfo.session ? `세션 ${taskDetailUsageInfo.session.percent_used}%` : ""}
+                {taskDetailUsageInfo.session && taskDetailUsageInfo.week ? " · " : ""}
+                {taskDetailUsageInfo.week ? `주간 ${taskDetailUsageInfo.week.percent_used}%` : ""}
+              </strong>
+            </div>
+          ) : null}
           {task.profile ? (
             <div>
               <span className="meta-label">Profile</span>
