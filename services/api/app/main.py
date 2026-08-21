@@ -429,9 +429,15 @@ async def post_conversation_message(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     # Starting a pipeline: resolve it up front (before saving the visible
-    # message) so the first step's actual prompt content becomes both the
-    # user-facing chat bubble and the task's prompt -- the compose bar
-    # doesn't require typing anything when a pipeline is selected.
+    # message) so the first step's actual prompt content becomes the task's
+    # prompt. The compose bar doesn't require typing anything when a
+    # pipeline is selected -- but if the user *did* type something (e.g. an
+    # issue number the saved prompt template has no way to fill in itself),
+    # it's prepended to the first step's content rather than discarded, so
+    # a pipeline can still be pointed at a specific target when started.
+    # Steps 2+ are unaffected -- they're only ever taken verbatim from
+    # pipeline_steps_json (see TaskOrchestrator._advance_pipeline_if_needed),
+    # never re-derived from this request.
     pipeline = None
     pipeline_steps: list[dict] | None = None
     if payload.role == "user" and payload.pipeline_id and conv.task_id is None:
@@ -450,7 +456,10 @@ async def post_conversation_message(
             if prompt is None or prompt.project_id != project_for_pipeline.id:
                 raise HTTPException(status_code=400, detail=f"Pipeline references a missing prompt '{prompt_id}'")
             pipeline_steps.append({"prompt_id": prompt.id, "title": prompt.title, "content": prompt.content})
-        payload = payload.model_copy(update={"content": pipeline_steps[0]["content"]})
+        user_supplied = payload.content.strip()
+        first_step_content = pipeline_steps[0]["content"]
+        combined_content = f"{user_supplied}\n\n{first_step_content}" if user_supplied else first_step_content
+        payload = payload.model_copy(update={"content": combined_content})
 
     if not payload.content.strip():
         raise HTTPException(status_code=400, detail="Message content cannot be empty")

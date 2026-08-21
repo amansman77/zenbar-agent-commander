@@ -1461,8 +1461,15 @@ function ConversationDetailScreen({
     const profileToUse = taskStarted ? null : selectedProfile;
     const engineToUse = taskStarted ? null : selectedEngine;
     if (canSendPipeline) {
+      // Typing is still optional here (a pipeline can start with nothing
+      // typed, same as before), but anything typed is no longer thrown
+      // away -- it's prepended to the first step's saved prompt on the
+      // backend (see post_conversation_message), so a pipeline whose first
+      // step is a generic template (e.g. "이슈를 확인하고 작업해줘") can
+      // still be pointed at something specific (e.g. "이슈 #123") when
+      // started, instead of always running the template verbatim.
       addMessageMutation.mutate({
-        content: "",
+        content: input.trim(),
         selected_skill: null,
         engine: engineToUse,
         model: null,
@@ -1470,6 +1477,7 @@ function ConversationDetailScreen({
         pipeline_id: selectedPipelineId,
       });
       setSelectedPipelineId(null);
+      setInput("");
       return;
     }
     const trimmed = input.trim();
@@ -2038,14 +2046,20 @@ function ConversationDetailScreen({
         </div>
         {selectedPipelineId && (
           <p className="item-secondary" style={{ padding: "0 12px", fontSize: "0.78rem" }}>
-            🔗 "{selectedPipelineName}" 파이프라인이 선택됨 — 보내기를 누르면 전체 단계가 자동으로 순서대로 실행돼요.
+            🔗 "{selectedPipelineName}" 파이프라인이 선택됨 — 보내기를 누르면 전체 단계가 자동으로 순서대로 실행돼요. 아래에 이슈 번호 등을 적으면 1단계 프롬프트 앞에 함께 전달돼요.
           </p>
         )}
         <div style={{ display: "flex", gap: "8px", padding: "8px 12px" }}>
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={isTaskActive ? "Codex is working..." : "메시지를 입력하세요..."}
+            placeholder={
+              isTaskActive
+                ? "Codex is working..."
+                : selectedPipelineId
+                  ? "예: 이슈 #123 (1단계 프롬프트 앞에 함께 전달돼요, 비워둬도 돼요)"
+                  : "메시지를 입력하세요..."
+            }
             disabled={isTaskActive}
             style={{ flex: 1, minHeight: "44px", maxHeight: "120px", resize: "none", opacity: isTaskActive ? 0.5 : 1 }}
             onKeyDown={(e) => {

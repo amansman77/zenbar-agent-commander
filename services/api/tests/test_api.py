@@ -1630,6 +1630,89 @@ def test_pipeline_execution_auto_advances_through_all_steps_and_completes():
         assert task["pipeline_total_steps"] == 3
 
 
+def test_pipeline_start_prepends_typed_content_to_first_step_only():
+    # Regression: starting a pipeline used to always send `content: ""` on
+    # the frontend, and the backend fully discarded whatever was sent
+    # anyway -- overwriting it outright with the first step's saved prompt.
+    # That left no way to point a generic pipeline template (e.g. "Review
+    # the issue and fix it.") at something specific (e.g. "Issue #123") when
+    # starting it. Now typed content is prepended to step 1 only; steps 2+
+    # come from pipeline_steps_json verbatim, untouched by what was typed.
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Pipeline Param Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+
+        prompt_specs = [("Step 1", "Review the issue and fix it."), ("Step 2", "Open a PR.")]
+        prompt_ids = []
+        for title, content in prompt_specs:
+            prompt = client.post(
+                f"/projects/{project['id']}/prompts",
+                json={"title": title, "content": content},
+            ).json()
+            prompt_ids.append(prompt["id"])
+
+        pipeline_id = client.post(
+            f"/projects/{project['id']}/pipelines",
+            json={"name": "Parametrized Flow", "prompt_ids": prompt_ids},
+        ).json()["id"]
+
+        conversation = client.post(
+            "/conversations",
+            json={"project_id": project["id"], "title": "Pipeline run with param"},
+        ).json()
+
+        response = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "Issue #123", "pipeline_id": pipeline_id},
+        )
+        assert response.status_code == 201
+        body = response.json()
+
+        user_messages = [m["content"] for m in body["messages"] if m["role"] == "user"]
+        assert user_messages == [
+            "Issue #123\n\nReview the issue and fix it.",
+            "Open a PR.",
+        ]
+
+        task = client.get(f"/tasks/{body['task_id']}").json()
+        assert task["prompt"] == "Issue #123\n\nReview the issue and fix it."
+
+
+def test_pipeline_start_without_typed_content_still_works():
+    # The empty-content case (pick a pipeline, send nothing) must keep
+    # working exactly as before -- this is the common case for pipelines
+    # whose first step needs no per-run parameter.
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Pipeline No Param Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        prompt_id = client.post(
+            f"/projects/{project['id']}/prompts",
+            json={"title": "Step 1", "content": "Do the thing."},
+        ).json()["id"]
+        pipeline_id = client.post(
+            f"/projects/{project['id']}/pipelines",
+            json={"name": "No Param Flow", "prompt_ids": [prompt_id]},
+        ).json()["id"]
+        conversation = client.post(
+            "/conversations",
+            json={"project_id": project["id"], "title": "Pipeline run no param"},
+        ).json()
+
+        response = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "", "pipeline_id": pipeline_id},
+        )
+        assert response.status_code == 201
+        user_messages = [m["content"] for m in response.json()["messages"] if m["role"] == "user"]
+        assert user_messages == ["Do the thing."]
+
+
 def test_pipeline_stops_and_reports_failure_when_a_step_fails():
     from app.main import orchestrator
     from app.schemas import RuntimeEvent, RuntimeSession
