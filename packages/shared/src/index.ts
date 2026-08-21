@@ -90,6 +90,21 @@ export interface ListRuntimeSkillsResponse {
   source: "runtime" | "fallback";
 }
 
+export interface RuntimeUsageWindow {
+  percent_used: number;
+  resets_label: string | null;
+}
+
+export interface RuntimeUsageInfo {
+  session: RuntimeUsageWindow | null;
+  week: RuntimeUsageWindow | null;
+}
+
+export interface RuntimeUsageResponse {
+  engine: string;
+  usage: RuntimeUsageInfo | null;
+}
+
 export interface TaskSummary {
   id: string;
   project_id: string;

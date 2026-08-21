@@ -16,6 +16,7 @@ import type {
   ListRuntimeModelsResponse,
   ListRuntimeProfilesResponse,
   ListRuntimeSkillsResponse,
+  RuntimeUsageResponse,
   CreateTaskRequest,
   ProjectPipeline,
   ProjectPrompt,
@@ -136,6 +137,8 @@ export const api = {
     request<ListRuntimeModelsResponse>(`/runtime/models${engine ? `?engine=${encodeURIComponent(engine)}` : ""}`),
   listRuntimeProfiles: () => request<ListRuntimeProfilesResponse>("/runtime/profiles"),
   listRuntimeSkills: () => request<ListRuntimeSkillsResponse>("/runtime/skills"),
+  getRuntimeUsage: (engine: string) =>
+    request<RuntimeUsageResponse>(`/runtime/usage?engine=${encodeURIComponent(engine)}`),
   createTask: (payload: CreateTaskRequest) =>
     request<TaskDetail>("/tasks", {
       method: "POST",

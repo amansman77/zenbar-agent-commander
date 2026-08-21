@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,7 +11,15 @@ from typing import Any
 
 from .cli_adapter_git import compute_workspace_diff, summarize_stderr_for_failure
 from .runtime import RuntimeAdapter, _is_default_model_alias
-from .schemas import RuntimeEvent, RuntimeSession, RuntimeSkill, RuntimeStartRequest, TaskDiff
+from .schemas import (
+    RuntimeEvent,
+    RuntimeSession,
+    RuntimeSkill,
+    RuntimeStartRequest,
+    RuntimeUsageInfo,
+    RuntimeUsageWindow,
+    TaskDiff,
+)
 
 
 def _claude_bin() -> str:
@@ -27,6 +36,30 @@ def _claude_bin() -> str:
 # 'opus', or 'sonnet')") plus haiku. Verified each resolves to a real model
 # via a real invocation, not guessed.
 KNOWN_MODELS = ["sonnet", "opus", "fable", "haiku"]
+
+
+# `claude -p "/usage"` answers with plain prose, not structured data, e.g.:
+#   Current session: 37% used · resets Aug 21 at 11:59am (Asia/Seoul)
+#   Current week (all models): 51% used · resets Aug 23 at 11:59am (Asia/Seoul)
+# Confirmed live this costs nothing (total_cost_usd: 0, num_turns: 0) -- it's
+# a local/synthetic status answer, not a real model turn.
+_USAGE_SESSION_RE = re.compile(r"Current session:\s*(\d+)%\s*used(?:\s*\S\s*resets\s*(.+))?")
+_USAGE_WEEK_RE = re.compile(r"Current week[^:\n]*:\s*(\d+)%\s*used(?:\s*\S\s*resets\s*(.+))?")
+
+
+def _parse_usage_output(text: str) -> RuntimeUsageInfo | None:
+    session_match = _USAGE_SESSION_RE.search(text)
+    week_match = _USAGE_WEEK_RE.search(text)
+    if session_match is None and week_match is None:
+        return None
+
+    def _window(match: re.Match[str] | None) -> RuntimeUsageWindow | None:
+        if match is None:
+            return None
+        resets_label = (match.group(2) or "").strip() or None
+        return RuntimeUsageWindow(percent_used=int(match.group(1)), resets_label=resets_label)
+
+    return RuntimeUsageInfo(session=_window(session_match), week=_window(week_match))
 
 
 @dataclass
@@ -80,6 +113,46 @@ class ClaudeCliAdapter(RuntimeAdapter):
 
     async def list_skills(self) -> list[RuntimeSkill] | None:
         return None
+
+    async def get_usage(self) -> RuntimeUsageInfo | None:
+        # Standalone status check, deliberately outside any task session --
+        # no --session-id/--resume, since it's account-level, not
+        # conversation-level. No --cwd override needed either: /usage
+        # doesn't care what repo it's asked from.
+        args = [
+            _claude_bin(),
+            "-p",
+            "/usage",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "bypassPermissions",
+        ]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env={**os.environ, "NO_COLOR": "1", "TERM": "dumb"},
+                limit=1024 * 1024 * 20,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+        except (OSError, asyncio.TimeoutError):
+            return None
+        final_text: str | None = None
+        for line in stdout.decode("utf-8", errors="ignore").splitlines():
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if item.get("type") == "result":
+                result_text = item.get("result")
+                if isinstance(result_text, str):
+                    final_text = result_text
+        if not final_text:
+            return None
+        return _parse_usage_output(final_text)
 
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
         session = _ClaudeSession(

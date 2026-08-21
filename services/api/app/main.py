@@ -67,7 +67,7 @@ from .repo_discovery import (
     RepositoryDiscoveryError,
     discover_repository,
 )
-from .runtime import ENGINE_LABELS, create_engine_adapters
+from .runtime import ENGINE_LABELS, RuntimeAdapter, create_engine_adapters
 from .workspace import cleanup_workspace
 from .schemas import (
     AddConversationMessageRequest,
@@ -97,6 +97,7 @@ from .schemas import (
     RuntimeProfilesResponse,
     RuntimeSkill,
     RuntimeSkillsResponse,
+    RuntimeUsageResponse,
     FollowupTurnRequest,
     TaskApprovalRequest,
     TaskDetail,
@@ -128,6 +129,14 @@ def _model_catalog_for(engine: str | None) -> RuntimeModelCatalog:
         allowed = ", ".join(sorted(model_catalogs))
         raise HTTPException(status_code=400, detail=f"Unknown engine '{engine}'. Allowed engines: {allowed}")
     return catalog
+
+
+def _adapter_for_engine(engine: str) -> RuntimeAdapter:
+    adapter = _engine_adapters.get(engine)
+    if adapter is None:
+        allowed = ", ".join(sorted(_engine_adapters))
+        raise HTTPException(status_code=400, detail=f"Unknown engine '{engine}'. Allowed engines: {allowed}")
+    return adapter
 
 
 def _validate_task_model(model: str, profile_id: str | None, allowed_models: list[str]) -> None:
@@ -589,6 +598,13 @@ async def get_runtime_skills():
     if skills is None:
         return RuntimeSkillsResponse(skills=[], source="fallback")
     return RuntimeSkillsResponse(skills=skills, source="runtime")
+
+
+@app.get("/runtime/usage", response_model=RuntimeUsageResponse)
+async def get_runtime_usage(engine: str):
+    adapter = _adapter_for_engine(engine)
+    usage = await adapter.get_usage()
+    return RuntimeUsageResponse(engine=engine, usage=usage)
 
 
 @app.post("/tasks", response_model=TaskDetail)

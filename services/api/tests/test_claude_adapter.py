@@ -3,7 +3,7 @@ import os
 
 os.environ.setdefault("ZENBAR_RUNTIME_MODE", "mock")
 
-from app.claude_adapter import KNOWN_MODELS, ClaudeCliAdapter, _ClaudeSession
+from app.claude_adapter import KNOWN_MODELS, ClaudeCliAdapter, _ClaudeSession, _parse_usage_output
 
 
 def _session(execution_mode: str = "execute") -> _ClaudeSession:
@@ -152,6 +152,41 @@ def test_run_turn_uses_a_generous_readline_limit():
     source = inspect.getsource(claude_adapter.ClaudeCliAdapter._run_turn)
     assert "limit=" in source
     assert "65536" not in source, "must not be left at asyncio's default"
+
+
+def test_parse_usage_output_extracts_session_and_week_percentages():
+    # Real output captured from `claude -p "/usage"` -- confirmed live this
+    # costs nothing (total_cost_usd: 0, num_turns: 0), so it's safe to call
+    # on a schedule.
+    text = (
+        "You are currently using your subscription to power your Claude Code usage\n\n"
+        "Current session: 37% used · resets Aug 21 at 11:59am (Asia/Seoul)\n"
+        "Current week (all models): 51% used · resets Aug 23 at 11:59am (Asia/Seoul)\n\n"
+        "What's contributing to your limits usage?\n"
+    )
+
+    usage = _parse_usage_output(text)
+
+    assert usage is not None
+    assert usage.session is not None
+    assert usage.session.percent_used == 37
+    assert usage.session.resets_label == "Aug 21 at 11:59am (Asia/Seoul)"
+    assert usage.week is not None
+    assert usage.week.percent_used == 51
+    assert usage.week.resets_label == "Aug 23 at 11:59am (Asia/Seoul)"
+
+
+def test_parse_usage_output_handles_missing_reset_label():
+    usage = _parse_usage_output("Current session: 10% used\n")
+    assert usage is not None
+    assert usage.session is not None
+    assert usage.session.percent_used == 10
+    assert usage.session.resets_label is None
+    assert usage.week is None
+
+
+def test_parse_usage_output_returns_none_for_unrecognized_text():
+    assert _parse_usage_output("some unrelated CLI output") is None
 
 
 def test_run_turn_maps_plan_execution_mode_to_the_real_plan_permission_mode():

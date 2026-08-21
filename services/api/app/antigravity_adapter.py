@@ -10,7 +10,7 @@ from typing import Any
 
 from .cli_adapter_git import compute_workspace_diff, summarize_stderr_for_failure
 from .runtime import RuntimeAdapter, _is_default_model_alias
-from .schemas import RuntimeEvent, RuntimeSession, RuntimeSkill, RuntimeStartRequest, TaskDiff
+from .schemas import RuntimeEvent, RuntimeSession, RuntimeSkill, RuntimeStartRequest, RuntimeUsageInfo, TaskDiff
 
 
 def _agy_bin() -> str:
@@ -150,6 +150,10 @@ class AntigravityCliAdapter(RuntimeAdapter):
         return models or None
 
     async def list_skills(self) -> list[RuntimeSkill] | None:
+        return None
+
+    async def get_usage(self) -> RuntimeUsageInfo | None:
+        # `agy` has no known account-level rate-limit/quota query.
         return None
 
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:

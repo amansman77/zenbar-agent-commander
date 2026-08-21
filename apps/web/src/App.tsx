@@ -1136,6 +1136,7 @@ function ConversationDetailScreen({
       return taskStatus && ACTIVE_TASK_STATUSES.includes(taskStatus) ? 1500 : 3000;
     },
   });
+  const taskStarted = conversation?.task_id != null;
 
   const { data: skillsData } = useQuery({
     queryKey: ["runtime-skills"],
@@ -1181,6 +1182,20 @@ function ConversationDetailScreen({
   // Profiles read ~/.codex/*.config.toml — a Codex-only concept, meaningless for other engines.
   const engineSupportsProfiles = effectiveEngine == null || effectiveEngine === "codex";
 
+  // Account-level rate-limit status -- only Claude supports this today (see
+  // ClaudeCliAdapter.get_usage); other engines' /runtime/usage calls are
+  // simply never made. Once a task exists, its own engine is authoritative
+  // over whatever's currently selected in the (now-hidden) engine picker.
+  const usageEngine = taskStarted ? conversation?.task_engine ?? null : effectiveEngine;
+  const { data: usageData } = useQuery({
+    queryKey: ["runtime-usage", usageEngine],
+    queryFn: () => api.getRuntimeUsage(usageEngine!),
+    enabled: usageEngine === "claude",
+    staleTime: 5 * 60 * 1000,
+    refetchInterval: 5 * 60 * 1000,
+  });
+  const usageInfo = usageEngine === "claude" ? usageData?.usage ?? null : null;
+
   const { data: modelsData, isLoading: modelsLoading } = useQuery({
     queryKey: ["runtime-models", effectiveEngine],
     queryFn: () => api.listRuntimeModels(effectiveEngine),
@@ -1202,7 +1217,6 @@ function ConversationDetailScreen({
   const selectedProfileOption = availableProfiles.find((p) => p.id === selectedProfile) ?? null;
   const profileControlsModel = Boolean(selectedProfileOption?.model);
   const effectiveModel = conversation?.task_model ?? selectedModel ?? availableModels[0] ?? null;
-  const taskStarted = conversation?.task_id != null;
 
   const isTaskActive = conversation?.task_status != null && ACTIVE_TASK_STATUSES.includes(conversation.task_status);
   const isWaitingApproval = conversation?.task_status === "waiting_result_approval";
@@ -1639,6 +1653,20 @@ function ConversationDetailScreen({
               </label>
             )
           )}
+          {usageInfo && (usageInfo.session || usageInfo.week) ? (
+            <span
+              style={{ fontSize: "0.73rem", color: "var(--text-soft)" }}
+              title={[
+                usageInfo.session ? `세션 리셋: ${usageInfo.session.resets_label ?? "-"}` : null,
+                usageInfo.week ? `주간 리셋: ${usageInfo.week.resets_label ?? "-"}` : null,
+              ]
+                .filter(Boolean)
+                .join(" / ")}
+            >
+              ⏱{usageInfo.session ? ` 세션 ${usageInfo.session.percent_used}%` : ""}
+              {usageInfo.week ? ` · 주간 ${usageInfo.week.percent_used}%` : ""}
+            </span>
+          ) : null}
           {taskId && (
             <button
               type="button"

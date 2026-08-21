@@ -13,7 +13,7 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from .codex_profiles import RuntimeProfile, get_profile
-from .schemas import RuntimeEvent, RuntimeSession, RuntimeSkill, RuntimeStartRequest, TaskDiff
+from .schemas import RuntimeEvent, RuntimeSession, RuntimeSkill, RuntimeStartRequest, RuntimeUsageInfo, TaskDiff
 
 
 def _sandbox_policy_for_mode(mode: str, working_directory: str) -> dict[str, Any]:
@@ -216,6 +216,12 @@ class RuntimeAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_usage(self) -> RuntimeUsageInfo | None:
+        """Account-level rate-limit/quota status, independent of any task or
+        session -- `None` for engines/CLIs with no way to report this."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
         raise NotImplementedError
 
@@ -383,6 +389,11 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             description = item.get("description")
             skills.append(RuntimeSkill(id=skill_id, name=display_name, description=description))
         return skills or None
+
+    async def get_usage(self) -> RuntimeUsageInfo | None:
+        # No known App Server RPC method for account-level rate-limit
+        # status yet.
+        return None
 
     async def stop_task(self, session_id: str) -> None:
         state = self._require_session(session_id)
@@ -863,6 +874,9 @@ class MockRuntimeAdapter(RuntimeAdapter):
         return ["GPT-5.4", "GPT-5.3-Codex"]
 
     async def list_skills(self) -> list[RuntimeSkill] | None:
+        return None
+
+    async def get_usage(self) -> RuntimeUsageInfo | None:
         return None
 
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:

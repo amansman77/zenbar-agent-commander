@@ -137,6 +137,25 @@ class RuntimeSkillsResponse(BaseModel):
     source: Literal["runtime", "fallback"]
 
 
+class RuntimeUsageWindow(BaseModel):
+    percent_used: int
+    # The CLI reports this as a human-readable label ("Aug 21 at 11:59am
+    # (Asia/Seoul)") with no year and no fixed format -- kept as-is rather
+    # than parsed into a timestamp, since that would be fragile for little
+    # benefit (the UI just needs to display it).
+    resets_label: str | None = None
+
+
+class RuntimeUsageInfo(BaseModel):
+    session: RuntimeUsageWindow | None = None
+    week: RuntimeUsageWindow | None = None
+
+
+class RuntimeUsageResponse(BaseModel):
+    engine: str
+    usage: RuntimeUsageInfo | None = None
+
+
 class ProjectSummary(BaseModel):
     id: str
     name: str
