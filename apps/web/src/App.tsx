@@ -1193,8 +1193,14 @@ function ConversationDetailScreen({
   // support this (see each adapter's get_usage); Grok doesn't expose an
   // equivalent anywhere, so its /runtime/usage calls are simply never made.
   // Once a task exists, its own engine is authoritative over whatever's
-  // currently selected in the (now-hidden) engine picker.
-  const usageEngine = taskStarted ? conversation?.task_engine ?? null : effectiveEngine;
+  // currently selected in the (now-hidden) engine picker. Tasks created
+  // before per-task engine selection existed (or without one explicitly
+  // picked) store "" for task_engine, not "codex" -- `??` only falls back
+  // on null/undefined, not "", so this used `||` deliberately to match the
+  // same "falsy engine means the default engine" convention the backend
+  // already applies (see TaskOrchestrator._adapter_for). Caught live: the
+  // badge silently never appeared for exactly these tasks.
+  const usageEngine = taskStarted ? conversation?.task_engine || defaultEngine : effectiveEngine;
   const usageEngineSupported = usageEngine != null && USAGE_SUPPORTED_ENGINES.includes(usageEngine);
   const { data: usageData } = useQuery({
     queryKey: ["runtime-usage", usageEngine],
@@ -3673,7 +3679,19 @@ export function App() {
   // in the chat view once it has), but this panel has no such indicator at
   // all, and it's the only place to inspect an already-running/completed
   // task without an editable model field.
-  const taskDetailUsageEngine = taskDetailQuery.data?.engine ?? null;
+  const taskDetailEnginesQuery = useQuery({
+    queryKey: ["runtime-engines"],
+    queryFn: () => api.listRuntimeEngines(),
+    staleTime: 5 * 60 * 1000,
+  });
+  // Tasks stored with "" for engine (created before per-task engine
+  // selection existed, or with none explicitly picked) mean "the default
+  // engine", same convention the backend applies (see
+  // TaskOrchestrator._adapter_for) -- `||`, not `??`, since "" is falsy but
+  // not null/undefined. Caught live: the badge never appeared for exactly
+  // these tasks.
+  const taskDetailUsageEngine =
+    taskDetailQuery.data?.engine || taskDetailEnginesQuery.data?.default_engine || null;
   const taskDetailUsageEngineSupported =
     taskDetailUsageEngine != null && USAGE_SUPPORTED_ENGINES.includes(taskDetailUsageEngine);
   const taskDetailUsageQuery = useQuery({
