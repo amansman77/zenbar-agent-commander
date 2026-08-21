@@ -1713,6 +1713,86 @@ def test_pipeline_start_without_typed_content_still_works():
         assert user_messages == ["Do the thing."]
 
 
+def test_pipeline_advances_from_a_plain_completed_status_too():
+    # Regression: hit for real in production. _advance_pipeline_if_needed
+    # used to only advance a pipeline from "waiting_result_approval" -- but
+    # that status means the runtime paused *mid-turn* to ask permission for
+    # one specific file edit or command (item/fileChange/requestApproval),
+    # which most turns never trigger at all (e.g. the default
+    # sandbox=workspace-write grants broad write access upfront, so there's
+    # nothing to ask permission for). A real pipeline task ran a full turn
+    # end to end -- ~450 events, dozens of file edits and commands -- and
+    # went straight from "running" to "completed" without a single
+    # approval request anywhere in it, so the pipeline silently stalled
+    # after step 1 with no failure event and no visible sign anything was
+    # wrong.
+    #
+    # Isolated on purpose rather than driven through a real pipeline start:
+    # the mock adapter's own script always produces a
+    # result_approval_requested event, which (via the pre-existing
+    # approval branch's own cascade) runs a whole small pipeline to full
+    # completion synchronously within one request -- there's no natural
+    # point to catch it "paused after step 1" to exercise the new branch.
+    # This constructs that state directly and checks _advance_pipeline_if_
+    # needed's decision (call followup_task, not approve_task) instead.
+    import app.service as service_module
+    from app.main import orchestrator
+    from app.repository import set_task_pipeline_step, set_task_status
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Pipeline Completed-Only Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={
+                "project_id": project["id"],
+                "title": "Completed-only pipeline task",
+                "prompt": "Do the first thing.",
+                "model": "default",
+            },
+        ).json()
+
+        followup_calls: list[tuple[str, str]] = []
+
+        async def fake_followup_task(self, db, task, content, selected_skill=None):
+            followup_calls.append((task.id, content))
+            return set_task_status(db, task, "running")
+
+        original_followup = service_module.TaskOrchestrator.followup_task
+        original_approve = service_module.TaskOrchestrator.approve_task
+
+        async def failing_approve_task(self, db, task):
+            raise AssertionError("approve_task must not be called when the task is already completed")
+
+        service_module.TaskOrchestrator.followup_task = fake_followup_task
+        service_module.TaskOrchestrator.approve_task = failing_approve_task
+        try:
+            with SessionLocal() as db:
+                db_task = get_task(db, task["id"])
+                db_task.pipeline_id = "fake-pipeline-id"
+                db_task.pipeline_name = "Fake Pipeline"
+                db_task.pipeline_steps_json = json.dumps(
+                    [
+                        {"prompt_id": "p1", "title": "Step 1", "content": "Do the first thing."},
+                        {"prompt_id": "p2", "title": "Step 2", "content": "Do the second thing."},
+                    ]
+                )
+                db_task = set_task_pipeline_step(db, db_task, 0)
+                db_task = set_task_status(db, db_task, "completed")
+
+                db_task = asyncio.run(orchestrator._advance_pipeline_if_needed(db, db_task))
+
+                assert db_task.pipeline_step_index == 1
+        finally:
+            service_module.TaskOrchestrator.followup_task = original_followup
+            service_module.TaskOrchestrator.approve_task = original_approve
+
+        assert followup_calls == [(task["id"], "Do the second thing.")]
+
+
 def test_pipeline_stops_and_reports_failure_when_a_step_fails():
     from app.main import orchestrator
     from app.schemas import RuntimeEvent, RuntimeSession
