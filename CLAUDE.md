@@ -45,7 +45,7 @@ Every module has a docstring; read it before reading the code.
 | Singletons | `runtime_registry.py` — engine adapters, `TaskOrchestrator`, model catalogs |
 | Orchestration | `service.py` — `TaskOrchestrator`, the task lifecycle |
 | Persistence | `models.py` (ORM), `repository.py` (all DB access + serializers), `db.py` |
-| Runtime | `runtime.py` (adapter interface, Codex WebSocket adapter, mock), `claude_adapter.py`, `grok_adapter.py`, `antigravity_adapter.py`, `cli_adapter_git.py` |
+| Runtime | `runtime/` (adapter interface + Codex WebSocket adapter + mock + factory), `claude_adapter.py`, `grok_adapter.py`, `antigravity_adapter.py`, `cli_adapter_git.py` |
 | Workspace | `workspace.py` (branch/worktree per task), `codex_project_trust.py` |
 | Support | `schemas.py`, `streaming.py`, `ttl_cache.py`, `model_catalog.py`, `pr_info.py`, `github_pr.py`, `repo_discovery.py`, `codex_profiles.py`, `app_server_manager.py` |
 
@@ -64,6 +64,14 @@ routers/fs.py               /fs/browse
 Routers import shared state from `runtime_registry.py`, never from `main.py` —
 that is what keeps `main.py → routers → runtime_registry` acyclic. Helpers used
 by more than one router live in `routers/common.py`.
+
+**The runtime package.** `runtime/` holds the `RuntimeAdapter` interface
+(`base.py`) and the two adapters that ship with it — `app_server.py` for Codex
+over WebSocket, `mock.py` for tests — plus `factory.py`, which builds one
+adapter per engine at startup. The CLI engines live in `app/*_adapter.py` and
+import `RuntimeAdapter` from the package. Import from `.runtime`, not its
+submodules; the CLI adapters are imported lazily inside `factory.py` because
+they import back from here.
 
 **Layering rule:** routers do HTTP concerns only. Anything touching a runtime or
 a task's state goes through `TaskOrchestrator`; anything touching the database

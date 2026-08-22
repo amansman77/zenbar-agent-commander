@@ -177,12 +177,12 @@ async def merge_task_pull_request(db: Session, task) -> None:
     """Approving a task also merges the pull request its agent opened.
 
     Tasks are told to open a PR and explicitly not to merge it themselves
-    (see runtime._prompt_with_workspace), so this is what actually gets
-    approved work onto the default branch. Records the outcome as a task
-    event either way and never raises: the approval itself already
-    succeeded by this point, and a merge that can't happen (no PR,
-    conflicts, plan-mode task, missing credential) must not retroactively
-    fail it -- the event log is where the user sees why.
+    (see _prompt_with_workspace in runtime/base.py), so this is what
+    actually gets approved work onto the default branch. Records the
+    outcome as a task event either way and never raises: the approval
+    itself already succeeded by this point, and a merge that can't happen
+    (no PR, conflicts, plan-mode task, missing credential) must not
+    retroactively fail it -- the event log is where the user sees why.
     """
     if task.execution_mode == "plan" or not task.workspace_path:
         return
