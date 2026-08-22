@@ -1248,11 +1248,14 @@ function ConversationDetailScreen({
     staleTime: 10_000,
   });
 
-  // The PR/MR URL only shows up once the agent mentions it in a message
-  // (there's no structured field for it -- see pr_info.py's regex scan),
-  // so this is enabled the same way the diff is and re-checked periodically
-  // rather than depending on some explicit "PR opened" signal.
-  const { data: prInfo } = useQuery({
+  // A conversation can genuinely have more than one PR/MR (retries, several
+  // follow-ups each opening their own) -- every one mentioned shows up,
+  // most recently mentioned first (see pr_info.py's find_all_pr_or_mr_urls).
+  // They only show up once the agent mentions them in a message (there's
+  // no structured field for it), so this is enabled the same way the diff
+  // is and re-checked periodically rather than depending on some explicit
+  // "PR opened" signal.
+  const { data: prInfos } = useQuery({
     queryKey: ["conv-pr-info", conversationId],
     queryFn: () => api.getConversationPrInfo(conversationId),
     enabled: Boolean(taskId),
@@ -1533,26 +1536,27 @@ function ConversationDetailScreen({
             Start typing below to begin the conversation.
           </p>
         )}
-        {activeTab === "diff" && prInfo && (
-          <a href={prInfo.url} target="_blank" rel="noreferrer" className="pr-info-card">
-            <div className="pr-info-card-header">
-              <span
-                className={`status ${
-                  prInfo.state === "merged" ? "status-blue" : prInfo.state === "open" ? "status-green" : "status-red"
-                }`}
-              >
-                {prInfo.platform === "github" ? "GitHub" : "GitLab"} #{prInfo.number} · {prInfo.state}
-              </span>
-            </div>
-            <strong className="pr-info-card-title">{prInfo.title}</strong>
-            {prInfo.source_branch && prInfo.target_branch ? (
-              <span className="item-secondary mono">
-                {prInfo.source_branch} → {prInfo.target_branch}
-              </span>
-            ) : null}
-            {prInfo.description ? <p className="pr-info-card-description">{prInfo.description}</p> : null}
-          </a>
-        )}
+        {activeTab === "diff" &&
+          prInfos?.map((prInfo) => (
+            <a href={prInfo.url} target="_blank" rel="noreferrer" className="pr-info-card" key={prInfo.url}>
+              <div className="pr-info-card-header">
+                <span
+                  className={`status ${
+                    prInfo.state === "merged" ? "status-blue" : prInfo.state === "open" ? "status-green" : "status-red"
+                  }`}
+                >
+                  {prInfo.platform === "github" ? "GitHub" : "GitLab"} #{prInfo.number} · {prInfo.state}
+                </span>
+              </div>
+              <strong className="pr-info-card-title">{prInfo.title}</strong>
+              {prInfo.source_branch && prInfo.target_branch ? (
+                <span className="item-secondary mono">
+                  {prInfo.source_branch} → {prInfo.target_branch}
+                </span>
+              ) : null}
+              {prInfo.description ? <p className="pr-info-card-description">{prInfo.description}</p> : null}
+            </a>
+          ))}
         {activeTab === "diff" && (
           diffData?.raw_diff ? (
             <GroupedDiff

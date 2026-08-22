@@ -73,7 +73,7 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   getConversation: (id: string) => request<ConversationDetail>(`/conversations/${id}`),
-  getConversationPrInfo: (id: string) => request<PrInfo | null>(`/conversations/${id}/pr-info`),
+  getConversationPrInfo: (id: string) => request<PrInfo[]>(`/conversations/${id}/pr-info`),
   deleteConversation: (id: string) =>
     request<void>(`/conversations/${id}`, { method: "DELETE" }),
   addConversationMessage: (id: string, payload: AddConversationMessageRequest) =>

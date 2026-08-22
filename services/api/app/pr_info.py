@@ -32,18 +32,34 @@ _GITHUB_PR_RE = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)"
 _GITLAB_MR_RE = re.compile(r"https://([^/\s]+)/(.+?)/-/merge_requests/(\d+)")
 
 
-def find_latest_pr_or_mr_url(texts: list[str]) -> str | None:
-    """Scan message texts (oldest first) for a PR/MR URL, returning the most
-    recently mentioned one -- an agent's final summary is where this
-    normally shows up ("PR: <url>" / "MR: <url>"), and later mentions
-    should win over earlier ones (e.g. a stale link from an early plan).
+def find_all_pr_or_mr_urls(texts: list[str]) -> list[str]:
+    """Scan message texts (oldest first) for every distinct PR/MR URL
+    mentioned, returning them most-recently-mentioned first -- a longer
+    conversation (retries, several follow-ups each opening their own PR/MR)
+    can genuinely have more than one. A URL mentioned more than once is
+    listed once, at its most recent mention's position.
     """
-    found: str | None = None
+    found: list[str] = []
     for text in texts:
         for regex in (_GITHUB_PR_RE, _GITLAB_MR_RE):
             for match in regex.finditer(text):
-                found = match.group(0)
-    return found
+                url = match.group(0)
+                if url in found:
+                    found.remove(url)
+                found.append(url)
+    return list(reversed(found))
+
+
+def find_latest_pr_or_mr_url(texts: list[str]) -> str | None:
+    """The single most recently mentioned PR/MR URL -- an agent's final
+    summary is where this normally shows up ("PR: <url>" / "MR: <url>"),
+    and later mentions should win over earlier ones (e.g. a stale link from
+    an early plan). Used where only one, authoritative URL makes sense
+    (the diff tab's "which PR/MR's diff do I show" choice) -- see
+    find_all_pr_or_mr_urls for the "list every one" case (the info cards).
+    """
+    urls = find_all_pr_or_mr_urls(texts)
+    return urls[0] if urls else None
 
 
 def _credential_token(host: str) -> str | None:

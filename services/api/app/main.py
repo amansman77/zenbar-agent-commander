@@ -16,7 +16,7 @@ from .codex_profiles import get_profile as get_codex_profile
 from .codex_profiles import list_profiles as list_codex_profiles
 from .codex_project_trust import add_project_trust_entry
 from .github_pr import MergeResult, merge_pull_request_for_branch
-from .pr_info import fetch_pr_or_mr_diff, fetch_pr_or_mr_info, find_latest_pr_or_mr_url
+from .pr_info import fetch_pr_or_mr_diff, fetch_pr_or_mr_info, find_all_pr_or_mr_urls, find_latest_pr_or_mr_url
 from .model_catalog import RuntimeModelCatalog
 from .repository import (
     add_approval,
@@ -408,30 +408,34 @@ def get_conversation_detail(conversation_id: str, db: Session = Depends(get_db))
     return serialize_conversation_detail(conv)
 
 
-@app.get("/conversations/{conversation_id}/pr-info", response_model=PrInfoResponse | None)
+@app.get("/conversations/{conversation_id}/pr-info", response_model=list[PrInfoResponse])
 async def get_conversation_pr_info(conversation_id: str, db: Session = Depends(get_db)):
     conv = get_conversation(db, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     texts = [m.content for m in conv.messages if m.content]
-    url = find_latest_pr_or_mr_url(texts)
-    if url is None:
-        return None
-    info = await fetch_pr_or_mr_info(url)
-    if info is None:
-        return None
-    return PrInfoResponse(
-        platform=info.platform,
-        number=info.number,
-        title=info.title,
-        description=info.description,
-        state=info.state,
-        url=info.url,
-        source_branch=info.source_branch,
-        target_branch=info.target_branch,
-        author=info.author,
-        merged_at=info.merged_at,
-    )
+    urls = find_all_pr_or_mr_urls(texts)
+    if not urls:
+        return []
+    # Most-recently-mentioned first (find_all_pr_or_mr_urls' own order) --
+    # fetched in parallel since a longer conversation can have several.
+    infos = await asyncio.gather(*(fetch_pr_or_mr_info(url) for url in urls))
+    return [
+        PrInfoResponse(
+            platform=info.platform,
+            number=info.number,
+            title=info.title,
+            description=info.description,
+            state=info.state,
+            url=info.url,
+            source_branch=info.source_branch,
+            target_branch=info.target_branch,
+            author=info.author,
+            merged_at=info.merged_at,
+        )
+        for info in infos
+        if info is not None
+    ]
 
 
 @app.delete("/conversations/{conversation_id}", status_code=204)

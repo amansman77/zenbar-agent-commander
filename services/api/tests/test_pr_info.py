@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault("ZENBAR_RUNTIME_MODE", "mock")
 
-from app.pr_info import _diff_from_files, find_latest_pr_or_mr_url
+from app.pr_info import _diff_from_files, find_all_pr_or_mr_urls, find_latest_pr_or_mr_url
 
 
 def test_finds_a_github_pr_url():
@@ -47,6 +47,34 @@ def test_prefers_the_latest_url_even_across_mixed_platforms():
 def test_ignores_unrelated_urls():
     texts = ["참고: https://github.com/yna-team/ohso/issues/91 본문을 확인하세요."]
     assert find_latest_pr_or_mr_url(texts) is None
+
+
+def test_find_all_returns_every_distinct_url_most_recent_first():
+    # A longer conversation (retries, several follow-ups) can genuinely
+    # have opened more than one PR/MR -- all of them should show up, not
+    # just the latest.
+    texts = [
+        "완료했습니다. PR: https://github.com/yna-team/ohso/pull/100",
+        "MR: https://gitlab.inoberry.co.kr:4431/project/sqlgen/sqlgen-ai-webapp/-/merge_requests/1",
+        "다시 시도했습니다. PR: https://github.com/yna-team/ohso/pull/101",
+    ]
+    assert find_all_pr_or_mr_urls(texts) == [
+        "https://github.com/yna-team/ohso/pull/101",
+        "https://gitlab.inoberry.co.kr:4431/project/sqlgen/sqlgen-ai-webapp/-/merge_requests/1",
+        "https://github.com/yna-team/ohso/pull/100",
+    ]
+
+
+def test_find_all_dedupes_a_url_mentioned_more_than_once():
+    texts = [
+        "PR: https://github.com/yna-team/ohso/pull/100",
+        "여전히 열려있습니다: https://github.com/yna-team/ohso/pull/100",
+    ]
+    assert find_all_pr_or_mr_urls(texts) == ["https://github.com/yna-team/ohso/pull/100"]
+
+
+def test_find_all_returns_empty_list_when_no_url_is_present():
+    assert find_all_pr_or_mr_urls(["아직 진행 중입니다."]) == []
 
 
 def test_diff_from_files_synthesizes_the_git_diff_header():
