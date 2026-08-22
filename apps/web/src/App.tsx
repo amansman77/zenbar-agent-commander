@@ -17,6 +17,7 @@ import type {
   RuntimeModelOption,
   RuntimeProfileOption,
   RuntimeSkill,
+  RuntimeUsageInfo,
   ProjectSummary,
   TaskDetail,
   TaskDiff,
@@ -779,6 +780,43 @@ function PrDiffSection({ diff }: { diff: TaskDiff | null }) {
         )
       ) : null}
     </div>
+  );
+}
+
+// The percent-used badge used to put its reset time in a `title` tooltip --
+// invisible on mobile, since there's no hover there. Reported live: "주간
+// 사용량만 나오고 언제 만료인지 몰라서 불편하다" while on mobile. Now a tap
+// toggles a second line showing it instead, which works on both touch and
+// mouse (the tooltip is dropped, not kept as a redundant desktop-only path).
+function UsageBadge({ usage, style }: { usage: RuntimeUsageInfo; style?: React.CSSProperties }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const resetLines = [
+    usage.session ? `세션 리셋: ${usage.session.resets_label ?? "정보 없음"}` : null,
+    usage.week ? `주간 리셋: ${usage.week.resets_label ?? "정보 없음"}` : null,
+  ].filter((line): line is string => Boolean(line));
+
+  return (
+    <span style={{ display: "inline-flex", flexDirection: "column", gap: "2px", ...style }}>
+      <button
+        type="button"
+        onClick={() => setDetailsOpen((prev) => !prev)}
+        disabled={resetLines.length === 0}
+        style={{
+          background: "none",
+          border: "none",
+          padding: 0,
+          font: "inherit",
+          color: "inherit",
+          cursor: resetLines.length > 0 ? "pointer" : "default",
+          textAlign: "left",
+        }}
+      >
+        ⏱{usage.session ? ` 세션 ${usage.session.percent_used}%` : ""}
+        {usage.week ? ` · 주간 ${usage.week.percent_used}%` : ""}
+        {resetLines.length > 0 ? (detailsOpen ? " ▲" : " ▾") : ""}
+      </button>
+      {detailsOpen ? <span style={{ fontSize: "0.68rem", opacity: 0.85 }}>{resetLines.join(" · ")}</span> : null}
+    </span>
   );
 }
 
@@ -1829,18 +1867,7 @@ function ConversationDetailScreen({
             )
           )}
           {usageInfo && (usageInfo.session || usageInfo.week) ? (
-            <span
-              style={{ fontSize: "0.73rem", color: "var(--text-soft)" }}
-              title={[
-                usageInfo.session ? `세션 리셋: ${usageInfo.session.resets_label ?? "-"}` : null,
-                usageInfo.week ? `주간 리셋: ${usageInfo.week.resets_label ?? "-"}` : null,
-              ]
-                .filter(Boolean)
-                .join(" / ")}
-            >
-              ⏱{usageInfo.session ? ` 세션 ${usageInfo.session.percent_used}%` : ""}
-              {usageInfo.week ? ` · 주간 ${usageInfo.week.percent_used}%` : ""}
-            </span>
+            <UsageBadge usage={usageInfo} style={{ fontSize: "0.73rem", color: "var(--text-soft)" }} />
           ) : null}
           {taskId && (
             <button
@@ -4554,18 +4581,8 @@ export function App() {
           {taskDetailUsageInfo && (taskDetailUsageInfo.session || taskDetailUsageInfo.week) ? (
             <div>
               <span className="meta-label">Usage</span>
-              <strong
-                className="break-value"
-                title={[
-                  taskDetailUsageInfo.session ? `세션 리셋: ${taskDetailUsageInfo.session.resets_label ?? "-"}` : null,
-                  taskDetailUsageInfo.week ? `주간 리셋: ${taskDetailUsageInfo.week.resets_label ?? "-"}` : null,
-                ]
-                  .filter(Boolean)
-                  .join(" / ")}
-              >
-                {taskDetailUsageInfo.session ? `세션 ${taskDetailUsageInfo.session.percent_used}%` : ""}
-                {taskDetailUsageInfo.session && taskDetailUsageInfo.week ? " · " : ""}
-                {taskDetailUsageInfo.week ? `주간 ${taskDetailUsageInfo.week.percent_used}%` : ""}
+              <strong className="break-value">
+                <UsageBadge usage={taskDetailUsageInfo} />
               </strong>
             </div>
           ) : null}
