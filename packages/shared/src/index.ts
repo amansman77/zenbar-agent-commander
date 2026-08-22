@@ -1,3 +1,7 @@
+// Types shared by the web app and (by hand) mirrored from the API's Pydantic
+// schemas in services/api/app/schemas.py. There is no code generation here:
+// when a request/response shape changes on one side, change it on the other.
+
 export type TaskStatus =
   | "queued"
   | "starting"

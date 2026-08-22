@@ -1,6 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { App, formatRemainingTime, isNotifyWorthyTransition, parseDiffFiles } from "./App";
+import { App } from "./App";
+import { parseDiffFiles } from "./lib/diff";
+import { formatRemainingTime } from "./lib/format";
+import { isNotifyWorthyTransition } from "./lib/notifications";
 
 let projects: Array<Record<string, unknown>> = [];
 let tasks: Array<Record<string, unknown>> = [];
