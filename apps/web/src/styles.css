@@ -1034,6 +1034,10 @@ textarea {
   gap: 10px;
 }
 
+.log-timeline-load-full {
+  justify-self: start;
+}
+
 .timeline-item {
   border: 1px solid var(--line);
   border-radius: 10px;

@@ -43,7 +43,7 @@ function authHeaders(): Record<string, string> {
   return { "X-Zenbar-Token": API_TOKEN };
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function requestWithHeaders<T>(path: string, init?: RequestInit): Promise<{ data: T; headers: Headers }> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
       "Content-Type": "application/json",
@@ -59,14 +59,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (response.status === 204) {
-    return undefined as T;
+    return { data: undefined as T, headers: response.headers };
   }
 
-  return response.json() as Promise<T>;
+  return { data: (await response.json()) as T, headers: response.headers };
 }
 
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const { data } = await requestWithHeaders<T>(path, init);
+  return data;
+}
+
+// Kept in sync with main.py's own notion of "technical" event types
+// (command_executed, agent_status) -- these dominate a long task's event
+// payload (98% of bytes, measured live) but are collapsed by default in
+// the UI, so getEventsLean excludes them from the default fetch.
+export const TECHNICAL_EVENT_TYPES = ["command_executed", "agent_status"];
+
 export const api = {
-  listConversations: () => request<ConversationSummary[]>("/conversations"),
+  listConversations: (previewCount?: number) =>
+    request<ConversationSummary[]>(
+      previewCount != null ? `/conversations?preview_count=${previewCount}` : "/conversations"
+    ),
+  // Paired with listConversations(previewCount): that response omits
+  // conversations past each project's preview cutoff, so the "더보기 (N)"
+  // button needs the true per-project total from here to show its count
+  // before the user has asked to see the rest.
+  getConversationCounts: () => request<Record<string, number>>("/conversations/counts"),
   createConversation: (payload: CreateConversationRequest = {}) =>
     request<ConversationDetail>("/conversations", {
       method: "POST",
@@ -74,6 +93,12 @@ export const api = {
     }),
   getConversation: (id: string) => request<ConversationDetail>(`/conversations/${id}`),
   getConversationPrInfo: (id: string) => request<PrInfo[]>(`/conversations/${id}/pr-info`),
+  // pr-info's own diff has raw_diff stripped (that list is polled every
+  // 15s while a task is active; raw_diff is where nearly all of its
+  // payload lives) -- this fetches one specific card's full diff, called
+  // only once that card is actually expanded.
+  getConversationPrDiff: (id: string, url: string) =>
+    request<TaskDiff>(`/conversations/${id}/pr-diff?url=${encodeURIComponent(url)}`),
   deleteConversation: (id: string) =>
     request<void>(`/conversations/${id}`, { method: "DELETE" }),
   addConversationMessage: (id: string, payload: AddConversationMessageRequest) =>
@@ -150,6 +175,22 @@ export const api = {
   deleteTask: (taskId: string) =>
     request<void>(`/tasks/${taskId}`, { method: "DELETE" }),
   getEvents: (taskId: string) => request<TaskEvent[]>(`/tasks/${taskId}/events`),
+  getEventsLean: async (
+    taskId: string
+  ): Promise<{ events: TaskEvent[]; hiddenTechnicalCount: number; latestEventAt: string | null }> => {
+    const { data, headers } = await requestWithHeaders<TaskEvent[]>(
+      `/tasks/${taskId}/events?exclude_types=${TECHNICAL_EVENT_TYPES.join(",")}`
+    );
+    return {
+      events: data,
+      hiddenTechnicalCount: Number(headers.get("X-Excluded-Event-Count") ?? 0),
+      // The excluded types are usually exactly what was most recently
+      // happening, so "last event in this filtered list" would understate
+      // how recently active the task really is -- the backend computes
+      // this over the true full event history instead.
+      latestEventAt: headers.get("X-Latest-Event-At")
+    };
+  },
   getDiff: (taskId: string) => request<TaskDiff>(`/tasks/${taskId}/diff`),
   approveTask: (taskId: string, payload: ApproveTaskRequest) =>
     request<TaskDetail>(`/tasks/${taskId}/approve`, {

@@ -7,6 +7,8 @@ let tasks: Array<Record<string, unknown>> = [];
 let taskDetail: Record<string, unknown> | null = null;
 let taskEvents: Array<Record<string, unknown>> = [];
 let taskDiff: Record<string, unknown> = { files_changed: [], summary: "", raw_diff: null };
+let conversations: Array<Record<string, unknown>> = [];
+let conversationCounts: Record<string, number> = {};
 
 const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = input.toString();
@@ -125,8 +127,37 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
   if (url.endsWith("/tasks/task-1")) {
     return new Response(JSON.stringify(taskDetail), { status: 200 });
   }
-  if (url.endsWith("/tasks/task-1/events")) {
-    return new Response(JSON.stringify(taskEvents), { status: 200 });
+  if (url.includes("/tasks/task-1/events")) {
+    // Mirrors the real endpoint: ?exclude_types=... filters server-side and
+    // reports the hidden count via a response header rather than the body.
+    const excludeTypes = new URL(url).searchParams.get("exclude_types")?.split(",") ?? [];
+    const filtered =
+      excludeTypes.length > 0 ? taskEvents.filter((e) => !excludeTypes.includes(e.type as string)) : taskEvents;
+    return new Response(JSON.stringify(filtered), {
+      status: 200,
+      headers: excludeTypes.length > 0 ? { "X-Excluded-Event-Count": String(taskEvents.length - filtered.length) } : {}
+    });
+  }
+  if (url.endsWith("/conversations/counts")) {
+    return new Response(JSON.stringify(conversationCounts), { status: 200 });
+  }
+  if (url.includes("/conversations") && url.includes("preview_count")) {
+    // Mirrors list_conversations' own preview_count filtering: cap each
+    // project to its preview_count most-recently-updated conversations,
+    // keeping any with an active task regardless of position.
+    const previewCount = Number(new URL(url).searchParams.get("preview_count"));
+    const seenPerProject: Record<string, number> = {};
+    const activeStatuses = new Set(["queued", "starting", "running", "waiting_user_input", "waiting_result_approval"]);
+    const preview = conversations.filter((conv) => {
+      const key = String(conv.project_id ?? "__no_project__");
+      const seen = seenPerProject[key] ?? 0;
+      seenPerProject[key] = seen + 1;
+      return seen < previewCount || activeStatuses.has(String(conv.task_status ?? ""));
+    });
+    return new Response(JSON.stringify(preview), { status: 200 });
+  }
+  if (url.endsWith("/conversations")) {
+    return new Response(JSON.stringify(conversations), { status: 200 });
   }
   if (url.endsWith("/tasks/task-1/diff")) {
     return new Response(JSON.stringify(taskDiff), { status: 200 });
@@ -217,6 +248,8 @@ describe("App", () => {
     taskDetail = null;
     taskEvents = [];
     taskDiff = { files_changed: [], summary: "", raw_diff: null };
+    conversations = [];
+    conversationCounts = {};
     window.localStorage.clear();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -979,5 +1012,142 @@ describe("App", () => {
         })
       );
     });
+  });
+
+  it("hides technical events by default and loads them only when the user asks", async () => {
+    // Regression/feature test: command_executed and agent_status events
+    // used to always be fetched in full (98% of a long task's payload,
+    // measured live), even though the timeline keeps them collapsed by
+    // default -- now the default fetch excludes them, and a "load full
+    // timeline" button pulls them in only when tapped.
+    projects = [
+      {
+        id: "project-1",
+        name: "agent-commander",
+        repo_path: "/Users/hosung/Workspace/zenbar/agent-commander",
+        default_branch: "main",
+        created_at: new Date().toISOString()
+      }
+    ];
+    tasks = [
+      {
+        id: "task-1",
+        project_id: "project-1",
+        title: "Run migration",
+        status: "completed",
+        execution_mode: "execute",
+        workspace_type: "branch",
+        workspace_ref: "task/run-migration-a1b2",
+        workspace_path: "/tmp/workspace",
+        runtime_session_id: "mock-task-1",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }
+    ];
+    taskEvents = [
+      {
+        id: "event-1",
+        task_id: "task-1",
+        seq: 1,
+        type: "command_executed",
+        message: "pnpm test",
+        payload_json: null,
+        created_at: new Date().toISOString()
+      },
+      {
+        id: "event-2",
+        task_id: "task-1",
+        seq: 2,
+        type: "completed",
+        message: "Task completed",
+        payload_json: null,
+        created_at: new Date().toISOString()
+      }
+    ];
+    taskDetail = {
+      ...tasks[0],
+      prompt: "Run the migration",
+      project: projects[0],
+      approvals: [],
+      latest_diff: { files_changed: [], summary: "", raw_diff: null },
+      pending_interaction_type: null,
+      pending_request_id: null,
+      pending_request_payload_json: null,
+      pending_questions: []
+    };
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <App />
+      </QueryClientProvider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /agent-commander/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /run migration/i }));
+
+    const loadFullButton = await screen.findByRole("button", { name: "실행 로그 1건 더 보기" });
+    // The technical event is excluded by default -- its execution summary
+    // ("ran N commands") must not appear until the button is tapped.
+    expect(screen.queryByText(/ran \d+ commands/)).not.toBeInTheDocument();
+
+    fireEvent.click(loadFullButton);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/tasks\/task-1\/events$/), expect.anything());
+    });
+    expect(await screen.findByText(/ran \d+ commands/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "실행 로그 1건 더 보기" })).not.toBeInTheDocument();
+  });
+
+  it("shows only the preview-count conversations per project until 더보기 is tapped", async () => {
+    // Regression/feature test: the conversations list is polled repeatedly
+    // while the dashboard is open, but a project with many conversations
+    // only shows the first few by default -- the rest used to be fetched
+    // and thrown away on every single poll. Now the default fetch itself
+    // is capped server-side (preview_count), with the true total (for the
+    // "더보기 (N)" label) coming from a separate, much smaller endpoint,
+    // and the full list only fetched once the user actually asks for it.
+    window.localStorage.setItem(
+      "zenbar:lastView",
+      JSON.stringify({
+        mobileScreen: "conversations",
+        desktopView: "chat",
+        selectedConversationId: null,
+        selectedProjectId: null,
+        selectedTaskId: null
+      })
+    );
+    const allFive = Array.from({ length: 5 }, (_, i) => ({
+      id: `conv-${i}`,
+      title: `Conversation ${i}`,
+      last_message: null,
+      project_id: "project-1",
+      project_name: "agent-commander",
+      task_id: null,
+      task_status: null,
+      updated_at: new Date(2026, 0, 1, 0, i).toISOString()
+    })).reverse(); // most-recently-updated first, matching the real endpoint's ordering
+    conversations = allFive;
+    conversationCounts = { "project-1": 5 };
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <App />
+      </QueryClientProvider>
+    );
+
+    expect(await screen.findByText("Conversation 4")).toBeInTheDocument();
+    expect(screen.getByText("Conversation 3")).toBeInTheDocument();
+    expect(screen.getByText("Conversation 2")).toBeInTheDocument();
+    // Preview caps at 3 -- the older two aren't rendered (and, before the
+    // 더보기 tap, were never actually fetched either).
+    expect(screen.queryByText("Conversation 1")).not.toBeInTheDocument();
+    expect(screen.queryByText("Conversation 0")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "더보기 (2)" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "더보기 (2)" }));
+
+    expect(await screen.findByText("Conversation 1")).toBeInTheDocument();
+    expect(screen.getByText("Conversation 0")).toBeInTheDocument();
   });
 });

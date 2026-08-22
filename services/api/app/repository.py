@@ -426,9 +426,30 @@ def replace_diff(db: Session, task: Task, diff: TaskDiff) -> Task:
     return get_task(db, task.id)
 
 
-def list_events(db: Session, task_id: str) -> list[TaskEvent]:
-    stmt = select(TaskEvent).where(TaskEvent.task_id == task_id).order_by(TaskEvent.seq.asc())
+def list_events(db: Session, task_id: str, exclude_types: set[str] | None = None) -> list[TaskEvent]:
+    stmt = select(TaskEvent).where(TaskEvent.task_id == task_id)
+    if exclude_types:
+        stmt = stmt.where(TaskEvent.type.notin_(exclude_types))
+    stmt = stmt.order_by(TaskEvent.seq.asc())
     return list(db.scalars(stmt))
+
+
+def latest_event_at(db: Session, task_id: str):
+    # task.updated_at is NOT a reliable proxy for this: SQLAlchemy only
+    # emits an UPDATE (and bumps onupdate=utcnow) when a tracked attribute
+    # actually changes, and most command_executed/agent_status events don't
+    # touch any Task column -- confirmed live, a real task's updated_at sat
+    # 34 minutes stale behind its actual last event. Needed so the "last
+    # activity" timestamp stays accurate even when the lean events fetch
+    # (list_events with exclude_types) omits the type of event that was
+    # actually most recent.
+    stmt = select(TaskEvent.created_at).where(TaskEvent.task_id == task_id).order_by(TaskEvent.seq.desc()).limit(1)
+    return db.scalar(stmt)
+
+
+def count_events(db: Session, task_id: str, types: set[str]) -> int:
+    stmt = select(func.count()).select_from(TaskEvent).where(TaskEvent.task_id == task_id, TaskEvent.type.in_(types))
+    return db.scalar(stmt) or 0
 
 
 def add_approval(db: Session, task: Task, action: str, actor: str) -> TaskApproval:
@@ -553,7 +574,10 @@ def create_conversation(db: Session, payload: CreateConversationRequest) -> Conv
     return conv
 
 
-def list_conversations(db: Session) -> list[Conversation]:
+_ACTIVE_TASK_STATUSES = {"queued", "starting", "running", "waiting_user_input", "waiting_result_approval"}
+
+
+def list_conversations(db: Session, preview_count: int | None = None) -> list[Conversation]:
     stmt = (
         select(Conversation)
         .options(
@@ -563,7 +587,33 @@ def list_conversations(db: Session) -> list[Conversation]:
         )
         .order_by(Conversation.updated_at.desc())
     )
-    return list(db.scalars(stmt))
+    conversations = list(db.scalars(stmt))
+    if preview_count is None:
+        return conversations
+    # Per-project preview: the first `preview_count` conversations for each
+    # project (already in updated_at-desc order, so this is "most recently
+    # active"), PLUS any conversation with a still-running task regardless
+    # of its position -- without that carve-out, a conversation whose task
+    # completes while sitting past the preview cutoff would never surface
+    # a completion notification, since the poller watching for status
+    # transitions (useTaskCompletionNotifications) would simply never see
+    # it. Measured live: this cuts a 32-conversation/35KB response down to
+    # the ~7 conversations actually visible by default (~78% smaller).
+    seen_per_project: dict[str | None, int] = {}
+    preview: list[Conversation] = []
+    for conv in conversations:
+        key = conv.project_id
+        seen = seen_per_project.get(key, 0)
+        is_active = conv.task is not None and conv.task.status in _ACTIVE_TASK_STATUSES
+        if seen < preview_count or is_active:
+            preview.append(conv)
+        seen_per_project[key] = seen + 1
+    return preview
+
+
+def count_conversations_by_project(db: Session) -> dict[str | None, int]:
+    stmt = select(Conversation.project_id, func.count()).group_by(Conversation.project_id)
+    return dict(db.execute(stmt).all())
 
 
 def get_conversation(db: Session, conversation_id: str) -> Conversation | None:

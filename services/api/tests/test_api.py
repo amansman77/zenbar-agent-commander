@@ -2213,7 +2213,7 @@ def test_conversation_pr_info_attaches_each_prs_own_diff():
 
         def fake_diff(url: str) -> TaskDiff:
             files = [f"file-{11 if url == first_url else 22}.py"]
-            return TaskDiff(files_changed=files, summary="Updated 1 file(s).", raw_diff=None)
+            return TaskDiff(files_changed=files, summary="Updated 1 file(s).", raw_diff=f"diff --git a/{files[0]} ...")
 
         async def fake_fetch_pr_or_mr_info(url: str):
             return fake_info(url)
@@ -2239,3 +2239,154 @@ def test_conversation_pr_info_attaches_each_prs_own_diff():
         assert [item["url"] for item in body] == [second_url, first_url]
         assert body[0]["diff"]["files_changed"] == ["file-22.py"]
         assert body[1]["diff"]["files_changed"] == ["file-11.py"]
+        # Regression: this list is polled every 15s while a task is active,
+        # and raw_diff is where nearly all of the payload lives (measured
+        # live: 95KB of a 110KB response) -- must be stripped here even
+        # though the underlying fetch has one, since the collapsed
+        # "변경 파일 보기 (N)" toggle only needs files_changed.
+        assert body[0]["diff"]["raw_diff"] is None
+        assert body[1]["diff"]["raw_diff"] is None
+
+        # The full diff (with raw_diff) is available on demand, scoped to
+        # URLs actually mentioned in this conversation.
+        main_module.fetch_pr_or_mr_diff = fake_fetch_pr_or_mr_diff
+        try:
+            on_demand = client.get(f"/conversations/{conversation['id']}/pr-diff", params={"url": first_url})
+        finally:
+            main_module.fetch_pr_or_mr_diff = original_diff
+        assert on_demand.status_code == 200
+        assert on_demand.json()["raw_diff"] == "diff --git a/file-11.py ..."
+
+        not_mentioned = client.get(
+            f"/conversations/{conversation['id']}/pr-diff",
+            params={"url": "https://github.com/acme/widgets/pull/999"},
+        )
+        assert not_mentioned.status_code == 404
+
+
+def test_get_task_events_excludes_technical_types_and_reports_hidden_count():
+    # Regression: command_executed/agent_status events dominate a
+    # long-running task's payload (measured live: 98% of bytes on a
+    # 9655-event task) while the frontend already keeps them collapsed
+    # behind an "Expand"/"View technical events" toggle by default -- so
+    # fetching their full bodies on every poll was pure waste. exclude_types
+    # filters them out server-side; the hidden count still needs to reach
+    # the frontend (for the toggle's label) without changing the response
+    # shape, so it rides along as a header.
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Events Filter Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Events Filter Task", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        unfiltered = client.get(f"/tasks/{task['id']}/events")
+        assert unfiltered.status_code == 200
+        # No filter applied -> no header, unchanged from before this feature existed.
+        assert "X-Excluded-Event-Count" not in unfiltered.headers
+        baseline_technical = sum(
+            1 for e in unfiltered.json() if e["type"] in ("command_executed", "agent_status")
+        )
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            for i in range(3):
+                append_event(db, current, RuntimeEvent(type="command_executed", message=f"cmd {i}"))
+            append_event(db, current, RuntimeEvent(type="agent_status", message="thinking"))
+            append_event(db, current, RuntimeEvent(type="plan_updated", message="plan", payload={"plan": []}))
+
+        filtered = client.get(f"/tasks/{task['id']}/events?exclude_types=command_executed,agent_status")
+        assert filtered.status_code == 200
+        filtered_types = [e["type"] for e in filtered.json()]
+        assert "command_executed" not in filtered_types
+        assert "agent_status" not in filtered_types
+        assert "plan_updated" in filtered_types
+        # 3 command_executed + 1 agent_status just added, plus whatever the
+        # mock adapter's own task startup already produced.
+        assert filtered.headers["X-Excluded-Event-Count"] == str(baseline_technical + 4)
+
+
+def test_conversations_preview_count_limits_per_project_but_keeps_active_tasks():
+    # Regression/feature: the conversations list is polled repeatedly while
+    # the dashboard is open (measured live: 35KB every 8s just from this),
+    # but the UI only shows the first few per project by default -- most of
+    # that payload was never even rendered. preview_count caps how many
+    # conversations per project come back, EXCEPT any conversation whose
+    # task is still active, which must always be included regardless of
+    # position -- otherwise a task that completes past the cutoff would
+    # never trigger the frontend's completion-notification watcher.
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import update
+
+    from app.models import Conversation
+    from app.repository import set_task_status
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Preview Count Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+
+        conversation_ids: list[str] = []
+        for i in range(5):
+            conv = client.post(
+                "/conversations",
+                json={"project_id": project["id"], "title": f"Conversation {i}"},
+            ).json()
+            conversation_ids.append(conv["id"])
+            # Space out updated_at so ordering (most-recent-first) is
+            # deterministic instead of depending on same-millisecond ties.
+            with SessionLocal() as db:
+                db.execute(
+                    update(Conversation)
+                    .where(Conversation.id == conv["id"])
+                    .values(updated_at=datetime(2026, 1, 1) + timedelta(minutes=i))
+                )
+                db.commit()
+
+        # The oldest one (index 0, last in updated_at-desc order -- past a
+        # preview_count=2 cutoff) gets an active task attached directly, to
+        # prove it survives the cutoff on that basis alone.
+        oldest_conv_id = conversation_ids[0]
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Still running", "prompt": "Do work", "model": "default"},
+        ).json()
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            set_task_status(db, current, "running")
+            # task_id and updated_at set together in one statement: setting
+            # task_id alone would trigger the column's onupdate=utcnow
+            # default and silently overwrite the deliberately-old
+            # updated_at back to "now" (onupdate only applies to columns
+            # NOT explicitly included in values()), which would defeat the
+            # point of this conversation being past the preview cutoff.
+            db.execute(
+                update(Conversation)
+                .where(Conversation.id == oldest_conv_id)
+                .values(task_id=task["id"], updated_at=datetime(2026, 1, 1))
+            )
+            db.commit()
+
+        unfiltered = client.get("/conversations")
+        assert unfiltered.status_code == 200
+        assert len([c for c in unfiltered.json() if c["project_id"] == project["id"]]) == 5
+
+        preview = client.get("/conversations", params={"preview_count": 2})
+        assert preview.status_code == 200
+        preview_ids = [c["id"] for c in preview.json() if c["project_id"] == project["id"]]
+        # Newest 2 (indices 4, 3) plus the active-task one (index 0), even
+        # though index 0 is otherwise well past the preview_count=2 cutoff.
+        assert set(preview_ids) == {conversation_ids[4], conversation_ids[3], oldest_conv_id}
+
+        counts = client.get("/conversations/counts")
+        assert counts.status_code == 200
+        assert counts.json()[project["id"]] == 5

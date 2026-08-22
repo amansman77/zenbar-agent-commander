@@ -26,6 +26,8 @@ from .repository import (
     can_approve,
     can_retry,
     can_stop,
+    count_conversations_by_project,
+    count_events,
     create_conversation,
     delete_conversation,
     delete_task,
@@ -43,6 +45,7 @@ from .repository import (
     get_project_prompt,
     get_task,
     get_task_by_session_id,
+    latest_event_at,
     list_conversations,
     list_events,
     list_project_pipelines,
@@ -267,6 +270,11 @@ app.add_middleware(
     allow_credentials=_allow_credentials_for(origins),
     allow_methods=["*"],
     allow_headers=["*"],
+    # Browsers only expose the CORS-safelisted response headers to JS by
+    # default -- without this, fetch()'s Response.headers.get() would come
+    # back null for this custom header on every cross-origin request (the
+    # normal case here: the web app runs on a different port than the API).
+    expose_headers=["X-Excluded-Event-Count", "X-Latest-Event-At"],
 )
 
 
@@ -391,9 +399,19 @@ def post_project_discovery(payload: DiscoverProjectRequest | None = None):
 
 
 @app.get("/conversations", response_model=list[ConversationSummary])
-def get_conversations(db: Session = Depends(get_db)):
-    convs = list_conversations(db)
+def get_conversations(db: Session = Depends(get_db), preview_count: int | None = Query(default=None)):
+    convs = list_conversations(db, preview_count=preview_count)
     return [serialize_conversation_summary(c) for c in convs]
+
+
+@app.get("/conversations/counts", response_model=dict[str, int])
+def get_conversation_counts(db: Session = Depends(get_db)):
+    # Paired with GET /conversations?preview_count=N: that response omits
+    # conversations past each project's preview cutoff, so the "더보기 (N)"
+    # button needs the true per-project total from somewhere else to show
+    # its count before the user has actually asked to see the rest.
+    counts = count_conversations_by_project(db)
+    return {(project_id or "__no_project__"): count for project_id, count in counts.items()}
 
 
 @app.post("/conversations", response_model=ConversationDetail, status_code=201)
@@ -423,10 +441,9 @@ async def get_conversation_pr_info(conversation_id: str, db: Session = Depends(g
     # Most-recently-mentioned first (find_all_pr_or_mr_urls' own order) --
     # fetched in parallel since a longer conversation can have several. Each
     # PR/MR's own diff is fetched alongside its info (both TTL-cached by
-    # pr_info.py, so this doesn't add real API calls beyond what the diff
-    # tab already made) and attached to that card specifically -- without
-    # this, several cards next to one flat file list left no way to tell
-    # which files belonged to which PR/MR.
+    # pr_info.py) to attach a files_changed list to that card specifically
+    # -- without this, several cards next to one flat file list left no way
+    # to tell which files belonged to which PR/MR.
     infos, diffs = await asyncio.gather(
         asyncio.gather(*(fetch_pr_or_mr_info(url) for url in urls)),
         asyncio.gather(*(fetch_pr_or_mr_diff(url) for url in urls)),
@@ -443,11 +460,34 @@ async def get_conversation_pr_info(conversation_id: str, db: Session = Depends(g
             target_branch=info.target_branch,
             author=info.author,
             merged_at=info.merged_at,
-            diff=diff,
+            # raw_diff dropped here -- this list is polled every 15s while
+            # a task is active, and raw_diff is where nearly all of the
+            # payload lives (measured live: 95KB of a 110KB response, for
+            # cards the user hadn't even expanded). files_changed (just
+            # filenames) is what the collapsed "변경 파일 보기 (N)" toggle
+            # actually needs; the full diff is fetched separately, on
+            # demand, only once a specific card is expanded (see
+            # get_conversation_pr_diff below).
+            diff=diff.model_copy(update={"raw_diff": None}) if diff else None,
         )
         for info, diff in zip(infos, diffs)
         if info is not None
     ]
+
+
+@app.get("/conversations/{conversation_id}/pr-diff", response_model=TaskDiff)
+async def get_conversation_pr_diff(conversation_id: str, url: str, db: Session = Depends(get_db)):
+    conv = get_conversation(db, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    texts = [m.content for m in conv.messages if m.content]
+    # Scoped to PR/MR URLs actually mentioned in this conversation, rather
+    # than accepting any URL -- keeps this from doubling as an open GitHub/
+    # GitLab diff proxy for whatever URL a caller passes in.
+    if url not in find_all_pr_or_mr_urls(texts):
+        raise HTTPException(status_code=404, detail="PR/MR not found in this conversation")
+    diff = await fetch_pr_or_mr_diff(url)
+    return diff or TaskDiff()
 
 
 @app.delete("/conversations/{conversation_id}", status_code=204)
@@ -704,12 +744,37 @@ async def get_task_detail(task_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/tasks/{task_id}/events", response_model=list[TaskEventResponse])
-async def get_task_events(task_id: str, db: Session = Depends(get_db)):
+async def get_task_events(
+    task_id: str,
+    response: Response,
+    db: Session = Depends(get_db),
+    exclude_types: str | None = Query(default=None),
+):
     task = get_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     task = await _reconcile_and_ensure_task_runtime_stream(task, db)
-    return [serialize_event(item) for item in list_events(db, task_id)]
+    excluded: set[str] = {t.strip() for t in exclude_types.split(",") if t.strip()} if exclude_types else set()
+    # For a long-running task, command_executed/agent_status events are the
+    # overwhelming majority of both event count and payload size (measured
+    # live: 98% of bytes on a 9655-event task) -- and the frontend already
+    # keeps them collapsed behind an "Expand"/"View technical events" toggle
+    # by default, so fetching their full bodies before the user ever opens
+    # that toggle was pure waste. The excluded count still needs to reach
+    # the frontend somehow without changing this endpoint's response shape
+    # (a plain list, for backward compatibility with the unfiltered case),
+    # so it rides along as a header instead.
+    if excluded:
+        response.headers["X-Excluded-Event-Count"] = str(count_events(db, task_id, excluded))
+        # The excluded types are usually exactly what was most recently
+        # happening (a running task's tail is mostly command_executed/
+        # agent_status) -- without this, "last activity" would read as
+        # stale for as long as the excluded types keep being the newest
+        # ones, which is most of the time for an active task.
+        latest_at = latest_event_at(db, task_id)
+        if latest_at is not None:
+            response.headers["X-Latest-Event-At"] = latest_at.isoformat()
+    return [serialize_event(item) for item in list_events(db, task_id, exclude_types=excluded or None)]
 
 
 @app.get("/tasks/{task_id}/diff", response_model=TaskDiff)

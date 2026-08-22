@@ -26,7 +26,7 @@ import type {
   TaskQuestion,
   TaskStatus
 } from "@zenbar/shared";
-import { api } from "./api";
+import { api, TECHNICAL_EVENT_TYPES } from "./api";
 
 const actor = "web-commander";
 const LAST_TASK_MODEL_KEY = "zenbar:lastTaskModel";
@@ -402,10 +402,27 @@ function useTaskStream(taskId: string | null) {
     const source = new EventSource(api.streamUrl(taskId));
     source.onmessage = (event) => {
       const payload = JSON.parse(event.data) as { event: TaskEvent; task: TaskDetail; diff: TaskDiff };
+      const isTechnical = (TECHNICAL_EVENT_TYPES as string[]).includes(payload.event.type);
       queryClient.setQueryData(["task", taskId], payload.task);
-      queryClient.setQueryData(["task-events", taskId], (previous: TaskEvent[] | undefined) => {
+      queryClient.setQueryData(
+        ["task-events", taskId, "lean"],
+        (previous: { events: TaskEvent[]; hiddenTechnicalCount: number; latestEventAt: string | null } | undefined) => {
+          const base = previous ?? { events: [], hiddenTechnicalCount: 0, latestEventAt: null };
+          const alreadyPresent = base.events.some((item) => item.id === payload.event.id);
+          return {
+            events: !isTechnical && !alreadyPresent ? [...base.events, payload.event] : base.events,
+            hiddenTechnicalCount: isTechnical ? base.hiddenTechnicalCount + 1 : base.hiddenTechnicalCount,
+            latestEventAt: payload.event.created_at
+          };
+        }
+      );
+      // The full (unfiltered) cache is only ever created by the user
+      // explicitly tapping "load full timeline" -- don't spontaneously
+      // create it here, that would silently skip the REST fetch that's
+      // supposed to backfill everything older than this one live event.
+      queryClient.setQueryData(["task-events", taskId, "full"], (previous: TaskEvent[] | undefined) => {
         if (!previous) {
-          return [payload.event];
+          return previous;
         }
         if (previous.some((item) => item.id === payload.event.id)) {
           return previous;
@@ -749,13 +766,28 @@ function GroupedDiff({
 // nested under that specific card so a conversation with several PR/MRs
 // makes it obvious which files belong to which, instead of one flat file
 // list below all the cards with no way to tell them apart.
-function PrDiffSection({ diff }: { diff: TaskDiff | null }) {
+//
+// `diff` (from the pr-info list) never carries raw_diff -- that list is
+// polled every 15s while a task is active, and raw_diff is where nearly
+// all of a real diff's payload lives (measured live: 95KB of a 110KB
+// response, for cards nobody had even expanded yet). Expanding a card
+// fetches its full diff separately, on demand, via its own URL.
+function PrDiffSection({ conversationId, url, diff }: { conversationId: string; url: string; diff: TaskDiff | null }) {
   const [showFiles, setShowFiles] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  const fullDiffQuery = useQuery({
+    queryKey: ["conv-pr-diff", conversationId, url],
+    queryFn: () => api.getConversationPrDiff(conversationId, url),
+    enabled: showFiles,
+    staleTime: 60_000
+  });
 
   if (!diff || diff.files_changed.length === 0) {
     return null;
   }
+
+  const rawDiff = fullDiffQuery.data?.raw_diff ?? null;
 
   return (
     <div className="pr-info-card-diff">
@@ -763,13 +795,15 @@ function PrDiffSection({ diff }: { diff: TaskDiff | null }) {
         {showFiles ? "변경 파일 접기" : `변경 파일 보기 (${diff.files_changed.length})`}
       </button>
       {showFiles ? (
-        diff.raw_diff ? (
+        rawDiff ? (
           <GroupedDiff
-            rawDiff={diff.raw_diff}
+            rawDiff={rawDiff}
             filesChanged={diff.files_changed}
             expanded={expanded}
             onToggle={(id) => setExpanded((prev) => ({ ...prev, [id]: !prev[id] }))}
           />
+        ) : fullDiffQuery.isFetching ? (
+          <p className="empty-state">불러오는 중...</p>
         ) : (
           <ul className="pr-info-card-diff-filelist">
             {diff.files_changed.map((file) => (
@@ -959,7 +993,19 @@ function TechnicalEventsBlock({ events, mobile }: { events: TaskEvent[]; mobile:
   );
 }
 
-function StructuredLogTab({ events, mobile }: { events: TaskEvent[]; mobile: boolean }) {
+function StructuredLogTab({
+  events,
+  mobile,
+  hiddenTechnicalCount,
+  onLoadFullTimeline,
+  isLoadingFullTimeline
+}: {
+  events: TaskEvent[];
+  mobile: boolean;
+  hiddenTechnicalCount: number;
+  onLoadFullTimeline: () => void;
+  isLoadingFullTimeline: boolean;
+}) {
   const items = useMemo(() => buildTimelineItems(events), [events]);
 
   return (
@@ -976,6 +1022,17 @@ function StructuredLogTab({ events, mobile }: { events: TaskEvent[]; mobile: boo
         }
         return <TechnicalEventsBlock key={item.id} events={item.events} mobile={mobile} />;
       })}
+      {hiddenTechnicalCount > 0 && (
+        // Execution/technical events are excluded from the default fetch
+        // (98% of a long task's payload, measured live, for content that's
+        // collapsed by default anyway) -- this button fetches the full,
+        // unfiltered event list once tapped, which re-renders this same
+        // timeline with the execution/technical blocks slotted back into
+        // their normal interspersed positions above.
+        <button type="button" className="secondary log-timeline-load-full" onClick={onLoadFullTimeline} disabled={isLoadingFullTimeline}>
+          {isLoadingFullTimeline ? "불러오는 중..." : `실행 로그 ${hiddenTechnicalCount}건 더 보기`}
+        </button>
+      )}
     </div>
   );
 }
@@ -1015,6 +1072,7 @@ function SessionComposer({
 
 function ConversationListScreen({
   conversations,
+  conversationCounts,
   projects,
   isLoading,
   onSelect,
@@ -1022,7 +1080,13 @@ function ConversationListScreen({
   onDelete,
   onManageProjects,
 }: {
+  // The default-visible preview (server-side capped per project, see
+  // list_conversations' own docstring) -- NOT the full set, so
+  // group.conversations.length here is only accurate up to the preview
+  // cutoff. conversationCounts (keyed by project_id, "__no_project__" for
+  // none) carries each project's true total for the "더보기 (N)" label.
   conversations: ConversationSummary[];
+  conversationCounts: Record<string, number>;
   projects: ProjectSummary[];
   isLoading: boolean;
   onSelect: (id: string) => void;
@@ -1033,7 +1097,22 @@ function ConversationListScreen({
 }) {
   const [projectSheetOpen, setProjectSheetOpen] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
-  const groups = useMemo(() => groupConversationsByProject(conversations), [conversations]);
+
+  // Expanding any single group needs that project's full conversation
+  // list, which the preview response doesn't carry -- fetched once,
+  // covering every project, rather than adding one query per expanded
+  // group (a user who expands two groups shouldn't pay for two separate
+  // full-list round trips when one already has everything).
+  const anyExpanded = Object.values(expandedGroups).some(Boolean);
+  const fullConversationsQuery = useQuery({
+    queryKey: ["conversations", "full"],
+    queryFn: () => api.listConversations(),
+    enabled: anyExpanded,
+    staleTime: 30_000
+  });
+  const effectiveConversations =
+    anyExpanded && fullConversationsQuery.data ? fullConversationsQuery.data : conversations;
+  const groups = useMemo(() => groupConversationsByProject(effectiveConversations), [effectiveConversations]);
 
   return (
     <section className="panel mobile-screen">
@@ -1058,7 +1137,13 @@ function ConversationListScreen({
           const visibleConversations = isExpanded
             ? group.conversations
             : group.conversations.slice(0, CONVERSATION_GROUP_PREVIEW_COUNT);
-          const hiddenCount = group.conversations.length - visibleConversations.length;
+          // group.conversations.length is only the true total once
+          // effectiveConversations has switched to the full list (i.e.
+          // once anyExpanded); before that it's just the preview count, so
+          // conversationCounts is the source of truth for how many are
+          // actually hidden.
+          const totalForGroup = conversationCounts[group.key] ?? group.conversations.length;
+          const hiddenCount = isExpanded ? 0 : Math.max(0, totalForGroup - visibleConversations.length);
           return (
             <div key={group.key}>
               <div className="conversation-group-header">{group.projectName ?? "프로젝트 없음"}</div>
@@ -1094,7 +1179,7 @@ function ConversationListScreen({
                   더보기 ({hiddenCount})
                 </button>
               ) : null}
-              {isExpanded && group.conversations.length > CONVERSATION_GROUP_PREVIEW_COUNT ? (
+              {isExpanded && totalForGroup > CONVERSATION_GROUP_PREVIEW_COUNT ? (
                 <button
                   type="button"
                   className="secondary conversation-group-more-button"
@@ -1670,7 +1755,7 @@ function ConversationDetailScreen({
                 ) : null}
                 {prInfo.description ? <p className="pr-info-card-description">{prInfo.description}</p> : null}
               </a>
-              <PrDiffSection diff={prInfo.diff} />
+              <PrDiffSection conversationId={conversationId} url={prInfo.url} diff={prInfo.diff} />
             </div>
           ))}
         {activeTab === "diff" && (prInfos?.length ?? 0) === 0 && (
@@ -3932,10 +4017,30 @@ export function App() {
   });
   const taskDetailUsageInfo = taskDetailUsageEngineSupported ? taskDetailUsageQuery.data?.usage ?? null : null;
 
-  const taskEventsQuery = useQuery({
-    queryKey: ["task-events", selectedTaskId],
+  // Split into a small default fetch (command_executed/agent_status
+  // excluded -- 98% of a long task's payload, measured live, for content
+  // the timeline keeps collapsed by default anyway) and a full fetch only
+  // triggered when the user actually taps "load full timeline" below.
+  const [technicalEventsRequested, setTechnicalEventsRequested] = useState(false);
+  useEffect(() => {
+    setTechnicalEventsRequested(false);
+  }, [selectedTaskId]);
+
+  const taskEventsLeanQuery = useQuery({
+    queryKey: ["task-events", selectedTaskId, "lean"],
+    queryFn: () => api.getEventsLean(selectedTaskId!),
+    enabled: Boolean(selectedTaskId),
+    // SSE (useTaskStream below) already keeps this current in real time
+    // while a task is open -- staleTime just stops focus/reconnect churn
+    // (common on mobile: switching apps, wifi<->cellular handoff) from
+    // redownloading it.
+    staleTime: 60_000
+  });
+  const taskEventsFullQuery = useQuery({
+    queryKey: ["task-events", selectedTaskId, "full"],
     queryFn: () => api.getEvents(selectedTaskId!),
-    enabled: Boolean(selectedTaskId)
+    enabled: Boolean(selectedTaskId) && technicalEventsRequested,
+    staleTime: 60_000
   });
 
   const taskDiffQuery = useQuery({
@@ -3947,12 +4052,27 @@ export function App() {
   useTaskStream(selectedTaskId);
 
   const conversationsQuery = useQuery({
-    queryKey: ["conversations"],
-    queryFn: api.listConversations,
+    queryKey: ["conversations", "preview", CONVERSATION_GROUP_PREVIEW_COUNT],
+    queryFn: () => api.listConversations(CONVERSATION_GROUP_PREVIEW_COUNT),
     // Drives the whole conversations list + the notification watcher below,
     // so it can't stop polling entirely -- 8s (was 5s) is still prompt for
     // status changes while cutting request volume by ~40%.
+    //
+    // preview_count caps each project to its default-visible conversations
+    // (server-side, still always including any conversation with an active
+    // task regardless of position -- see list_conversations' own docstring
+    // -- so the notification watcher below stays correct) -- measured
+    // live, this cuts what was a 35KB/poll response down to ~7-8KB for the
+    // account this was built against.
     refetchInterval: 8000,
+  });
+  const conversationCountsQuery = useQuery({
+    queryKey: ["conversation-counts"],
+    queryFn: api.getConversationCounts,
+    // A tiny response (one number per project) -- doesn't need the same
+    // 8s cadence as the list itself; it only backs the "더보기 (N)" label.
+    staleTime: 30_000,
+    refetchInterval: 30_000,
   });
 
   const [taskNotificationsEnabled, setTaskNotificationsEnabled] = useState(loadTaskNotificationsEnabled);
@@ -4114,7 +4234,10 @@ export function App() {
   });
 
   const task = taskDetailQuery.data ?? null;
-  const events = taskEventsQuery.data ?? [];
+  const events = technicalEventsRequested
+    ? taskEventsFullQuery.data ?? []
+    : taskEventsLeanQuery.data?.events ?? [];
+  const hiddenTechnicalCount = technicalEventsRequested ? 0 : taskEventsLeanQuery.data?.hiddenTechnicalCount ?? 0;
   const diff = taskDiffQuery.data ?? task?.latest_diff;
   const runActionModelOptions = useMemo(() => {
     const ids = runtimeModelsQuery.data?.models.map((item) => item.id) ?? [];
@@ -4338,7 +4461,19 @@ export function App() {
     const promptPreview = task.prompt.replace(/\s+/g, " ").trim();
     const compactPromptPreview =
       promptPreview.length > 180 ? `${promptPreview.slice(0, 180).trimEnd()}...` : promptPreview || "No prompt";
-    const latestRunTimestamp = (events.length > 0 ? events[events.length - 1]?.created_at : null) ?? task.updated_at;
+    // "Last event in the array" isn't reliably "most recent" now that the
+    // default fetch excludes technical events -- the excluded types are
+    // usually exactly what was most recently happening. The lean fetch's
+    // own latestEventAt (computed server-side over the true full history)
+    // is the accurate source; task.updated_at is the fallback for before
+    // that response has come back, NOT a substitute for it (confirmed
+    // live: a real task's updated_at sat 34 minutes stale behind its
+    // actual last event, since SQLAlchemy only bumps it when an event
+    // happens to also mutate a Task column, which most technical events
+    // don't).
+    const latestRunTimestamp = technicalEventsRequested
+      ? events[events.length - 1]?.created_at ?? task.updated_at
+      : taskEventsLeanQuery.data?.latestEventAt ?? task.updated_at;
     const followupDisabled = runStatus === "running" || task.status === "waiting_result_approval" || task.status === "waiting_user_input";
 
     const triggerRunAction = (action: RunExecutionAction) => {
@@ -4495,7 +4630,13 @@ export function App() {
                   <div className="row-header">
                     <h3>Event log</h3>
                   </div>
-                  <StructuredLogTab events={events} mobile />
+                  <StructuredLogTab
+                    events={events}
+                    mobile
+                    hiddenTechnicalCount={hiddenTechnicalCount}
+                    onLoadFullTimeline={() => setTechnicalEventsRequested(true)}
+                    isLoadingFullTimeline={taskEventsFullQuery.isFetching}
+                  />
                   <SessionComposer
                     value={followupDraft}
                     onChange={setFollowupDraft}
@@ -4799,7 +4940,13 @@ export function App() {
           <section>
             <h3>Event log</h3>
             <div className="output-panel">
-              <StructuredLogTab events={events} mobile={false} />
+              <StructuredLogTab
+                events={events}
+                mobile={false}
+                hiddenTechnicalCount={hiddenTechnicalCount}
+                onLoadFullTimeline={() => setTechnicalEventsRequested(true)}
+                isLoadingFullTimeline={taskEventsFullQuery.isFetching}
+              />
               <SessionComposer
                 value={followupDraft}
                 onChange={setFollowupDraft}
@@ -4898,6 +5045,7 @@ export function App() {
           {mobileScreen === "conversations" ? (
             <ConversationListScreen
               conversations={conversationsQuery.data ?? []}
+              conversationCounts={conversationCountsQuery.data ?? {}}
               projects={projectsQuery.data ?? []}
               isLoading={conversationsQuery.isLoading}
               onSelect={(id) => {
@@ -5031,6 +5179,7 @@ export function App() {
         <main className="chat-grid">
           <ConversationListScreen
             conversations={conversationsQuery.data ?? []}
+            conversationCounts={conversationCountsQuery.data ?? {}}
             projects={projectsQuery.data ?? []}
             isLoading={conversationsQuery.isLoading}
             onSelect={(id) => setSelectedConversationId(id)}
