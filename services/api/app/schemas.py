@@ -167,6 +167,11 @@ class PrInfoResponse(BaseModel):
     target_branch: str | None = None
     author: str | None = None
     merged_at: str | None = None
+    # This PR/MR's own changed-file list, so a conversation with several
+    # PR/MRs can show each card's files under that card specifically,
+    # instead of one flat list with no indication of which PR/MR it came
+    # from (the "which card do these files belong to?" gap this fixes).
+    diff: TaskDiff | None = None
 
 
 class ProjectSummary(BaseModel):

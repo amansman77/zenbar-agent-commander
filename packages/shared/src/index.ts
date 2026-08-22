@@ -116,6 +116,10 @@ export interface PrInfo {
   target_branch: string | null;
   author: string | null;
   merged_at: string | null;
+  // This PR/MR's own changed-file list, so the diff tab can show each
+  // card's files grouped under that card instead of one flat list with no
+  // indication of which PR/MR they came from.
+  diff: TaskDiff | null;
 }
 
 export interface TaskSummary {

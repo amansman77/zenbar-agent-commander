@@ -2157,3 +2157,80 @@ def test_reconcile_leaves_healthy_active_tasks_alone():
 
         after = client.get(f"/tasks/{task['id']}").json()
         assert after["status"] == before["status"]
+
+
+def test_conversation_pr_info_attaches_each_prs_own_diff():
+    # Regression: several PR/MR cards used to sit above a single flat file
+    # list sourced from only the most-recently-mentioned PR/MR, with no way
+    # to tell which files belonged to which card. Each PrInfoResponse now
+    # carries its own `diff`, fetched by that PR/MR's own URL.
+    from app.repository import add_conversation_message
+    from app.schemas import AddConversationMessageRequest, TaskDiff
+    from app.pr_info import PrInfo
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Multi PR Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+
+        conversation = client.post(
+            "/conversations",
+            json={"project_id": project["id"], "title": "Multi PR conversation"},
+        ).json()
+
+        first_url = "https://github.com/acme/widgets/pull/11"
+        second_url = "https://github.com/acme/widgets/pull/22"
+
+        with SessionLocal() as db:
+            add_conversation_message(
+                db, conversation["id"], AddConversationMessageRequest(role="assistant", content=f"Opened PR: {first_url}")
+            )
+            add_conversation_message(
+                db, conversation["id"], AddConversationMessageRequest(role="assistant", content=f"Opened a follow-up PR: {second_url}")
+            )
+
+        def fake_info(url: str) -> PrInfo:
+            number = 11 if url == first_url else 22
+            return PrInfo(
+                platform="github",
+                number=number,
+                title=f"PR #{number}",
+                description=None,
+                state="open",
+                url=url,
+                source_branch="feature",
+                target_branch="main",
+                author="octocat",
+                merged_at=None,
+            )
+
+        def fake_diff(url: str) -> TaskDiff:
+            files = [f"file-{11 if url == first_url else 22}.py"]
+            return TaskDiff(files_changed=files, summary="Updated 1 file(s).", raw_diff=None)
+
+        async def fake_fetch_pr_or_mr_info(url: str):
+            return fake_info(url)
+
+        async def fake_fetch_pr_or_mr_diff(url: str):
+            return fake_diff(url)
+
+        import app.main as main_module
+
+        original_info = main_module.fetch_pr_or_mr_info
+        original_diff = main_module.fetch_pr_or_mr_diff
+        main_module.fetch_pr_or_mr_info = fake_fetch_pr_or_mr_info
+        main_module.fetch_pr_or_mr_diff = fake_fetch_pr_or_mr_diff
+        try:
+            response = client.get(f"/conversations/{conversation['id']}/pr-info")
+        finally:
+            main_module.fetch_pr_or_mr_info = original_info
+            main_module.fetch_pr_or_mr_diff = original_diff
+
+        assert response.status_code == 200
+        body = response.json()
+        # Most-recently-mentioned first.
+        assert [item["url"] for item in body] == [second_url, first_url]
+        assert body[0]["diff"]["files_changed"] == ["file-22.py"]
+        assert body[1]["diff"]["files_changed"] == ["file-11.py"]

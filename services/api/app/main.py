@@ -421,8 +421,16 @@ async def get_conversation_pr_info(conversation_id: str, db: Session = Depends(g
     if not urls:
         return []
     # Most-recently-mentioned first (find_all_pr_or_mr_urls' own order) --
-    # fetched in parallel since a longer conversation can have several.
-    infos = await asyncio.gather(*(fetch_pr_or_mr_info(url) for url in urls))
+    # fetched in parallel since a longer conversation can have several. Each
+    # PR/MR's own diff is fetched alongside its info (both TTL-cached by
+    # pr_info.py, so this doesn't add real API calls beyond what the diff
+    # tab already made) and attached to that card specifically -- without
+    # this, several cards next to one flat file list left no way to tell
+    # which files belonged to which PR/MR.
+    infos, diffs = await asyncio.gather(
+        asyncio.gather(*(fetch_pr_or_mr_info(url) for url in urls)),
+        asyncio.gather(*(fetch_pr_or_mr_diff(url) for url in urls)),
+    )
     return [
         PrInfoResponse(
             platform=info.platform,
@@ -435,8 +443,9 @@ async def get_conversation_pr_info(conversation_id: str, db: Session = Depends(g
             target_branch=info.target_branch,
             author=info.author,
             merged_at=info.merged_at,
+            diff=diff,
         )
-        for info in infos
+        for info, diff in zip(infos, diffs)
         if info is not None
     ]
 

@@ -460,18 +460,27 @@ textarea {
 .pr-info-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
   padding: 0.75rem 0.9rem;
   margin-bottom: 0.75rem;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel-soft);
-  text-decoration: none;
-  color: inherit;
 }
 
 .pr-info-card:hover {
   border-color: var(--primary);
+}
+
+/* Only the title/summary area opens the PR/MR (target="_blank") -- the
+   diff toggle below it is a plain button, not nested inside the anchor, to
+   keep the two independently clickable without one swallowing the other's
+   click. */
+.pr-info-card-link {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-decoration: none;
+  color: inherit;
 }
 
 .pr-info-card-header {
@@ -493,6 +502,40 @@ textarea {
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.pr-info-card-diff {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.pr-info-card-diff-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.83rem;
+  color: var(--primary);
+  cursor: pointer;
+}
+
+.pr-info-card-diff-toggle:hover {
+  text-decoration: underline;
+}
+
+.pr-info-card-diff-filelist {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.83rem;
+  color: var(--text-soft);
+}
+
+.pr-info-card-diff-filelist li {
+  margin-bottom: 0.2rem;
+}
+
+.pr-info-card .diff-groups {
+  margin-top: 0.5rem;
 }
 
 .detail-panel {

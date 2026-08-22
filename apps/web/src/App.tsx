@@ -743,6 +743,45 @@ function GroupedDiff({
   );
 }
 
+// A PR/MR card's own changed-file list, collapsed by default -- shown
+// nested under that specific card so a conversation with several PR/MRs
+// makes it obvious which files belong to which, instead of one flat file
+// list below all the cards with no way to tell them apart.
+function PrDiffSection({ diff }: { diff: TaskDiff | null }) {
+  const [showFiles, setShowFiles] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  if (!diff || diff.files_changed.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="pr-info-card-diff">
+      <button type="button" className="pr-info-card-diff-toggle" onClick={() => setShowFiles((prev) => !prev)}>
+        {showFiles ? "변경 파일 접기" : `변경 파일 보기 (${diff.files_changed.length})`}
+      </button>
+      {showFiles ? (
+        diff.raw_diff ? (
+          <GroupedDiff
+            rawDiff={diff.raw_diff}
+            filesChanged={diff.files_changed}
+            expanded={expanded}
+            onToggle={(id) => setExpanded((prev) => ({ ...prev, [id]: !prev[id] }))}
+          />
+        ) : (
+          <ul className="pr-info-card-diff-filelist">
+            {diff.files_changed.map((file) => (
+              <li key={file} className="mono">
+                {file}
+              </li>
+            ))}
+          </ul>
+        )
+      ) : null}
+    </div>
+  );
+}
+
 function StatusBadge({ status }: { status: TaskStatus }) {
   const label =
     status === "waiting_result_approval"
@@ -1538,26 +1577,33 @@ function ConversationDetailScreen({
         )}
         {activeTab === "diff" &&
           prInfos?.map((prInfo) => (
-            <a href={prInfo.url} target="_blank" rel="noreferrer" className="pr-info-card" key={prInfo.url}>
-              <div className="pr-info-card-header">
-                <span
-                  className={`status ${
-                    prInfo.state === "merged" ? "status-blue" : prInfo.state === "open" ? "status-green" : "status-red"
-                  }`}
-                >
-                  {prInfo.platform === "github" ? "GitHub" : "GitLab"} #{prInfo.number} · {prInfo.state}
-                </span>
-              </div>
-              <strong className="pr-info-card-title">{prInfo.title}</strong>
-              {prInfo.source_branch && prInfo.target_branch ? (
-                <span className="item-secondary mono">
-                  {prInfo.source_branch} → {prInfo.target_branch}
-                </span>
-              ) : null}
-              {prInfo.description ? <p className="pr-info-card-description">{prInfo.description}</p> : null}
-            </a>
+            <div className="pr-info-card" key={prInfo.url}>
+              <a href={prInfo.url} target="_blank" rel="noreferrer" className="pr-info-card-link">
+                <div className="pr-info-card-header">
+                  <span
+                    className={`status ${
+                      prInfo.state === "merged" ? "status-blue" : prInfo.state === "open" ? "status-green" : "status-red"
+                    }`}
+                  >
+                    {prInfo.platform === "github" ? "GitHub" : "GitLab"} #{prInfo.number} · {prInfo.state}
+                  </span>
+                </div>
+                <strong className="pr-info-card-title">{prInfo.title}</strong>
+                {prInfo.source_branch && prInfo.target_branch ? (
+                  <span className="item-secondary mono">
+                    {prInfo.source_branch} → {prInfo.target_branch}
+                  </span>
+                ) : null}
+                {prInfo.description ? <p className="pr-info-card-description">{prInfo.description}</p> : null}
+              </a>
+              <PrDiffSection diff={prInfo.diff} />
+            </div>
           ))}
-        {activeTab === "diff" && (
+        {activeTab === "diff" && (prInfos?.length ?? 0) === 0 && (
+          // No PR/MR mentioned yet -- fall back to the task's own workspace
+          // diff (uncommitted changes). Once a PR/MR shows up, each card
+          // above carries its own diff instead, so this flat block steps
+          // aside rather than showing a redundant "latest PR/MR only" copy.
           diffData?.raw_diff ? (
             <GroupedDiff
               rawDiff={diffData.raw_diff}
