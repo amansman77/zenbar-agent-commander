@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App, formatRemainingTime, isNotifyWorthyTransition, parseDiffFiles } from "./App";
 
@@ -9,6 +9,7 @@ let taskEvents: Array<Record<string, unknown>> = [];
 let taskDiff: Record<string, unknown> = { files_changed: [], summary: "", raw_diff: null };
 let conversations: Array<Record<string, unknown>> = [];
 let conversationCounts: Record<string, number> = {};
+let projectPrompts: Record<string, Array<Record<string, unknown>>> = {};
 
 const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = input.toString();
@@ -162,6 +163,25 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
   if (url.endsWith("/tasks/task-1/diff")) {
     return new Response(JSON.stringify(taskDiff), { status: 200 });
   }
+  const promptsMatch = url.match(/\/projects\/([^/]+)\/prompts$/);
+  if (promptsMatch && init?.method === "POST") {
+    const [, ownerProjectId] = promptsMatch;
+    const payload = JSON.parse(String(init.body));
+    const created = {
+      id: `prompt-${(projectPrompts[ownerProjectId] ?? []).length + 1}`,
+      project_id: ownerProjectId,
+      title: payload.title,
+      content: payload.content,
+      position: (projectPrompts[ownerProjectId] ?? []).length + 1,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    projectPrompts[ownerProjectId] = [...(projectPrompts[ownerProjectId] ?? []), created];
+    return new Response(JSON.stringify(created), { status: 201 });
+  }
+  if (promptsMatch) {
+    return new Response(JSON.stringify(projectPrompts[promptsMatch[1]] ?? []), { status: 200 });
+  }
   return new Response(JSON.stringify([]), { status: 200 });
 });
 
@@ -294,6 +314,7 @@ describe("App", () => {
     taskDiff = { files_changed: [], summary: "", raw_diff: null };
     conversations = [];
     conversationCounts = {};
+    projectPrompts = {};
     window.localStorage.clear();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -1193,5 +1214,81 @@ describe("App", () => {
 
     expect(await screen.findByText("Conversation 1")).toBeInTheDocument();
     expect(screen.getByText("Conversation 0")).toBeInTheDocument();
+  });
+
+  it("imports a selected prompt from another project as a copy", async () => {
+    // Prompts were project-scoped with no way to reuse one written for a
+    // different project short of retyping it -- 가져오기 copies (creates
+    // new rows), not links/shares, matching how prompts already behave
+    // everywhere else in this screen.
+    window.localStorage.setItem(
+      "zenbar:lastView",
+      JSON.stringify({
+        mobileScreen: "projects",
+        desktopView: "workspace",
+        selectedConversationId: null,
+        selectedProjectId: null,
+        selectedTaskId: null
+      })
+    );
+    projects = [
+      {
+        id: "project-1",
+        name: "agent-commander",
+        repo_path: "/Users/hosung/Workspace/zenbar/agent-commander",
+        default_branch: "main",
+        created_at: new Date().toISOString()
+      },
+      {
+        id: "project-2",
+        name: "other-project",
+        repo_path: "/Users/hosung/Workspace/zenbar/other-project",
+        default_branch: "main",
+        created_at: new Date().toISOString()
+      }
+    ];
+    projectPrompts = {
+      "project-2": [
+        {
+          id: "prompt-source-1",
+          project_id: "project-2",
+          title: "Triage a bug",
+          content: "Look at the failing test and fix it.",
+          position: 1,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }
+      ]
+    };
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <App />
+      </QueryClientProvider>
+    );
+
+    const project1Row = (await screen.findAllByText("agent-commander"))[0].closest(".list-item") as HTMLElement;
+    fireEvent.click(within(project1Row).getByRole("button", { name: "Prompts" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "가져오기" }));
+    fireEvent.change(await screen.findByLabelText("가져올 프로젝트"), { target: { value: "project-2" } });
+
+    fireEvent.click(await screen.findByText("Triage a bug"));
+    fireEvent.click(screen.getByRole("button", { name: "가져오기 (1)" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/projects\/project-1\/prompts$/),
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ title: "Triage a bug", content: "Look at the failing test and fix it." })
+        })
+      );
+    });
+    // The dialog closes and the freshly copied prompt shows up in project-1's own list.
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "취소" })).not.toBeInTheDocument();
+    });
+    expect(await screen.findByText("Triage a bug")).toBeInTheDocument();
   });
 });

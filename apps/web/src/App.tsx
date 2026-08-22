@@ -2862,15 +2862,151 @@ function ProjectList({
   );
 }
 
+// Copies selected prompts from another project into the current one --
+// requested after prompts turned out to be project-scoped with no way to
+// reuse one written for a different project short of retyping it. Copies
+// (creates new rows) rather than sharing/linking, matching how prompts
+// already behave everywhere else (each is independently edited/deleted per
+// project) -- no new "shared prompt" concept to reason about.
+function ImportPromptsDialog({
+  currentProject,
+  onClose,
+  onImported,
+}: {
+  currentProject: ProjectSummary;
+  onClose: () => void;
+  onImported: () => void;
+}) {
+  const [sourceProjectId, setSourceProjectId] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: api.listProjects });
+  const otherProjects = (projectsQuery.data ?? []).filter((p) => p.id !== currentProject.id);
+
+  const sourcePromptsQuery = useQuery({
+    queryKey: ["project-prompts", sourceProjectId || null],
+    queryFn: () => api.listProjectPrompts(sourceProjectId),
+    enabled: Boolean(sourceProjectId),
+  });
+  const sourcePrompts = sourcePromptsQuery.data ?? [];
+  const selectedPrompts = sourcePrompts.filter((p) => selectedIds.includes(p.id));
+
+  const importMutation = useMutation({
+    mutationFn: async (prompts: ProjectPrompt[]) => {
+      // Sequential, not Promise.all: these hit the same project's prompt
+      // list with no server-side ordering guarantee otherwise, and a
+      // partial failure partway through should still leave a clean,
+      // predictable prefix imported rather than an unpredictable subset.
+      for (const prompt of prompts) {
+        await api.createProjectPrompt(currentProject.id, { title: prompt.title, content: prompt.content });
+      }
+    },
+    onSuccess: () => {
+      onImported();
+      onClose();
+    },
+    onError: (err: Error) => alert(`프롬프트 가져오기 실패: ${err.message}`),
+  });
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((previous) => (previous.includes(id) ? previous.filter((x) => x !== id) : [...previous, id]));
+  };
+
+  return (
+    <div style={{ display: "grid", gap: "0.75rem" }}>
+      <label>
+        가져올 프로젝트
+        <select
+          value={sourceProjectId}
+          onChange={(event) => {
+            setSourceProjectId(event.target.value);
+            setSelectedIds([]);
+          }}
+        >
+          <option value="">프로젝트 선택</option>
+          {otherProjects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      {sourceProjectId ? (
+        sourcePromptsQuery.isLoading ? (
+          <p className="empty-state">Loading...</p>
+        ) : sourcePrompts.length === 0 ? (
+          <p className="empty-state">이 프로젝트에는 저장된 프롬프트가 없습니다.</p>
+        ) : (
+          <div style={{ display: "grid", gap: "0.4rem", maxHeight: "40vh", overflowY: "auto", minWidth: 0 }}>
+            {sourcePrompts.map((prompt) => (
+              <label
+                key={prompt.id}
+                className="list-item"
+                style={{ display: "flex", alignItems: "flex-start", gap: "8px", cursor: "pointer" }}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedIds.includes(prompt.id)}
+                  onChange={() => toggleSelected(prompt.id)}
+                  style={{ marginTop: "3px", flexShrink: 0 }}
+                />
+                <div style={{ minWidth: 0 }}>
+                  <strong>{prompt.title}</strong>
+                  {/* Not .truncate (nowrap) -- a long single-line prompt
+                      under nowrap can force this row's grid track wider
+                      than the viewport instead of just clipping in place.
+                      Line-clamped instead of a plain pre-wrap: a
+                      multi-line prompt (real example: a 6-line credentials
+                      block) could otherwise grow this row tall enough to
+                      visually run into the next one. */}
+                  <p
+                    className="item-secondary"
+                    style={{
+                      marginTop: "2px",
+                      whiteSpace: "pre-wrap",
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden"
+                    }}
+                  >
+                    {prompt.content}
+                  </p>
+                </div>
+              </label>
+            ))}
+          </div>
+        )
+      ) : null}
+
+      <div className="inline-actions">
+        <button
+          type="button"
+          onClick={() => importMutation.mutate(selectedPrompts)}
+          disabled={selectedPrompts.length === 0 || importMutation.isPending}
+        >
+          {importMutation.isPending ? "가져오는 중..." : `가져오기 (${selectedPrompts.length})`}
+        </button>
+        <button type="button" className="secondary" onClick={onClose}>
+          취소
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // Single source of truth for the prompts/pipelines UI. Both the mobile
 // full-screen and the desktop modal presentations are thin shells around
 // this — previously they were two ~110-line near-copies, which is how the
 // desktop side kept drifting behind (every prompts/pipelines change had to
 // be made twice, by hand, in two places).
 function useProjectPromptsWorkspace(project: ProjectSummary | null) {
+  const queryClient = useQueryClient();
   const pm = useProjectPrompts(project);
   const pl = useProjectPipelines(project);
   const [tab, setTab] = useState<"prompts" | "pipelines">("prompts");
+  const [importOpen, setImportOpen] = useState(false);
 
   // Returned unwrapped: `.inline-actions` is inline-flex, so sibling
   // instances lay out side by side. Each shell supplies its own
@@ -2956,12 +3092,34 @@ function useProjectPromptsWorkspace(project: ProjectSummary | null) {
     />
   );
 
+  const importButton =
+    tab === "prompts" && project ? (
+      <button type="button" className="secondary" onClick={() => setImportOpen(true)}>
+        가져오기
+      </button>
+    ) : null;
+
+  const closeImport = () => setImportOpen(false);
+
+  const importDialog =
+    importOpen && project ? (
+      <ImportPromptsDialog
+        currentProject={project}
+        onClose={closeImport}
+        onImported={() => queryClient.invalidateQueries({ queryKey: ["project-prompts", project.id] })}
+      />
+    ) : null;
+
   return {
     pm,
     pl,
     tab,
     tabButtons,
     addButton,
+    importButton,
+    importOpen,
+    closeImport,
+    importDialog,
     list,
     promptForm,
     pipelineBuilder,
@@ -2970,6 +3128,7 @@ function useProjectPromptsWorkspace(project: ProjectSummary | null) {
     closeAll: () => {
       pm.closeForm();
       pl.closeBuilder();
+      setImportOpen(false);
     },
   };
 }
@@ -2987,19 +3146,26 @@ function ProjectPromptsScreen({
     <section className="panel mobile-screen">
       <div className="panel-header">
         <div className="row-header">
-          <div>
-            <div className="mobile-title-row">
-              <button type="button" className="secondary mobile-back" onClick={onBack}>
-                Back
-              </button>
-              <h2 className="truncate" style={{ minWidth: 0 }}>
-                {project ? `${project.name} ${w.tab === "prompts" ? "프롬프트" : "파이프라인"}` : "Prompts"}
-              </h2>
-            </div>
+          <div className="mobile-title-row" style={{ minWidth: 0 }}>
+            <button type="button" className="secondary mobile-back" onClick={onBack}>
+              Back
+            </button>
+            <h2 className="truncate" style={{ minWidth: 0 }}>
+              {project ? `${project.name} ${w.tab === "prompts" ? "프롬프트" : "파이프라인"}` : "Prompts"}
+            </h2>
           </div>
-          <div className="inline-actions">{w.addButton({ prompt: "+ Add", pipeline: "+ New" })}</div>
         </div>
+        {/* Tabs and action buttons each get their own row rather than
+            sharing one -- with 가져오기 added alongside +Add, four buttons
+            together no longer fit a mobile-width row without wrapping
+            (previously just the two tabs, or just the two actions, fit
+            fine on their own; it was specifically all four at once that
+            didn't). */}
         <div className="inline-actions" style={{ marginTop: "8px" }}>{w.tabButtons}</div>
+        <div className="inline-actions" style={{ marginTop: "8px" }}>
+          {w.importButton}
+          {w.addButton({ prompt: "+ Add", pipeline: "+ New" })}
+        </div>
       </div>
       <div className="panel-scroll">{w.list}</div>
 
@@ -3009,6 +3175,10 @@ function ProjectPromptsScreen({
 
       <Modal title={w.pipelineFormTitle} open={w.pl.builderOpen} onClose={w.pl.closeBuilder}>
         {w.pipelineBuilder}
+      </Modal>
+
+      <Modal title="다른 프로젝트에서 가져오기" open={w.importOpen} onClose={w.closeImport}>
+        {w.importDialog}
       </Modal>
     </section>
   );
@@ -3026,15 +3196,17 @@ function ProjectPromptsModal({
   const w = useProjectPromptsWorkspace(project);
 
   // A modal can't usefully nest another modal, so unlike the mobile screen
-  // the editors replace the list inline here and the modal's own title
-  // doubles as the editor's title.
+  // the editors (and the import dialog) replace the list inline here and
+  // the modal's own title doubles as the editor's title.
   const modalTitle = w.pm.formOpen
     ? w.promptFormTitle
     : w.pl.builderOpen
       ? w.pipelineFormTitle
-      : project
-        ? `${project.name} ${w.tab === "prompts" ? "Prompts" : "Pipelines"}`
-        : "Prompts";
+      : w.importOpen
+        ? "다른 프로젝트에서 가져오기"
+        : project
+          ? `${project.name} ${w.tab === "prompts" ? "Prompts" : "Pipelines"}`
+          : "Prompts";
 
   return (
     <Modal
@@ -3049,10 +3221,13 @@ function ProjectPromptsModal({
         w.promptForm
       ) : w.pl.builderOpen ? (
         w.pipelineBuilder
+      ) : w.importOpen ? (
+        w.importDialog
       ) : (
         <>
           <div className="inline-actions" style={{ marginBottom: "0.6rem" }}>{w.tabButtons}</div>
           <div className="inline-actions" style={{ marginBottom: "0.6rem" }}>
+            {w.importButton}
             {w.addButton({ prompt: "+ Add prompt", pipeline: "+ New pipeline" })}
           </div>
           <div className="panel-scroll" style={{ maxHeight: "50vh" }}>
