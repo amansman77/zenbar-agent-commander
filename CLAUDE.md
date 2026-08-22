@@ -112,6 +112,12 @@ lib/           pure logic, no React (event classification, diff parsing, formatt
 Dependencies flow one way: `App.tsx → screens → components → hooks → lib`. Put
 anything testable without a DOM in `lib/`; `App.test.tsx` imports those directly.
 
+`App.tsx` still owns the selection state and the mutations, so a component it
+renders takes what it needs as props — `components/TaskDetailPanel.tsx` is the
+clearest case, and its props type is that dependency surface written down.
+Pushing that state into the components that use it is worthwhile, but it changes
+when state resets, so it is not a mechanical change.
+
 Server state is TanStack Query. `useTaskStream` keeps a task's caches live over
 SSE while it is open, so most components should read from the query cache rather
 than fetching again.
