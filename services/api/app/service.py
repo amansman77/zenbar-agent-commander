@@ -640,7 +640,7 @@ class TaskOrchestrator:
 
         A step being "done" means either waiting_result_approval (the
         runtime paused mid-turn to ask permission for a specific file edit
-        or command -- see item/fileChange/requestApproval in runtime.py) or
+        or command -- see item/fileChange/requestApproval in runtime/app_server.py) or
         already completed outright. Both are real, common outcomes: the App
         Server only requests a mid-turn approval when its own approval
         policy decides one particular action needs it, which most turns

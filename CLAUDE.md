@@ -44,7 +44,7 @@ Every module has a docstring; read it before reading the code.
 | HTTP | `main.py` (app wiring only), `routers/*.py`, `security.py` |
 | Singletons | `runtime_registry.py` — engine adapters, `TaskOrchestrator`, model catalogs |
 | Orchestration | `service.py` — `TaskOrchestrator`, the task lifecycle |
-| Persistence | `models.py` (ORM), `repository.py` (all DB access + serializers), `db.py` |
+| Persistence | `models.py` (ORM), `repository/` (all DB access + serializers), `db.py` |
 | Runtime | `runtime/` (adapter interface + Codex WebSocket adapter + mock + factory), `claude_adapter.py`, `grok_adapter.py`, `antigravity_adapter.py`, `cli_adapter_git.py` |
 | Workspace | `workspace.py` (branch/worktree per task), `codex_project_trust.py` |
 | Support | `schemas.py`, `streaming.py`, `ttl_cache.py`, `model_catalog.py`, `pr_info.py`, `github_pr.py`, `repo_discovery.py`, `codex_profiles.py`, `app_server_manager.py` |
@@ -65,6 +65,14 @@ Routers import shared state from `runtime_registry.py`, never from `main.py` —
 that is what keeps `main.py → routers → runtime_registry` acyclic. Helpers used
 by more than one router live in `routers/common.py`.
 
+**The repository package.** `repository/` is every read and write of the ORM
+models, split by subject in dependency order: `naming` → `projects` → `prompts`
+→ `tasks` → `events` → `conversations`, with `serializers.py` holding the
+model-to-schema conversions. `events.py::append_event` is the single write path
+for anything a runtime reports, which is why it is also what moves a task's
+status and mirrors assistant messages into the conversation. Import from
+`.repository`, not its submodules.
+
 **The runtime package.** `runtime/` holds the `RuntimeAdapter` interface
 (`base.py`) and the two adapters that ship with it — `app_server.py` for Codex
 over WebSocket, `mock.py` for tests — plus `factory.py`, which builds one
@@ -75,7 +83,7 @@ they import back from here.
 
 **Layering rule:** routers do HTTP concerns only. Anything touching a runtime or
 a task's state goes through `TaskOrchestrator`; anything touching the database
-goes through `repository.py`. New code in a router should not use the ORM
+goes through the `repository` package. New code in a router should not use the ORM
 session directly — `routers/conversations.py` still does for pipeline setup and
 for session bookkeeping around orchestrator calls, which is a known exception,
 not a pattern to copy.
