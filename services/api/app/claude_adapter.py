@@ -1,3 +1,9 @@
+"""RuntimeAdapter for the Claude Code CLI.
+
+Runs `claude` in the task workspace with streaming JSON output, translating its
+stream into RuntimeEvents and its workspace changes into a TaskDiff.
+"""
+
 from __future__ import annotations
 
 import asyncio

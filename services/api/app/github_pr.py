@@ -1,3 +1,9 @@
+"""Merges a task's pull request on GitHub after human approval.
+
+Resolves the repo's GitHub remote and token, then merges the PR whose head is
+the task's workspace branch. Failures are reported, never raised at the caller.
+"""
+
 from __future__ import annotations
 
 import re

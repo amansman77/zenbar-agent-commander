@@ -1,3 +1,11 @@
+"""TaskOrchestrator: the task lifecycle, sitting between routers and runtimes.
+
+Starts/stops/approves/retries tasks, prepares and cleans up task workspaces,
+consumes each runtime session's event stream in the background, persists the
+resulting events and status transitions, advances prompt pipelines, and
+reconciles tasks left active across a restart.
+"""
+
 from __future__ import annotations
 
 import asyncio

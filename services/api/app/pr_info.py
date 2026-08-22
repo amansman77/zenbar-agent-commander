@@ -1,3 +1,9 @@
+"""Fetches PR/MR metadata and diffs for GitHub and GitLab links.
+
+Links are discovered in conversation messages; results are TTL-cached because
+the conversation view polls them while a task is active.
+"""
+
 from __future__ import annotations
 
 import re

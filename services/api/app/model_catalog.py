@@ -1,3 +1,9 @@
+"""TTL-cached model list for one runtime adapter.
+
+Model lists come from the engine itself and are slow enough to be worth
+caching; a static fallback list is used when the runtime is unreachable.
+"""
+
 from __future__ import annotations
 
 import asyncio

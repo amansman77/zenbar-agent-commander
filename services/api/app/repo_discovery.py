@@ -1,3 +1,9 @@
+"""Turns a path (or a native folder-picker selection) into project defaults.
+
+Validates that the path is a git repository and reports its current/default
+branch, so the web UI can prefill the new-project form.
+"""
+
 from __future__ import annotations
 
 import platform

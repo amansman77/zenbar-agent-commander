@@ -1,3 +1,5 @@
+"""In-process pub/sub broker backing the /tasks/{id}/stream SSE endpoint."""
+
 from __future__ import annotations
 
 import asyncio

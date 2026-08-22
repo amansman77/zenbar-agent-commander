@@ -1,3 +1,9 @@
+"""Reads Codex CLI profiles (model + provider presets) from CODEX_HOME.
+
+Profiles are defined outside Zenbar by the Codex CLI itself; a task can select
+one, and a profile's own model takes precedence over the engine model catalog.
+"""
+
 from __future__ import annotations
 
 import os

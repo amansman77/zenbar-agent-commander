@@ -119,11 +119,13 @@ Tailscale
 
 ## Core Documents
 
-| Document             | Description                          |
-| -------------------- | ------------------------------------ |
-| `2026-03-11.plan.md` | canonical system design and roadmap  |
-| `Deployment.md`      | deployment and infrastructure model  |
-| `TOOLS.md`           | local tool layer and workspace model |
+| Document                     | Description                                |
+| ---------------------------- | ------------------------------------------ |
+| `CLAUDE.md`                  | codebase map and conventions for AI agents |
+| `docs/plans/2026-03-11.plan.md` | canonical system design and roadmap     |
+| `docs/Deployment.md`         | deployment and infrastructure model        |
+| `docs/TOOLS.md`              | local tool layer and workspace model       |
+| `docs/plans/`                | dated design plans, newest last            |
 
 ## Guiding Principles
 

@@ -1,3 +1,5 @@
+"""Minimal async TTL cache used for model lists, PR info, and usage lookups."""
+
 from __future__ import annotations
 
 import asyncio

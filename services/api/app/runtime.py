@@ -1,3 +1,13 @@
+"""The runtime layer: how Zenbar talks to an agent runtime.
+
+Contains the RuntimeAdapter interface every engine implements, the
+AppServerWebSocketAdapter that speaks the Codex App Server's JSON-RPC-over-
+WebSocket protocol (the default engine), a MockRuntimeAdapter used by tests
+and ZENBAR_RUNTIME_MODE=mock, and the factories that build one adapter per
+engine. The CLI-backed engines live in their own *_adapter.py modules and
+import RuntimeAdapter from here.
+"""
+
 from __future__ import annotations
 
 import asyncio

@@ -1,3 +1,9 @@
+"""RuntimeAdapter for the Antigravity CLI (`agy`).
+
+Drives one CLI process per task inside the task workspace and reconstructs a
+task's events/diff from the transcript files the CLI writes under AGY_HOME.
+"""
+
 from __future__ import annotations
 
 import asyncio
