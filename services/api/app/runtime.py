@@ -208,13 +208,16 @@ def _rate_limit_window_to_usage_window(window: dict[str, Any] | None) -> Runtime
     if not isinstance(used_percent, (int, float)):
         return None
     resets_label: str | None = None
+    resets_at_iso: str | None = None
     resets_at = window.get("resetsAt")
     if isinstance(resets_at, (int, float)):
         try:
-            resets_label = datetime.fromtimestamp(resets_at).astimezone().strftime("%b %d, %H:%M %Z")
+            resets_dt = datetime.fromtimestamp(resets_at).astimezone()
+            resets_label = resets_dt.strftime("%b %d, %H:%M %Z")
+            resets_at_iso = resets_dt.isoformat()
         except (OverflowError, OSError, ValueError):
             resets_label = None
-    return RuntimeUsageWindow(percent_used=round(used_percent), resets_label=resets_label)
+    return RuntimeUsageWindow(percent_used=round(used_percent), resets_label=resets_label, resets_at=resets_at_iso)
 
 
 def _classify_rate_limit_windows(

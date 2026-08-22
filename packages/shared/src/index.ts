@@ -93,6 +93,10 @@ export interface ListRuntimeSkillsResponse {
 export interface RuntimeUsageWindow {
   percent_used: number;
   resets_label: string | null;
+  // ISO 8601, only set when the engine's source gives a real timestamp
+  // (Codex, Antigravity) -- lets the UI show a "N일 M시간 후" countdown.
+  // Unset for Claude (free-text reset prose, not reliably parseable).
+  resets_at: string | null;
 }
 
 export interface RuntimeUsageInfo {

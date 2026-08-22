@@ -18,6 +18,7 @@ import type {
   RuntimeProfileOption,
   RuntimeSkill,
   RuntimeUsageInfo,
+  RuntimeUsageWindow,
   ProjectSummary,
   TaskDetail,
   TaskDiff,
@@ -783,16 +784,51 @@ function PrDiffSection({ diff }: { diff: TaskDiff | null }) {
   );
 }
 
+// Only set for engines whose usage source gives a real timestamp (Codex,
+// Antigravity) -- Claude's /usage is free-text prose ("resets Thursday
+// 8am", no year) that isn't reliably parseable, so resets_at is left unset
+// there and this is simply never called for it.
+export function formatRemainingTime(resetsAtIso: string): string | null {
+  const resetsAt = new Date(resetsAtIso).getTime();
+  if (Number.isNaN(resetsAt)) {
+    return null;
+  }
+  const diffMs = resetsAt - Date.now();
+  if (diffMs <= 0) {
+    return "곧 초기화";
+  }
+  const totalMinutes = Math.round(diffMs / 60000);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) {
+    return `${days}일 ${hours}시간 후`;
+  }
+  if (hours > 0) {
+    return `${hours}시간 ${minutes}분 후`;
+  }
+  return `${minutes}분 후`;
+}
+
+function formatUsageResetLine(label: string, window: RuntimeUsageWindow): string {
+  const absolute = window.resets_label ?? "정보 없음";
+  const remaining = window.resets_at ? formatRemainingTime(window.resets_at) : null;
+  return remaining ? `${label} 리셋: ${absolute} (${remaining})` : `${label} 리셋: ${absolute}`;
+}
+
 // The percent-used badge used to put its reset time in a `title` tooltip --
 // invisible on mobile, since there's no hover there. Reported live: "주간
 // 사용량만 나오고 언제 만료인지 몰라서 불편하다" while on mobile. Now a tap
 // toggles a second line showing it instead, which works on both touch and
 // mouse (the tooltip is dropped, not kept as a redundant desktop-only path).
+// That line also leads with a "남은 시간" countdown when a real timestamp
+// is available, per a same-day follow-up request -- an absolute reset time
+// alone still makes the reader do the subtraction themselves.
 function UsageBadge({ usage, style }: { usage: RuntimeUsageInfo; style?: React.CSSProperties }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const resetLines = [
-    usage.session ? `세션 리셋: ${usage.session.resets_label ?? "정보 없음"}` : null,
-    usage.week ? `주간 리셋: ${usage.week.resets_label ?? "정보 없음"}` : null,
+    usage.session ? formatUsageResetLine("세션", usage.session) : null,
+    usage.week ? formatUsageResetLine("주간", usage.week) : null,
   ].filter((line): line is string => Boolean(line));
 
   return (

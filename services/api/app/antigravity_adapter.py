@@ -138,7 +138,11 @@ def _worst_agy_bucket(groups: list[dict[str, Any]], window: str) -> RuntimeUsage
     reset_time = bucket.get("reset_time")
     group_name = bucket.get("_group_name")
     label_parts = [part for part in (reset_time, f"({group_name})" if group_name else None) if part]
-    return RuntimeUsageWindow(percent_used=percent_used, resets_label=" ".join(label_parts) or None)
+    # reset_time is already ISO 8601 ("2026-08-22T09:06:06Z") straight from
+    # the CLI's own JSON, unlike Claude's free-text prose -- passed through
+    # as-is for the frontend's countdown, no reformatting needed.
+    resets_at = reset_time if isinstance(reset_time, str) and reset_time else None
+    return RuntimeUsageWindow(percent_used=percent_used, resets_label=" ".join(label_parts) or None, resets_at=resets_at)
 
 
 def _parse_agy_usage_output(stdout_text: str) -> RuntimeUsageInfo | None:

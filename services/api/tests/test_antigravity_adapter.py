@@ -111,6 +111,10 @@ def test_parse_agy_usage_output_picks_the_worst_group_per_window():
     assert usage.week.percent_used == 40
     assert usage.week.resets_label is not None
     assert "Claude and GPT models" in usage.week.resets_label
+    # reset_time is already ISO 8601 from the CLI's own JSON -- passed
+    # through as resets_at (unmodified, unlike the label) so the frontend
+    # can compute its own countdown.
+    assert usage.week.resets_at == "2026-08-28T00:15:59Z"
     assert usage.session is not None
     assert usage.session.percent_used == 0
 

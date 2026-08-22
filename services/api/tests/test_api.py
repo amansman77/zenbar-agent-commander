@@ -1928,6 +1928,10 @@ def test_classify_rate_limit_windows_distinguishes_by_duration():
     assert week.percent_used == 12
     assert session is not None
     assert session.percent_used == 40
+    # resets_at is set alongside resets_label so the frontend can compute
+    # its own "N일 M시간 후" countdown instead of just the absolute label.
+    assert week.resets_at is not None
+    assert session.resets_at is not None
 
 
 def test_classify_rate_limit_windows_handles_missing_secondary():
@@ -1938,8 +1942,9 @@ def test_classify_rate_limit_windows_handles_missing_secondary():
     assert session is None
     assert week is not None
     assert week.percent_used == 0
-    # No resetsAt -> no crash, just no label.
+    # No resetsAt -> no crash, just no label/timestamp.
     assert week.resets_label is None
+    assert week.resets_at is None
 
 
 def test_parse_github_remote_handles_https_and_ssh_forms():

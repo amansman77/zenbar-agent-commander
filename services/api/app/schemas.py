@@ -144,6 +144,14 @@ class RuntimeUsageWindow(BaseModel):
     # than parsed into a timestamp, since that would be fragile for little
     # benefit (the UI just needs to display it).
     resets_label: str | None = None
+    # ISO 8601, only set when the source actually gives a real timestamp
+    # (Codex's RPC does; Antigravity's CLI reset_time already is one) --
+    # lets the frontend compute a "N일 M시간 후" countdown instead of just
+    # the absolute time. Claude's /usage is free-text prose with no year
+    # and relative day names ("resets Thursday 8am"), not reliably
+    # parseable, so it's left unset there and the countdown is simply
+    # omitted for that engine rather than guessed at.
+    resets_at: str | None = None
 
 
 class RuntimeUsageInfo(BaseModel):
