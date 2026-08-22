@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 from .schemas import TaskDiff
 
@@ -64,25 +65,34 @@ def compute_workspace_diff(working_directory: str, default_branch: str, engine_l
     # Mirrors the same technique TaskOrchestrator._compute_workspace_diff
     # already uses for the Codex path (git diff --no-index against
     # /dev/null, per untracked file).
-    untracked_diffs: list[str] = []
     try:
         untracked_out = _run_git(working_directory, ["ls-files", "--others", "--exclude-standard"]).stdout
     except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
         untracked_out = ""
-    for rel_path in untracked_out.splitlines():
-        rel_path = rel_path.strip()
-        if not rel_path:
-            continue
-        files.append(rel_path)
+    untracked_paths = [line.strip() for line in untracked_out.splitlines() if line.strip()]
+    files.extend(untracked_paths)
+
+    def _diff_for_untracked(rel_path: str) -> str | None:
         try:
             # git diff --no-index exits 1 when the files differ (the normal
             # case here) and 0 only if they're identical, which can't happen
             # against /dev/null -- so this call must not raise on exit 1.
-            untracked_result = _run_git(working_directory, ["diff", "--no-index", "/dev/null", rel_path], check=False)
+            result = _run_git(working_directory, ["diff", "--no-index", "/dev/null", rel_path], check=False)
         except (OSError, subprocess.TimeoutExpired):
-            continue
-        if untracked_result.returncode <= 1 and untracked_result.stdout.strip():
-            untracked_diffs.append(untracked_result.stdout.strip())
+            return None
+        if result.returncode <= 1 and result.stdout.strip():
+            return result.stdout.strip()
+        return None
+
+    # Each untracked file is its own git subprocess spawn (no way to batch
+    # `--no-index` across multiple pairs) -- for a task that created many
+    # new files, running them one at a time added up. ThreadPoolExecutor.map
+    # keeps the same file order the sequential loop had, since raw_diff's
+    # file order is expected to line up with files_changed.
+    untracked_diffs: list[str] = []
+    if untracked_paths:
+        with ThreadPoolExecutor(max_workers=min(8, len(untracked_paths))) as pool:
+            untracked_diffs = [diff for diff in pool.map(_diff_for_untracked, untracked_paths) if diff]
 
     files = list(dict.fromkeys(files))
     raw_diff = "\n".join(filter(None, [diff.strip(), *untracked_diffs])) or None

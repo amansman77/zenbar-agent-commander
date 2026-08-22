@@ -18,6 +18,7 @@ from .codex_project_trust import add_project_trust_entry
 from .github_pr import MergeResult, merge_pull_request_for_branch
 from .pr_info import fetch_pr_or_mr_diff, fetch_pr_or_mr_info, find_all_pr_or_mr_urls, find_latest_pr_or_mr_url
 from .model_catalog import RuntimeModelCatalog
+from .ttl_cache import TtlCache
 from .repository import (
     add_approval,
     add_conversation_message,
@@ -99,6 +100,7 @@ from .schemas import (
     RuntimeProfilesResponse,
     RuntimeSkill,
     RuntimeSkillsResponse,
+    RuntimeUsageInfo,
     RuntimeUsageResponse,
     PrInfoResponse,
     FollowupTurnRequest,
@@ -122,6 +124,7 @@ model_catalogs: dict[str, RuntimeModelCatalog] = {
 }
 model_catalog = model_catalogs[_default_engine]  # back-compat alias for the default engine's catalog
 managed_app_server = ManagedAppServer()
+_usage_cache: TtlCache[RuntimeUsageInfo | None] = TtlCache(ttl_seconds=60.0)
 
 
 def _model_catalog_for(engine: str | None) -> RuntimeModelCatalog:
@@ -645,7 +648,11 @@ async def get_runtime_skills():
 @app.get("/runtime/usage", response_model=RuntimeUsageResponse)
 async def get_runtime_usage(engine: str):
     adapter = _adapter_for_engine(engine)
-    usage = await adapter.get_usage()
+    # Antigravity's get_usage() is a real ~1-3s subprocess spawn per call --
+    # the compose bar and the desktop Task Detail panel can both be polling
+    # this at once, so a short cache absorbs a burst of concurrent requests
+    # into one actual call instead of one each.
+    usage = await _usage_cache.get_or_fetch(engine, adapter.get_usage)
     return RuntimeUsageResponse(engine=engine, usage=usage)
 
 

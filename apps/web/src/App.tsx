@@ -3840,7 +3840,10 @@ export function App() {
   const conversationsQuery = useQuery({
     queryKey: ["conversations"],
     queryFn: api.listConversations,
-    refetchInterval: 5000,
+    // Drives the whole conversations list + the notification watcher below,
+    // so it can't stop polling entirely -- 8s (was 5s) is still prompt for
+    // status changes while cutting request volume by ~40%.
+    refetchInterval: 8000,
   });
 
   const [taskNotificationsEnabled, setTaskNotificationsEnabled] = useState(loadTaskNotificationsEnabled);

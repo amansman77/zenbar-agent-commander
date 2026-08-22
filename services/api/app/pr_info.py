@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import httpx
 
 from .schemas import TaskDiff
+from .ttl_cache import TtlCache
 
 
 @dataclass
@@ -88,7 +89,20 @@ def _credential_token(host: str) -> str | None:
     return None
 
 
+# Both caches are keyed by the PR/MR URL itself and share a 60s TTL --
+# short enough that "just merged" or "just closed" shows up promptly, long
+# enough to absorb the compose bar's own polling (every 15s while a task is
+# active) into a small fraction of the actual GitHub/GitLab API calls it
+# used to make one-for-one.
+_info_cache: TtlCache[PrInfo | None] = TtlCache(ttl_seconds=60.0)
+_diff_cache: TtlCache[TaskDiff | None] = TtlCache(ttl_seconds=60.0)
+
+
 async def fetch_pr_or_mr_info(url: str) -> PrInfo | None:
+    return await _info_cache.get_or_fetch(url, lambda: _fetch_pr_or_mr_info_uncached(url))
+
+
+async def _fetch_pr_or_mr_info_uncached(url: str) -> PrInfo | None:
     github_match = _GITHUB_PR_RE.match(url)
     if github_match:
         owner, repo, number_str = github_match.groups()
@@ -186,6 +200,10 @@ async def fetch_pr_or_mr_diff(url: str) -> TaskDiff | None:
     task workspace's current state (which, for anything already committed,
     shows nothing -- see TaskOrchestrator.refresh_diff's own docstring).
     """
+    return await _diff_cache.get_or_fetch(url, lambda: _fetch_pr_or_mr_diff_uncached(url))
+
+
+async def _fetch_pr_or_mr_diff_uncached(url: str) -> TaskDiff | None:
     github_match = _GITHUB_PR_RE.match(url)
     if github_match:
         owner, repo, number_str = github_match.groups()
