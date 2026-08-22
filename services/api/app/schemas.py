@@ -156,6 +156,19 @@ class RuntimeUsageResponse(BaseModel):
     usage: RuntimeUsageInfo | None = None
 
 
+class PrInfoResponse(BaseModel):
+    platform: Literal["github", "gitlab"]
+    number: int
+    title: str
+    description: str | None = None
+    state: str
+    url: str
+    source_branch: str | None = None
+    target_branch: str | None = None
+    author: str | None = None
+    merged_at: str | None = None
+
+
 class ProjectSummary(BaseModel):
     id: str
     name: str

@@ -105,6 +105,19 @@ export interface RuntimeUsageResponse {
   usage: RuntimeUsageInfo | null;
 }
 
+export interface PrInfo {
+  platform: "github" | "gitlab";
+  number: number;
+  title: string;
+  description: string | null;
+  state: string;
+  url: string;
+  source_branch: string | null;
+  target_branch: string | null;
+  author: string | null;
+  merged_at: string | null;
+}
+
 export interface TaskSummary {
   id: string;
   project_id: string;

@@ -1214,6 +1214,7 @@ function ConversationDetailScreen({
     },
   });
   const taskStarted = conversation?.task_id != null;
+  const isTaskActive = conversation?.task_status != null && ACTIVE_TASK_STATUSES.includes(conversation.task_status);
 
   const { data: skillsData } = useQuery({
     queryKey: ["runtime-skills"],
@@ -1245,6 +1246,18 @@ function ConversationDetailScreen({
     queryFn: () => api.getDiff(taskId!),
     enabled: Boolean(taskId),
     staleTime: 10_000,
+  });
+
+  // The PR/MR URL only shows up once the agent mentions it in a message
+  // (there's no structured field for it -- see pr_info.py's regex scan),
+  // so this is enabled the same way the diff is and re-checked periodically
+  // rather than depending on some explicit "PR opened" signal.
+  const { data: prInfo } = useQuery({
+    queryKey: ["conv-pr-info", conversationId],
+    queryFn: () => api.getConversationPrInfo(conversationId),
+    enabled: Boolean(taskId),
+    staleTime: 30_000,
+    refetchInterval: isTaskActive ? 15_000 : false,
   });
 
   const { data: enginesData } = useQuery({
@@ -1303,7 +1316,6 @@ function ConversationDetailScreen({
   const profileControlsModel = Boolean(selectedProfileOption?.model);
   const effectiveModel = conversation?.task_model ?? selectedModel ?? availableModels[0] ?? null;
 
-  const isTaskActive = conversation?.task_status != null && ACTIVE_TASK_STATUSES.includes(conversation.task_status);
   const isWaitingApproval = conversation?.task_status === "waiting_result_approval";
   const isTaskFailed = conversation?.task_status === "failed";
   const isTaskStopped = conversation?.task_status === "stopped";
@@ -1520,6 +1532,26 @@ function ConversationDetailScreen({
           <p className="empty-state" style={{ textAlign: "center", marginTop: "2rem" }}>
             Start typing below to begin the conversation.
           </p>
+        )}
+        {activeTab === "diff" && prInfo && (
+          <a href={prInfo.url} target="_blank" rel="noreferrer" className="pr-info-card">
+            <div className="pr-info-card-header">
+              <span
+                className={`status ${
+                  prInfo.state === "merged" ? "status-blue" : prInfo.state === "open" ? "status-green" : "status-red"
+                }`}
+              >
+                {prInfo.platform === "github" ? "GitHub" : "GitLab"} #{prInfo.number} · {prInfo.state}
+              </span>
+            </div>
+            <strong className="pr-info-card-title">{prInfo.title}</strong>
+            {prInfo.source_branch && prInfo.target_branch ? (
+              <span className="item-secondary mono">
+                {prInfo.source_branch} → {prInfo.target_branch}
+              </span>
+            ) : null}
+            {prInfo.description ? <p className="pr-info-card-description">{prInfo.description}</p> : null}
+          </a>
         )}
         {activeTab === "diff" && (
           diffData?.raw_diff ? (

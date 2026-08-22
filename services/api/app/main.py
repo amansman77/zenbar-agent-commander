@@ -16,6 +16,7 @@ from .codex_profiles import get_profile as get_codex_profile
 from .codex_profiles import list_profiles as list_codex_profiles
 from .codex_project_trust import add_project_trust_entry
 from .github_pr import MergeResult, merge_pull_request_for_branch
+from .pr_info import fetch_pr_or_mr_diff, fetch_pr_or_mr_info, find_latest_pr_or_mr_url
 from .model_catalog import RuntimeModelCatalog
 from .repository import (
     add_approval,
@@ -34,6 +35,7 @@ from .repository import (
     delete_project_pipeline,
     delete_project_prompt,
     get_conversation,
+    get_conversation_for_task,
     get_project_any,
     get_project,
     get_project_pipeline,
@@ -98,6 +100,7 @@ from .schemas import (
     RuntimeSkill,
     RuntimeSkillsResponse,
     RuntimeUsageResponse,
+    PrInfoResponse,
     FollowupTurnRequest,
     TaskApprovalRequest,
     TaskDetail,
@@ -405,6 +408,32 @@ def get_conversation_detail(conversation_id: str, db: Session = Depends(get_db))
     return serialize_conversation_detail(conv)
 
 
+@app.get("/conversations/{conversation_id}/pr-info", response_model=PrInfoResponse | None)
+async def get_conversation_pr_info(conversation_id: str, db: Session = Depends(get_db)):
+    conv = get_conversation(db, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    texts = [m.content for m in conv.messages if m.content]
+    url = find_latest_pr_or_mr_url(texts)
+    if url is None:
+        return None
+    info = await fetch_pr_or_mr_info(url)
+    if info is None:
+        return None
+    return PrInfoResponse(
+        platform=info.platform,
+        number=info.number,
+        title=info.title,
+        description=info.description,
+        state=info.state,
+        url=info.url,
+        source_branch=info.source_branch,
+        target_branch=info.target_branch,
+        author=info.author,
+        merged_at=info.merged_at,
+    )
+
+
 @app.delete("/conversations/{conversation_id}", status_code=204)
 def delete_conversation_endpoint(conversation_id: str, db: Session = Depends(get_db)):
     conv = get_conversation(db, conversation_id)
@@ -668,6 +697,22 @@ async def get_task_diff(task_id: str, db: Session = Depends(get_db)):
     task = get_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    # A PR/MR's own diff is the authoritative record of what changed,
+    # independent of the local task workspace's current state -- once the
+    # agent has committed (the normal path once a PR/MR exists), a live
+    # `git diff` against that workspace shows nothing, which used to make
+    # the diff tab go blank for exactly the tasks that finished cleanly.
+    # Falls through to the workspace-based computation below if no PR/MR is
+    # known yet, or if fetching its diff fails/comes back empty.
+    conv = get_conversation_for_task(db, task_id)
+    if conv is not None:
+        pr_url = find_latest_pr_or_mr_url([m.content for m in conv.messages if m.content])
+        if pr_url is not None:
+            pr_diff = await fetch_pr_or_mr_diff(pr_url)
+            if pr_diff is not None and pr_diff.files_changed:
+                return pr_diff
+
     task = await _reconcile_and_ensure_task_runtime_stream(task, db)
     task = await orchestrator.refresh_diff(db, task)
     return serialize_diff(task)

@@ -586,6 +586,11 @@ def get_conversation(db: Session, conversation_id: str) -> Conversation | None:
     return db.scalars(stmt).first()
 
 
+def get_conversation_for_task(db: Session, task_id: str) -> Conversation | None:
+    stmt = select(Conversation).where(Conversation.task_id == task_id).options(selectinload(Conversation.messages))
+    return db.scalars(stmt).first()
+
+
 def delete_conversation(db: Session, conversation_id: str) -> None:
     conv = db.get(Conversation, conversation_id)
     if conv:
