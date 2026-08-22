@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault("ZENBAR_RUNTIME_MODE", "mock")
 
-from app.pr_info import _diff_from_files, find_all_pr_or_mr_urls, find_latest_pr_or_mr_url
+from app.pr_info import _diff_from_files, _FileChange, find_all_pr_or_mr_urls, find_latest_pr_or_mr_url
 
 
 def test_finds_a_github_pr_url():
@@ -84,7 +84,7 @@ def test_diff_from_files_synthesizes_the_git_diff_header():
     # (parseDiffFiles) splits files on that header line, so without it the
     # whole raw_diff would render as one unlabeled blob instead of being
     # split per file.
-    diff = _diff_from_files([("app/foo.py", "@@ -1,1 +1,1 @@\n-old\n+new")])
+    diff = _diff_from_files([_FileChange(path="app/foo.py", status="modified", patch="@@ -1,1 +1,1 @@\n-old\n+new")])
 
     assert diff.files_changed == ["app/foo.py"]
     assert diff.raw_diff is not None
@@ -92,14 +92,33 @@ def test_diff_from_files_synthesizes_the_git_diff_header():
     assert "@@ -1,1 +1,1 @@" in diff.raw_diff
 
 
+def test_diff_from_files_marks_added_and_deleted_files_in_the_header():
+    # The frontend's parser reads "new file mode"/"deleted file mode" lines
+    # (the same way it already does for a real `git diff`'s own header) to
+    # show each file's added/modified/deleted status.
+    diff = _diff_from_files(
+        [
+            _FileChange(path="new.py", status="added", patch="@@ -0,0 +1,1 @@\n+hello"),
+            _FileChange(path="old.py", status="deleted", patch="@@ -1,1 +0,0 @@\n-bye"),
+            _FileChange(path="renamed_to.py", status="renamed", old_path="renamed_from.py"),
+        ]
+    )
+
+    assert diff.files_changed == ["new.py", "old.py", "renamed_to.py"]
+    assert "diff --git a/new.py b/new.py\nnew file mode 100644" in diff.raw_diff
+    assert "diff --git a/old.py b/old.py\ndeleted file mode 100644" in diff.raw_diff
+    assert "rename from renamed_from.py" in diff.raw_diff
+    assert "rename to renamed_to.py" in diff.raw_diff
+
+
 def test_diff_from_files_lists_binary_files_without_a_patch():
     # GitHub/GitLab both omit patch/diff content for binary or very large
-    # files -- still worth listing as a changed file, just with nothing to
-    # render for it.
-    diff = _diff_from_files([("docs/evidence/screenshot.png", None)])
+    # files -- still gets a header (so its added/modified/deleted status is
+    # visible), just with no hunk body under it.
+    diff = _diff_from_files([_FileChange(path="docs/evidence/screenshot.png", status="added", patch=None)])
 
     assert diff.files_changed == ["docs/evidence/screenshot.png"]
-    assert diff.raw_diff is None
+    assert diff.raw_diff == "diff --git a/docs/evidence/screenshot.png b/docs/evidence/screenshot.png\nnew file mode 100644"
 
 
 def test_diff_from_files_returns_empty_diff_for_no_files():

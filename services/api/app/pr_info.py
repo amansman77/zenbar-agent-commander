@@ -4,6 +4,7 @@ import re
 import subprocess
 import urllib.parse
 from dataclasses import dataclass
+from typing import Literal
 
 import httpx
 
@@ -175,19 +176,41 @@ async def _fetch_gitlab_mr(host: str, project_path: str, iid_str: str) -> PrInfo
     )
 
 
-def _diff_from_files(files: list[tuple[str, str | None]]) -> TaskDiff:
+@dataclass
+class _FileChange:
+    path: str
+    status: Literal["added", "modified", "deleted", "renamed"]
+    old_path: str | None = None
+    patch: str | None = None
+
+
+def _diff_from_files(files: list[_FileChange]) -> TaskDiff:
     file_names: list[str] = []
     diff_parts: list[str] = []
-    for filename, patch in files:
-        file_names.append(filename)
+    for change in files:
+        file_names.append(change.path)
         # Both APIs return only the hunk body ("@@ ... @@" lines), not a
         # "diff --git a/... b/..." header -- the frontend's diff parser
-        # (parseDiffFiles) splits files on that header line, so it has to
-        # be synthesized here. Binary/very large files come back with no
-        # patch/diff content at all (GitHub and GitLab both do this) --
-        # still listed in files_changed, just with nothing to render.
-        if patch:
-            diff_parts.append(f"diff --git a/{filename} b/{filename}\n{patch}")
+        # (parseDiffFiles) splits files on that header line and also reads
+        # "new file mode"/"deleted file mode"/"rename from"/"rename to"
+        # lines from it (the same way it already does for a real `git
+        # diff`'s own header) to show each file's added/modified/deleted
+        # status, so both need synthesizing here. Emitted even for
+        # binary/very large files with no patch content (which both APIs
+        # omit) so their status still shows up, just with an empty diff
+        # body.
+        header = [f"diff --git a/{change.old_path or change.path} b/{change.path}"]
+        if change.status == "added":
+            header.append("new file mode 100644")
+        elif change.status == "deleted":
+            header.append("deleted file mode 100644")
+        elif change.status == "renamed" and change.old_path:
+            header.append(f"rename from {change.old_path}")
+            header.append(f"rename to {change.path}")
+        block = "\n".join(header)
+        if change.patch:
+            block = f"{block}\n{change.patch}"
+        diff_parts.append(block)
     if not file_names:
         return TaskDiff()
     summary = f"Updated {len(file_names)} file(s) in the pull/merge request."
@@ -238,7 +261,32 @@ async def _fetch_github_pr_diff(owner: str, repo: str, number_str: str) -> TaskD
     files = resp.json()
     if not isinstance(files, list):
         return None
-    return _diff_from_files([(f.get("filename"), f.get("patch")) for f in files if f.get("filename")])
+    return _diff_from_files(
+        [
+            _FileChange(
+                path=f["filename"],
+                status=_github_status_to_change_status(f.get("status")),
+                old_path=f.get("previous_filename") if f.get("status") == "renamed" else None,
+                patch=f.get("patch"),
+            )
+            for f in files
+            if f.get("filename")
+        ]
+    )
+
+
+def _github_status_to_change_status(status: str | None) -> Literal["added", "modified", "deleted", "renamed"]:
+    # GitHub's file `status`: added, removed, modified, renamed, copied,
+    # changed, unchanged. Only the first four have an unambiguous mapping;
+    # copied/changed/unchanged are rare in practice for a PR's file list
+    # and fold into "modified" rather than inventing more UI states for them.
+    if status == "added":
+        return "added"
+    if status == "removed":
+        return "deleted"
+    if status == "renamed":
+        return "renamed"
+    return "modified"
 
 
 async def _fetch_gitlab_mr_diff(host: str, project_path: str, iid_str: str) -> TaskDiff | None:
@@ -261,8 +309,23 @@ async def _fetch_gitlab_mr_diff(host: str, project_path: str, iid_str: str) -> T
         return None
     return _diff_from_files(
         [
-            (path, c.get("diff"))
+            _FileChange(
+                path=path,
+                status=_gitlab_change_to_status(c),
+                old_path=c.get("old_path") if c.get("renamed_file") else None,
+                patch=c.get("diff"),
+            )
             for c in changes
             if (path := c.get("new_path") or c.get("old_path"))
         ]
     )
+
+
+def _gitlab_change_to_status(change: dict) -> Literal["added", "modified", "deleted", "renamed"]:
+    if change.get("new_file"):
+        return "added"
+    if change.get("deleted_file"):
+        return "deleted"
+    if change.get("renamed_file"):
+        return "renamed"
+    return "modified"

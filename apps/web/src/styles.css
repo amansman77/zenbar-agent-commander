@@ -1222,6 +1222,46 @@ textarea {
   color: #426487;
 }
 
+.diff-group-header-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.diff-status-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.diff-status-added {
+  background: rgba(46, 160, 67, 0.18);
+  color: #1a7431;
+}
+
+.diff-status-modified {
+  background: rgba(66, 100, 135, 0.15);
+  color: #426487;
+}
+
+.diff-status-deleted {
+  background: rgba(209, 62, 62, 0.16);
+  color: #b3261e;
+}
+
+.diff-status-renamed {
+  background: rgba(149, 92, 222, 0.16);
+  color: #6b3fa0;
+}
+
 .status-action-danger {
   background: #b12a34;
 }

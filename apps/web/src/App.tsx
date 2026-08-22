@@ -152,12 +152,15 @@ type RunActionConfig = {
 };
 type SecondaryRunAction = { key: "reject" | "ask_changes"; label: string };
 
+type DiffFileStatus = "added" | "modified" | "deleted" | "renamed";
+
 type ParsedDiffFile = {
   id: string;
   fileName: string;
   lines: string[];
   additions: number;
   deletions: number;
+  status: DiffFileStatus;
 };
 
 type ExecutionSummary = {
@@ -664,7 +667,7 @@ function formatRelativeTime(timestamp: string): string {
   return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
-function parseDiffFiles(rawDiff: string): ParsedDiffFile[] {
+export function parseDiffFiles(rawDiff: string): ParsedDiffFile[] {
   const lines = rawDiff.split("\n");
   const files: ParsedDiffFile[] = [];
   let current: ParsedDiffFile | null = null;
@@ -686,7 +689,12 @@ function parseDiffFiles(rawDiff: string): ParsedDiffFile[] {
         fileName,
         lines: [line],
         additions: 0,
-        deletions: 0
+        deletions: 0,
+        // Refined below from this file's own header lines (new file
+        // mode/deleted file mode/rename from+to) when present -- "modified"
+        // is the right default for the common case where none of those
+        // appear at all.
+        status: "modified"
       };
       continue;
     }
@@ -696,10 +704,22 @@ function parseDiffFiles(rawDiff: string): ParsedDiffFile[] {
         fileName: `changes-${files.length + 1}`,
         lines: [],
         additions: 0,
-        deletions: 0
+        deletions: 0,
+        status: "modified"
       };
     }
     current.lines.push(line);
+    // Real `git diff` output carries these same header lines for its own
+    // added/deleted/renamed files, so this applies equally whether rawDiff
+    // came from a real workspace diff or a PR/MR's synthesized one
+    // (pr_info.py's _diff_from_files emits the identical lines).
+    if (line.startsWith("new file mode")) {
+      current.status = "added";
+    } else if (line.startsWith("deleted file mode")) {
+      current.status = "deleted";
+    } else if (line.startsWith("rename from") || line.startsWith("rename to")) {
+      current.status = "renamed";
+    }
     if (line.startsWith("+") && !line.startsWith("+++")) {
       current.additions += 1;
     } else if (line.startsWith("-") && !line.startsWith("---")) {
@@ -739,7 +759,17 @@ function GroupedDiff({
   onToggle: (id: string) => void;
 }) {
   const parsed = useMemo(() => parseDiffFiles(rawDiff), [rawDiff]);
-  const groups = parsed.length > 0 ? parsed : filesChanged.map((file, index) => ({ id: `${file}-${index}`, fileName: file, lines: [], additions: 0, deletions: 0 }));
+  const groups =
+    parsed.length > 0
+      ? parsed
+      : filesChanged.map((file, index) => ({
+          id: `${file}-${index}`,
+          fileName: file,
+          lines: [],
+          additions: 0,
+          deletions: 0,
+          status: "modified" as const
+        }));
 
   return (
     <div className="diff-groups">
@@ -749,7 +779,10 @@ function GroupedDiff({
         return (
           <section key={group.id} className="diff-group">
             <button type="button" className="diff-group-header" onClick={() => onToggle(group.id)} aria-expanded={isExpanded}>
-              <span className="mono truncate">{group.fileName}</span>
+              <span className="diff-group-header-name">
+                <DiffStatusBadge status={group.status} />
+                <span className="mono truncate">{group.fileName}</span>
+              </span>
               <span className="diff-change-count">
                 {changeCount} changes
               </span>
@@ -759,6 +792,19 @@ function GroupedDiff({
         );
       })}
     </div>
+  );
+}
+
+// git's own single-letter status convention (A/M/D/R), the same shorthand
+// `git diff --name-status` and most git UIs use.
+function DiffStatusBadge({ status }: { status: DiffFileStatus }) {
+  const label = status === "added" ? "A" : status === "deleted" ? "D" : status === "renamed" ? "R" : "M";
+  const title =
+    status === "added" ? "Added" : status === "deleted" ? "Deleted" : status === "renamed" ? "Renamed" : "Modified";
+  return (
+    <span className={`diff-status-badge diff-status-${status}`} title={title} aria-label={title}>
+      {label}
+    </span>
   );
 }
 
