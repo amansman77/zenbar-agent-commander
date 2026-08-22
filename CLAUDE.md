@@ -28,8 +28,12 @@ apps/web/            React + Vite web UI ("Web Commander")
 packages/shared/     TypeScript types mirroring the API schemas
 services/api/        FastAPI backend ("Orchestration API")
 scripts/             dev server launchers (local and external/Tailscale mode)
-docs/                Deployment.md, TOOLS.md, plans/ (dated design docs)
 ```
+
+`README.md` and this file are the only prose docs, on purpose. New context
+belongs in whichever of the two it fits — README for what Zenbar is, this file
+for how the code is arranged — rather than in a third document that nothing
+links to.
 
 ## Backend — `services/api/app/`
 
@@ -75,6 +79,15 @@ not a pattern to copy.
 session's events. Each event is normalized and persisted by `repository.py`,
 may move the task's status, and is fanned out over SSE
 (`streaming.py` → `GET /tasks/{id}/stream`) to the UI.
+
+**Task status.** Runtime events drive the status; the mapping is
+`repository.map_status_from_event`. The two waiting states are deliberately
+distinct and have been conflated before: `waiting_user_input` means the agent
+asked the *user* a question mid-run and the answer goes back to the runtime,
+while `waiting_result_approval` means the agent finished and a human has to
+accept the result. Only the latter is approvable (`can_approve`), and for an
+execute-mode task, approving it is also what merges the PR the agent opened
+(`routers/tasks.py::merge_task_pull_request`, best-effort by design).
 
 ## Frontend — `apps/web/src/`
 
