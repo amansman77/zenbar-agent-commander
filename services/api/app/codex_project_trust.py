@@ -1,3 +1,10 @@
+"""Maintains Codex's `projects` trust table in ~/.codex/config.toml.
+
+A repo path must be trusted for Codex to run in it without prompting, so a
+project is trusted once at creation and every task worktree under it inherits
+that trust.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

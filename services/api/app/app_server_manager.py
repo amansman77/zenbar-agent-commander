@@ -1,3 +1,10 @@
+"""Supervises the Codex App Server child process.
+
+Only used when ZENBAR_APP_SERVER_MANAGED is set; otherwise the App Server is
+expected to already be running at ZENBAR_APP_SERVER_WS_URL. Started and stopped
+from main.py's lifespan.
+"""
+
 from __future__ import annotations
 
 import asyncio

@@ -1,3 +1,10 @@
+"""SQLAlchemy ORM models: the persisted shape of the control plane.
+
+Project -> Task -> (TaskRun, TaskTurn, TaskEvent, TaskApproval), plus the
+Conversation/ConversationMessage chat surface and a project's saved prompts and
+pipelines. Read/write access goes through repository.py, not these directly.
+"""
+
 from __future__ import annotations
 
 import json

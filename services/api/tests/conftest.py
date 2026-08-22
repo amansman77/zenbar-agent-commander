@@ -20,13 +20,18 @@ if str(ROOT) not in sys.path:
 # sorts earlier in collection order — is what actually guarantees every test
 # in the session gets the mock adapter and the test database.
 #
-# This isn't hypothetical: before this file set these, a new test file that
-# sorted alphabetically before test_api.py caused a `DELETE FROM tasks` /
-# `DELETE FROM projects` test fixture to run against the real production
-# services/api/zenbar.db (because DATABASE_URL had already locked in its
-# default of `sqlite:///./zenbar.db` before test_api.py's own env-setting
-# line ever executed) and wiped real user data. See
-# critical_never_run_pytest_from_services_api in project memory for the
-# full incident writeup. Do not remove either setdefault below.
-os.environ.setdefault("ZENBAR_RUNTIME_MODE", "mock")
-os.environ.setdefault("ZENBAR_DATABASE_URL", f"sqlite:///{Path(__file__).with_name('test_zenbar.db')}")
+# These are assigned unconditionally, NOT with setdefault: a developer's
+# shell very often already exports the real ZENBAR_DATABASE_URL (the dev
+# scripts source .env.local, and `sqlite:///./zenbar.db` resolves relative to
+# the process cwd), and setdefault would then hand the whole test session the
+# *production* database. That is not hypothetical — a test fixture doing a
+# raw `DELETE FROM tasks` / `DELETE FROM projects` once wiped real user data
+# exactly this way. A test run has no legitimate reason to honor an inherited
+# database URL or runtime mode, so it always overrides them.
+os.environ["ZENBAR_RUNTIME_MODE"] = "mock"
+os.environ["ZENBAR_DATABASE_URL"] = f"sqlite:///{Path(__file__).with_name('test_zenbar.db')}"
+
+# Auth is off for tests. Without this, an exported ZENBAR_API_TOKEN in the
+# developer's shell makes every request from TestClient a 401.
+os.environ.pop("ZENBAR_API_TOKEN", None)
+os.environ.pop("ZENBAR_ALLOW_UNAUTHENTICATED_REMOTE", None)

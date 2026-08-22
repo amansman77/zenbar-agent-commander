@@ -1,3 +1,10 @@
+"""Creates and removes a task's isolated workspace.
+
+Each task gets its own git branch or worktree (ZENBAR_WORKSPACE_ROOT) named
+`task/<slug>-<shortid>`, so an agent can modify files freely without touching
+the developer's checkout until the result is approved.
+"""
+
 from __future__ import annotations
 
 import os

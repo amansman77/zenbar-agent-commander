@@ -600,13 +600,13 @@ def test_discover_project_falls_back_to_main_on_detached_head():
 
 
 def test_discover_project_cancelled(monkeypatch):
-    from app import main
+    from app.routers import projects as projects_router
     from app.repo_discovery import FolderSelectionCancelled
 
     def cancel(_: str | None = None):
         raise FolderSelectionCancelled("Folder selection was cancelled")
 
-    monkeypatch.setattr(main, "discover_repository", cancel)
+    monkeypatch.setattr(projects_router, "discover_repository", cancel)
 
     response = client.post("/projects/discover", json={})
     assert response.status_code == 409
@@ -1987,7 +1987,7 @@ def test_approve_records_merge_outcome_event_and_still_succeeds_without_a_pull_r
 
 
 def test_approve_merges_pull_request_when_one_exists(monkeypatch):
-    from app import main as main_module
+    from app.routers import tasks as main_module
     from app.github_pr import MergeResult
 
     calls: list[tuple[str, str]] = []
@@ -2028,7 +2028,7 @@ def test_approve_merges_pull_request_when_one_exists(monkeypatch):
 
 
 def test_approve_does_not_attempt_merge_for_plan_mode_tasks(monkeypatch):
-    from app import main as main_module
+    from app.routers import tasks as main_module
 
     calls: list[str] = []
 
@@ -2221,7 +2221,7 @@ def test_conversation_pr_info_attaches_each_prs_own_diff():
         async def fake_fetch_pr_or_mr_diff(url: str):
             return fake_diff(url)
 
-        import app.main as main_module
+        from app.routers import conversations as main_module
 
         original_info = main_module.fetch_pr_or_mr_info
         original_diff = main_module.fetch_pr_or_mr_diff

@@ -1,3 +1,12 @@
+"""Database access layer: every read/write of the ORM models plus the
+serializers that turn them into API schemas.
+
+Organized in this order: projects, project prompts/pipelines, tasks, turns and
+runs, events (including event-type normalization and the event -> task-status
+mapping), approvals, conversations, and finally the `serialize_*` functions.
+Routers and TaskOrchestrator call these functions instead of touching the ORM.
+"""
+
 from __future__ import annotations
 
 import json

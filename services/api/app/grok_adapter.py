@@ -1,3 +1,9 @@
+"""RuntimeAdapter for the Grok CLI.
+
+The simplest of the CLI adapters: no usage reporting and no interactive
+approval, so a task runs to completion in a single CLI invocation.
+"""
+
 from __future__ import annotations
 
 import asyncio

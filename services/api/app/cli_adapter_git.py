@@ -1,3 +1,9 @@
+"""git helpers shared by the CLI-backed adapters (Claude/Grok/Antigravity).
+
+CLI engines do not report a structured diff of their own, so the workspace diff
+is computed here from git instead.
+"""
+
 from __future__ import annotations
 
 import subprocess

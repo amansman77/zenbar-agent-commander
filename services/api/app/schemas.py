@@ -1,3 +1,9 @@
+"""Pydantic models for the HTTP API and for runtime<->orchestrator messages.
+
+The request/response half is mirrored by hand in packages/shared/src/index.ts;
+changing a shape here means changing it there too.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime

@@ -1,3 +1,9 @@
+"""SQLAlchemy engine/session setup and lightweight forward-only migrations.
+
+The database is a single SQLite file (ZENBAR_DATABASE_URL). `ensure_schema()`
+adds columns/backfills that `create_all` cannot, and runs once at startup.
+"""
+
 from __future__ import annotations
 
 import os
