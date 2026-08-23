@@ -149,7 +149,9 @@ def test_run_turn_uses_a_generous_readline_limit():
 
     from app import claude_adapter
 
-    source = inspect.getsource(claude_adapter.ClaudeCliAdapter._run_turn)
+    # The actual subprocess spawn moved into _spawn_and_stream (shared by
+    # the normal path and the --session-id "already in use" --resume retry).
+    source = inspect.getsource(claude_adapter.ClaudeCliAdapter._spawn_and_stream)
     assert "limit=" in source
     assert "65536" not in source, "must not be left at asyncio's default"
 
@@ -199,3 +201,88 @@ def test_run_turn_maps_plan_execution_mode_to_the_real_plan_permission_mode():
 
     source = inspect.getsource(claude_adapter.ClaudeCliAdapter._run_turn)
     assert '"plan" if session.execution_mode == "plan" else "bypassPermissions"' in source
+
+
+def test_followup_task_switches_the_model_for_subsequent_turns():
+    # Each turn is its own CLI spawn (--resume keeps the same Claude
+    # session/history going; --model is a separate, independent flag), so
+    # switching the model doesn't require a new session -- sticky from
+    # here on, not just for this one message.
+    async def run() -> None:
+        adapter = ClaudeCliAdapter()
+        session = _session()
+        adapter._sessions["s1"] = session
+
+        result = await adapter.followup_task("s1", "next message", model="claude-opus-5")
+
+        assert session.model == "claude-opus-5"
+        assert result.effective_model == "claude-opus-5"
+
+        # No override -> keeps using it.
+        result2 = await adapter.followup_task("s1", "another message")
+        assert result2.effective_model == "claude-opus-5"
+
+    asyncio.run(run())
+
+
+def test_run_turn_retries_with_resume_when_session_id_is_already_in_use():
+    # Hit for real live: an API process restart wipes our own in-memory
+    # session bookkeeping, but the Claude CLI's own session store (on disk,
+    # independent of us) still remembers the id -- so re-using --session-id
+    # for what we think is a "fresh" start gets rejected. --resume is what
+    # actually continues it.
+    async def run() -> None:
+        adapter = ClaudeCliAdapter()
+        session = _session()
+        calls: list[list[str]] = []
+
+        async def fake_spawn_and_stream(session_arg, args):
+            calls.append(args)
+            if "--session-id" in args:
+                return "", False, b"Error: Session ID task-1 is already in use.\n", 1
+            return "resumed successfully", False, b"", 0
+
+        adapter._spawn_and_stream = fake_spawn_and_stream
+
+        await adapter._run_turn(session, "hello", new_session_id="task-1")
+
+        assert len(calls) == 2
+        assert "--session-id" in calls[0] and "task-1" in calls[0]
+        assert "--resume" in calls[1] and "task-1" in calls[1]
+        assert "--session-id" not in calls[1]
+
+        events = []
+        while not session.queue.empty():
+            events.append(session.queue.get_nowait())
+        types = [e.type for e in events]
+        assert "completed" in types
+        assert "failed" not in types
+
+    asyncio.run(run())
+
+
+def test_run_turn_does_not_retry_a_different_failure():
+    # Only the specific "already in use" collision should trigger a retry
+    # -- any other failure must surface normally, not silently retry.
+    async def run() -> None:
+        adapter = ClaudeCliAdapter()
+        session = _session()
+        calls: list[list[str]] = []
+
+        async def fake_spawn_and_stream(session_arg, args):
+            calls.append(args)
+            return "", True, b"Some unrelated error\n", 1
+
+        adapter._spawn_and_stream = fake_spawn_and_stream
+
+        await adapter._run_turn(session, "hello", new_session_id="task-1")
+
+        assert len(calls) == 1
+
+        events = []
+        while not session.queue.empty():
+            events.append(session.queue.get_nowait())
+        types = [e.type for e in events]
+        assert "failed" in types
+
+    asyncio.run(run())

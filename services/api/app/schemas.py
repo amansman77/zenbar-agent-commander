@@ -241,6 +241,9 @@ class RespondTaskRequest(BaseModel):
 
 class FollowupTurnRequest(BaseModel):
     content: str = Field(min_length=1)
+    # Switches the model for this and subsequent turns, keeping the same
+    # session/workspace/history. None keeps whatever the task is already using.
+    model: str | None = None
 
 
 class TaskDiff(BaseModel):

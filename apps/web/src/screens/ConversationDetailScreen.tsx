@@ -128,21 +128,23 @@ export function ConversationDetailScreen({
   const defaultEngine = enginesData?.default_engine ?? null;
   const [selectedEngine, setSelectedEngine] = useState<string | null>(null);
   const effectiveEngine = selectedEngine ?? defaultEngine;
+  // Once a task exists, its own engine is authoritative over whatever's
+  // currently selected in the (now-hidden) engine picker. Tasks created
+  // before per-task engine selection existed (or without one explicitly
+  // picked) store "" for task_engine, not "codex" -- `||` (not `??`)
+  // matches the same "falsy engine means the default engine" convention
+  // the backend already applies (see TaskOrchestrator._adapter_for).
+  // Shared by usage, the model picker, and the profiles gate below, all of
+  // which need the task's *real* engine once one exists, not just
+  // whatever's left over in the (by then hidden) pre-task engine picker.
+  const activeEngine = taskStarted ? conversation?.task_engine || defaultEngine : effectiveEngine;
   // Profiles read ~/.codex/*.config.toml — a Codex-only concept, meaningless for other engines.
-  const engineSupportsProfiles = effectiveEngine == null || effectiveEngine === "codex";
+  const engineSupportsProfiles = activeEngine == null || activeEngine === "codex";
 
   // Account-level rate-limit status -- Codex, Antigravity, and Claude all
   // support this (see each adapter's get_usage); Grok doesn't expose an
   // equivalent anywhere, so its /runtime/usage calls are simply never made.
-  // Once a task exists, its own engine is authoritative over whatever's
-  // currently selected in the (now-hidden) engine picker. Tasks created
-  // before per-task engine selection existed (or without one explicitly
-  // picked) store "" for task_engine, not "codex" -- `??` only falls back
-  // on null/undefined, not "", so this used `||` deliberately to match the
-  // same "falsy engine means the default engine" convention the backend
-  // already applies (see TaskOrchestrator._adapter_for). Caught live: the
-  // badge silently never appeared for exactly these tasks.
-  const usageEngine = taskStarted ? conversation?.task_engine || defaultEngine : effectiveEngine;
+  const usageEngine = activeEngine;
   const usageEngineSupported = usageEngine != null && USAGE_SUPPORTED_ENGINES.includes(usageEngine);
   const { data: usageData } = useQuery({
     queryKey: ["runtime-usage", usageEngine],
@@ -154,8 +156,8 @@ export function ConversationDetailScreen({
   const usageInfo = usageEngineSupported ? usageData?.usage ?? null : null;
 
   const { data: modelsData, isLoading: modelsLoading } = useQuery({
-    queryKey: ["runtime-models", effectiveEngine],
-    queryFn: () => api.listRuntimeModels(effectiveEngine),
+    queryKey: ["runtime-models", activeEngine],
+    queryFn: () => api.listRuntimeModels(activeEngine),
     staleTime: 0,
   });
   const availableModels: string[] = (modelsData?.models ?? [])
@@ -171,7 +173,12 @@ export function ConversationDetailScreen({
   });
   const availableProfiles: RuntimeProfileOption[] = engineSupportsProfiles ? profilesData?.profiles ?? [] : [];
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
-  const selectedProfileOption = availableProfiles.find((p) => p.id === selectedProfile) ?? null;
+  // Once a task exists, its own profile (not whatever's left over in the
+  // pre-task picker) is what actually governs whether the model is locked
+  // -- needed now that the model picker stays interactive for a follow-up
+  // (see modelToUse in handleSend below), not just before the first send.
+  const activeProfileId = taskStarted ? conversation?.task_profile ?? null : selectedProfile;
+  const selectedProfileOption = availableProfiles.find((p) => p.id === activeProfileId) ?? null;
   const profileControlsModel = Boolean(selectedProfileOption?.model);
   const effectiveModel = conversation?.task_model ?? selectedModel ?? availableModels[0] ?? null;
 
@@ -223,6 +230,12 @@ export function ConversationDetailScreen({
     onSuccess: (updated) => {
       setInput("");
       setSelectedSkill(null);
+      // A model switch is only meant to apply once (this and every turn
+      // after it, per the backend) -- not keep resending the same explicit
+      // override on every future follow-up. effectiveModel already prefers
+      // conversation.task_model (which `updated` just refreshed) over this,
+      // so clearing it doesn't lose anything the picker still needs to show.
+      setSelectedModel(null);
       queryClient.setQueryData(["conversation", conversationId], updated);
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
@@ -328,7 +341,17 @@ export function ConversationDetailScreen({
 
   const handleSend = () => {
     if (isSendDisabled) return;
-    const modelToUse = taskStarted || profileControlsModel ? null : (selectedModel || availableModels[0] || null);
+    // A follow-up can switch the model for this and subsequent turns (same
+    // session/workspace/history) -- but only when explicitly picked
+    // (selectedModel set); when the user hasn't touched the picker, `null`
+    // tells the backend "keep whatever this task is already using" rather
+    // than silently re-sending availableModels[0], which could differ from
+    // the model actually in use and switch it out from under the user on
+    // every follow-up. A fresh task has no "keep as-is" to fall back to, so
+    // it still needs a concrete pick.
+    const modelToUse = profileControlsModel
+      ? null
+      : selectedModel || (taskStarted ? null : availableModels[0] || null);
     const profileToUse = taskStarted ? null : selectedProfile;
     const engineToUse = taskStarted ? null : selectedEngine;
     if (canSendPipeline) {
@@ -571,14 +594,17 @@ export function ConversationDetailScreen({
               </label>
             )
           )}
-          {taskStarted ? (
-            effectiveModel ? (
-              <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }}>◎ {effectiveModel}</span>
-            ) : null
-          ) : profileControlsModel ? (
+          {profileControlsModel ? (
             <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }} title="Model is set by the selected profile">
               ◎ {selectedProfileOption?.model}
             </span>
+          ) : taskStarted && isTaskActive ? (
+            // Genuinely mid-turn -- nothing to pick yet, since a follow-up
+            // (where a model switch actually applies) can only be sent
+            // once the current turn finishes.
+            effectiveModel ? (
+              <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }}>◎ {effectiveModel}</span>
+            ) : null
           ) : modelsLoading ? (
             // Engines whose model list comes from a real CLI subprocess call
             // (e.g. Antigravity's `agy models`, ~3s wall time) leave this
@@ -594,8 +620,19 @@ export function ConversationDetailScreen({
               <label style={{ display: "flex", alignItems: "center", gap: "3px", fontSize: "0.73rem", color: "var(--text-soft)" }}>
                 <span>◎</span>
                 <select
-                  value={selectedModel ?? availableModels[0]}
+                  // selectedModel (the user's own not-yet-sent pick) must
+                  // win here, not just in handleSend's modelToUse --
+                  // effectiveModel prioritizes conversation.task_model (the
+                  // last-confirmed backend value) first, so picking a new
+                  // option looked like it did nothing until a message was
+                  // actually sent and the switch came back confirmed.
+                  value={selectedModel ?? effectiveModel ?? availableModels[0]}
                   onChange={(e) => setSelectedModel(e.target.value)}
+                  // A finished task keeps this picker open (unlike engine/
+                  // profile, which stay locked once a task exists) -- a
+                  // follow-up sends this model for that and every turn
+                  // after it, same session/workspace/history the whole way.
+                  title={taskStarted ? "다음 메시지부터 이 모델이 적용됩니다" : undefined}
                   style={{
                     fontSize: "0.73rem",
                     border: "none",

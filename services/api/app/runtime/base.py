@@ -64,7 +64,12 @@ class RuntimeAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def followup_task(self, session_id: str, message: str, selected_skill: str | None = None) -> RuntimeSession:
+    async def followup_task(
+        self, session_id: str, message: str, selected_skill: str | None = None, model: str | None = None
+    ) -> RuntimeSession:
+        # model: switch the model for this and subsequent turns, keeping
+        # the same session/workspace/history -- None means "keep whatever
+        # this session is already using".
         raise NotImplementedError
 
     @abstractmethod

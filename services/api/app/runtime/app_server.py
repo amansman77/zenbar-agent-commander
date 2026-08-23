@@ -309,12 +309,27 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         requested = state.start_request.model if state.start_request else None
         return RuntimeSession(session_id=session_id, effective_model=requested)
 
-    async def followup_task(self, session_id: str, message: str, selected_skill: str | None = None) -> RuntimeSession:
+    async def followup_task(
+        self, session_id: str, message: str, selected_skill: str | None = None, model: str | None = None
+    ) -> RuntimeSession:
         state = self._require_session(session_id)
         request = state.start_request
         if request is None:
             raise RuntimeError("Follow-up unavailable because original task request is missing")
+        profile = get_profile(request.profile)
+        if model is not None and not (profile and profile.model):
+            # turn/start's own `model` field is documented (codex-rs
+            # app-server-protocol) as "Override the model for this turn and
+            # subsequent turns" -- same thread/workspace/history, genuinely
+            # sticky, not a one-off. Confirmed via the App Server's own
+            # protocol source, not just inferred. Skipped when a profile
+            # owns the model, matching start_task's own precedent ("a
+            # profile owns the model it declares; it wins over an explicit
+            # model pick").
+            request.model = model
         params = self._build_turn_start_params(session_id, request)
+        if model is not None and not (profile and profile.model):
+            params["model"] = None if is_default_model_alias(request.model) else request.model
         full_message = f"[Skill: {selected_skill}]\n{message}" if selected_skill else message
         params["input"] = [{"type": "text", "text": full_message, "text_elements": []}]
         turn = await self._rpc("turn/start", params)

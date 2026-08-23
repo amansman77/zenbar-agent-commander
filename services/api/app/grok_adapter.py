@@ -111,8 +111,16 @@ class GrokCliAdapter(RuntimeAdapter):
         asyncio.create_task(self._run_turn(session, request.prompt, new_session_id=request.task_id))
         return RuntimeSession(session_id=request.task_id, effective_model=session.model or "grok-default")
 
-    async def followup_task(self, session_id: str, message: str, selected_skill: str | None = None) -> RuntimeSession:
+    async def followup_task(
+        self, session_id: str, message: str, selected_skill: str | None = None, model: str | None = None
+    ) -> RuntimeSession:
         session = self._require_session(session_id)
+        if model is not None:
+            # Each turn is its own CLI spawn (--resume keeps the same Grok
+            # session/history going; --model is a separate, independent
+            # flag), so switching the model doesn't require a new session --
+            # sticky from here on, not just for this one message.
+            session.model = None if is_default_model_alias(model) else model.strip()
         asyncio.create_task(self._run_turn(session, message, new_session_id=None))
         return RuntimeSession(session_id=session_id, effective_model=session.model or "grok-default")
 
@@ -150,7 +158,7 @@ class GrokCliAdapter(RuntimeAdapter):
         return session
 
     async def _run_turn(self, session: _GrokSession, prompt: str, new_session_id: str | None) -> None:
-        args = [
+        base_args = [
             _grok_bin(),
             "--permission-mode",
             "bypassPermissions",
@@ -160,56 +168,46 @@ class GrokCliAdapter(RuntimeAdapter):
             session.working_directory,
         ]
         if session.model:
-            args += ["--model", session.model]
+            base_args += ["--model", session.model]
         if new_session_id:
-            args += ["--session-id", new_session_id]
+            args = [*base_args, "--session-id", new_session_id, "-p", prompt]
         elif session.grok_session_id:
-            args += ["--resume", session.grok_session_id]
-        args += ["-p", prompt]
+            args = [*base_args, "--resume", session.grok_session_id, "-p", prompt]
+        else:
+            args = [*base_args, "-p", prompt]
 
         await session.queue.put(RuntimeEvent(type="agent_status", message="Grok turn started"))
 
-        text_buffer = ""
-        stderr_tail = b""
-        returncode: int | None = None
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                cwd=session.working_directory,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, "NO_COLOR": "1", "TERM": "dumb"},
-                # A single NDJSON line can carry a full tool_call_update --
-                # e.g. a large file's complete before/after content in a
-                # write diff -- comfortably past asyncio's 64KiB default
-                # readline() limit. Hit for real: a Grok turn on a large
-                # file failed with "Separator is found, but chunk is longer
-                # than limit" (asyncio.LimitOverrunError). Same readline()
-                # loop shape here, so the same ceiling applies.
-                limit=1024 * 1024 * 20,
-            )
-            session.current_process = proc
-            assert proc.stdout is not None
-            while True:
-                line = await proc.stdout.readline()
-                if not line:
-                    break
-                try:
-                    item = json.loads(line.decode("utf-8", errors="ignore"))
-                except json.JSONDecodeError:
-                    continue
-                text_buffer = await self._handle_stream_event(session, item, text_buffer)
-            if proc.stderr is not None:
-                stderr_tail = (await proc.stderr.read())[-2000:]
-            returncode = await proc.wait()
+            text_buffer, stderr_tail, returncode = await self._spawn_and_stream(session, args)
         except FileNotFoundError:
             await session.queue.put(RuntimeEvent(type="failed", message=f"Grok CLI not found at {_grok_bin()}"))
             return
         except Exception as exc:  # noqa: BLE001 - surface any spawn/stream failure to the UI
             await session.queue.put(RuntimeEvent(type="failed", message=f"Grok turn errored: {exc}"))
             return
-        finally:
-            session.current_process = None
+
+        if (
+            new_session_id
+            and returncode != 0
+            and "is already in use" in stderr_tail.decode("utf-8", errors="ignore")
+        ):
+            # Our own in-memory session bookkeeping can go stale (e.g. the
+            # API process restarted) while the Grok CLI's own session store
+            # -- which lives on disk, independent of us -- still remembers
+            # this id perfectly well. --session-id then means "create,"
+            # which the CLI correctly refuses since one already exists;
+            # --resume is what actually continues it. Mirrors the same
+            # collision confirmed live on the Claude adapter.
+            resume_args = [*base_args, "--resume", new_session_id, "-p", prompt]
+            try:
+                text_buffer, stderr_tail, returncode = await self._spawn_and_stream(session, resume_args)
+            except FileNotFoundError:
+                await session.queue.put(RuntimeEvent(type="failed", message=f"Grok CLI not found at {_grok_bin()}"))
+                return
+            except Exception as exc:  # noqa: BLE001 - surface any spawn/stream failure to the UI
+                await session.queue.put(RuntimeEvent(type="failed", message=f"Grok turn errored: {exc}"))
+                return
 
         final_text = text_buffer.strip() or "(Grok produced no text response.)"
         await session.queue.put(
@@ -236,6 +234,50 @@ class GrokCliAdapter(RuntimeAdapter):
             await session.queue.put(
                 RuntimeEvent(type="failed", message=message, payload={"stderr": stderr_text})
             )
+
+    async def _spawn_and_stream(self, session: _GrokSession, args: list[str]) -> tuple[str, bytes, int | None]:
+        """Runs one Grok CLI invocation to completion, streaming its
+        streaming-json output into the session's event queue as it goes.
+        Split out of _run_turn so a --session-id "already in use" collision
+        can retry with --resume using the exact same spawn/stream logic,
+        rather than a second, drifting copy of it.
+        """
+        text_buffer = ""
+        stderr_tail = b""
+        returncode: int | None = None
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            cwd=session.working_directory,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "NO_COLOR": "1", "TERM": "dumb"},
+            # A single NDJSON line can carry a full tool_call_update --
+            # e.g. a large file's complete before/after content in a
+            # write diff -- comfortably past asyncio's 64KiB default
+            # readline() limit. Hit for real: a Grok turn on a large
+            # file failed with "Separator is found, but chunk is longer
+            # than limit" (asyncio.LimitOverrunError). Same readline()
+            # loop shape here, so the same ceiling applies.
+            limit=1024 * 1024 * 20,
+        )
+        session.current_process = proc
+        try:
+            assert proc.stdout is not None
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                try:
+                    item = json.loads(line.decode("utf-8", errors="ignore"))
+                except json.JSONDecodeError:
+                    continue
+                text_buffer = await self._handle_stream_event(session, item, text_buffer)
+            if proc.stderr is not None:
+                stderr_tail = (await proc.stderr.read())[-2000:]
+            returncode = await proc.wait()
+        finally:
+            session.current_process = None
+        return text_buffer, stderr_tail, returncode
 
     async def _handle_stream_event(self, session: _GrokSession, item: dict[str, Any], text_buffer: str) -> str:
         event_type = item.get("type")

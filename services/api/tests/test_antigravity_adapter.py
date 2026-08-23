@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,8 @@ from pathlib import Path
 os.environ.setdefault("ZENBAR_RUNTIME_MODE", "mock")
 
 from app.antigravity_adapter import (
+    AntigravityCliAdapter,
+    _AntigravitySession,
     _last_model_response,
     _max_step_index,
     _parse_agy_usage_output,
@@ -125,3 +128,25 @@ def test_parse_agy_usage_output_returns_none_for_unrecognized_json():
 
 def test_parse_agy_usage_output_returns_none_for_non_json():
     assert _parse_agy_usage_output("not json at all") is None
+
+
+def test_followup_task_switches_the_model_for_subsequent_turns():
+    # Each turn is its own CLI spawn (--conversation keeps the same
+    # Antigravity conversation/history going; --model is a separate,
+    # independent flag), so switching the model doesn't require a new
+    # session -- sticky from here on, not just for this one message.
+    async def run() -> None:
+        adapter = AntigravityCliAdapter()
+        session = _AntigravitySession(working_directory="/tmp", default_branch="main", model=None)
+        adapter._sessions["s1"] = session
+
+        result = await adapter.followup_task("s1", "next message", model="gemini-3.7-flash-high")
+
+        assert session.model == "gemini-3.7-flash-high"
+        assert result.effective_model == "gemini-3.7-flash-high"
+
+        # No override -> keeps using it.
+        result2 = await adapter.followup_task("s1", "another message")
+        assert result2.effective_model == "gemini-3.7-flash-high"
+
+    asyncio.run(run())

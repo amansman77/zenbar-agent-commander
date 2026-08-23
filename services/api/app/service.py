@@ -330,7 +330,9 @@ class TaskOrchestrator:
             await self._consume_events(task.id, session.session_id)
         return refreshed
 
-    async def followup_task(self, db: Session, task: Task, content: str, selected_skill: str | None = None) -> Task:
+    async def followup_task(
+        self, db: Session, task: Task, content: str, selected_skill: str | None = None, model: str | None = None
+    ) -> Task:
         if task.status in {"starting", "running", "waiting_user_input", "waiting_result_approval"}:
             raise RuntimeError(f"Task cannot accept follow-up from status '{task.status}'")
         if not task.runtime_session_id:
@@ -348,7 +350,12 @@ class TaskOrchestrator:
         parent_run = get_latest_run(db, task.id)
         create_run(db, task, input_text=content, parent_run_id=parent_run.id if parent_run else None)
         adapter = self._adapter_for(task)
-        session = await adapter.followup_task(task.runtime_session_id, content, selected_skill=selected_skill)
+        # model: switch for this and subsequent turns, same session/
+        # workspace/history -- None means "keep whatever this task is
+        # already using". effective_model below picks up the change
+        # automatically since it already always trusts what the adapter
+        # reports back.
+        session = await adapter.followup_task(task.runtime_session_id, content, selected_skill=selected_skill, model=model)
         refreshed = self._require_task(db, task.id, "starting follow-up turn")
         refreshed = set_task_status(
             db,
@@ -513,7 +520,14 @@ class TaskOrchestrator:
 
     def _resolve_task_model(self, db: Session, task: Task) -> tuple[str, bool]:
         if task.model:
-            return task.model, False
+            # effective_model wins when set -- a mid-session model switch
+            # updates only that field (not task.model, the originally
+            # *requested* one), so a session-expired restart that goes
+            # through this same start_task path must prefer it too, or it
+            # would silently revert to whatever model the task started
+            # with. Legacy tasks with no task.model at all still fall
+            # through to the backfill below unchanged.
+            return task.effective_model or task.model, False
         default_model = os.getenv("ZENBAR_LEGACY_DEFAULT_MODEL", "default").strip() or "default"
         task.model = default_model
         db.add(task)

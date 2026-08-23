@@ -290,6 +290,10 @@ export interface RespondTaskRequest {
 
 export interface FollowupTurnRequest {
   content: string;
+  // Switches the model for this and subsequent turns, keeping the same
+  // session/workspace/history. Omitted/null keeps whatever the task is
+  // already using.
+  model?: string | null;
 }
 
 export interface CommitTaskRequest {

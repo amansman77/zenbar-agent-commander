@@ -248,8 +248,17 @@ class AntigravityCliAdapter(RuntimeAdapter):
         asyncio.create_task(self._run_turn(session, request.prompt, is_followup=False))
         return RuntimeSession(session_id=request.task_id, effective_model=session.model or "antigravity-default")
 
-    async def followup_task(self, session_id: str, message: str, selected_skill: str | None = None) -> RuntimeSession:
+    async def followup_task(
+        self, session_id: str, message: str, selected_skill: str | None = None, model: str | None = None
+    ) -> RuntimeSession:
         session = self._require_session(session_id)
+        if model is not None:
+            # Each turn is its own CLI spawn (--conversation keeps the same
+            # Antigravity conversation/history going; --model is a
+            # separate, independent flag), so switching the model doesn't
+            # require a new session -- sticky from here on, not just for
+            # this one message.
+            session.model = None if is_default_model_alias(model) else model.strip()
         asyncio.create_task(self._run_turn(session, message, is_followup=True))
         return RuntimeSession(session_id=session_id, effective_model=session.model or "antigravity-default")
 

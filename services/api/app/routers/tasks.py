@@ -290,7 +290,7 @@ async def post_session_turn(session_id: str, payload: FollowupTurnRequest, db: S
     if not content:
         raise HTTPException(status_code=400, detail="Follow-up content cannot be empty")
     try:
-        await orchestrator.followup_task(db, task, content)
+        await orchestrator.followup_task(db, task, content, model=payload.model)
     except Exception as exc:
         detail = safe_runtime_error_detail("Follow-up failed", exc)
         raise HTTPException(status_code=409, detail=detail) from exc

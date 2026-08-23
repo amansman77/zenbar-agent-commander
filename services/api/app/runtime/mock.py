@@ -133,12 +133,16 @@ class MockRuntimeAdapter(RuntimeAdapter):
             )
         return await self.start_task(request)
 
-    async def followup_task(self, session_id: str, message: str, selected_skill: str | None = None) -> RuntimeSession:
+    async def followup_task(
+        self, session_id: str, message: str, selected_skill: str | None = None, model: str | None = None
+    ) -> RuntimeSession:
         if session_id not in self._events:
             raise RuntimeError("Unknown Codex App Server session")
         request = self._requests.get(session_id)
         if request is None:
             raise RuntimeError("Follow-up unavailable because original task request is missing")
+        if model is not None:
+            request.model = model
         self._events.setdefault(session_id, []).extend(
             [
                 RuntimeEvent(type="agent_status", message="Follow-up turn started"),

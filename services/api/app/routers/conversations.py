@@ -241,17 +241,30 @@ async def post_conversation_message(
             task = get_task(db, conv.task_id)
             if task is not None and task.status in {"completed", "stopped", "failed"}:
                 try:
-                    await orchestrator.followup_task(db, task, payload.content, selected_skill=selected_skill)
+                    await orchestrator.followup_task(
+                        db, task, payload.content, selected_skill=selected_skill, model=payload.model
+                    )
                 except Exception as exc:
                     exc_msg = str(exc)
+                    # Every adapter's _require_session raises "Unknown <X>
+                    # session" (Codex App Server, Claude, Grok, Antigravity)
+                    # -- matched by shape rather than enumerating each one
+                    # by name, since this exact gap already bit the non-
+                    # Codex engines once: a restarted API process wipes
+                    # their in-memory session dicts (unlike Codex, which
+                    # reconnects to the still-running App Server), and only
+                    # the Codex-specific wording was recognized here, so a
+                    # follow-up to any Claude/Grok/Antigravity task from
+                    # before the restart hard-failed with a 409 instead of
+                    # auto-restarting like Codex already did.
                     session_expired = (
-                        "Unknown Codex App Server session" in exc_msg
+                        (exc_msg.startswith("Unknown ") and exc_msg.endswith(" session"))
                         or "Task has no runtime session" in exc_msg
                     )
                     if not session_expired:
                         detail = safe_runtime_error_detail("Follow-up failed", exc)
                         raise HTTPException(status_code=409, detail=detail) from exc
-                    # Session expired — restart Codex in the same task workspace
+                    # Session expired — restart the engine in the same task workspace
                     project = get_project(db, conv.project_id) if conv.project_id else None
                     if project is None:
                         raise HTTPException(status_code=400, detail="Conversation has no associated project") from exc
@@ -261,7 +274,7 @@ async def post_conversation_message(
                         await orchestrator.start_task(db, task, project, selected_skill=selected_skill)
                     except Exception as start_exc:
                         set_task_status(db, task, "failed")
-                        detail = safe_runtime_error_detail("Failed to restart Codex session", start_exc)
+                        detail = safe_runtime_error_detail("Failed to restart engine session", start_exc)
                         raise HTTPException(status_code=502, detail=detail) from start_exc
 
     # orchestrator.start_task/followup_task (above) do most of their event

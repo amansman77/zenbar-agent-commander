@@ -2390,3 +2390,212 @@ def test_conversations_preview_count_limits_per_project_but_keeps_active_tasks()
         counts = client.get("/conversations/counts")
         assert counts.status_code == 200
         assert counts.json()[project["id"]] == 5
+
+
+def test_followup_message_can_switch_model_keeping_the_same_session():
+    # Confirmed via the real Codex App Server's own protocol source
+    # (codex-rs/app-server-protocol): turn/start's `model` field is
+    # documented as "Override the model for this turn and subsequent
+    # turns" -- same thread/session/workspace/history, genuinely sticky.
+    # A follow-up message can now carry an explicit model to switch to,
+    # instead of being stuck with whatever the task started with.
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Model Switch Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        conversation = client.post(
+            "/conversations",
+            json={"project_id": project["id"], "title": "Model switch conversation"},
+        ).json()
+
+        first = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "Do the first thing.", "model": "gpt-5.4"},
+        )
+        assert first.status_code == 201
+        first_body = first.json()
+        assert first_body["task_status"] == "waiting_result_approval"
+        assert first_body["task_model"] == "gpt-5.4"
+        approve = client.post(f"/tasks/{first_body['task_id']}/approve", json={"actor": "pytest"})
+        assert approve.status_code == 200
+        assert approve.json()["status"] == "completed"
+
+        second = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "Now do the second thing, but with a different model.", "model": "gpt-5.3-codex"},
+        )
+        assert second.status_code == 201
+        second_body = second.json()
+        # Same task/session the whole way -- not a new one.
+        assert second_body["task_id"] == first_body["task_id"]
+        assert second_body["task_model"] == "gpt-5.3-codex"
+        approve = client.post(f"/tasks/{second_body['task_id']}/approve", json={"actor": "pytest"})
+        assert approve.status_code == 200
+
+        # A follow-up that doesn't specify a model keeps whatever's already running.
+        third = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "One more, no model override this time."},
+        )
+        assert third.status_code == 201
+        assert third.json()["task_model"] == "gpt-5.3-codex"
+
+
+def test_app_server_followup_task_passes_model_override_to_turn_start():
+    # Confirmed via codex-rs/app-server-protocol's own TurnStartParams:
+    # `model` is documented as "Override the model for this turn and
+    # subsequent turns" -- same thread, genuinely sticky. This checks the
+    # adapter actually puts an explicit model override into that RPC call.
+    from app.runtime import AppServerWebSocketAdapter, SessionState
+    from app.schemas import RuntimeStartRequest
+
+    async def run() -> None:
+        adapter = AppServerWebSocketAdapter("ws://example.invalid")
+        request = RuntimeStartRequest(
+            task_id="task-1",
+            title="t",
+            prompt="p",
+            model="gpt-5.4",
+            repo_path="/tmp/repo",
+            working_directory="/tmp/repo",
+            default_branch="main",
+            workspace_type="branch",
+            workspace_ref="task/t",
+        )
+        adapter._sessions["thread-1"] = SessionState(thread_id="thread-1", start_request=request)
+
+        captured_params: dict = {}
+
+        async def fake_rpc(method, params):
+            captured_params.update(params)
+            return {"turn": {"id": "turn-1"}}
+
+        adapter._rpc = fake_rpc
+
+        session = await adapter.followup_task("thread-1", "do the next thing", model="gpt-5.3-codex")
+
+        assert captured_params["model"] == "gpt-5.3-codex"
+        assert session.effective_model == "gpt-5.3-codex"
+        # Sticky: a later followup with no override keeps using it.
+        session2 = await adapter.followup_task("thread-1", "and another")
+        assert session2.effective_model == "gpt-5.3-codex"
+
+    asyncio.run(run())
+
+
+def test_app_server_followup_task_lets_profile_owned_model_win():
+    # Mirrors start_task's own precedent: "a profile owns the model it
+    # declares; it wins over an explicit model pick" -- a followup's model
+    # override must not be able to silently defeat that.
+    import app.runtime.app_server as app_server_module
+    from app.codex_profiles import RuntimeProfile
+    from app.runtime import AppServerWebSocketAdapter, SessionState
+    from app.schemas import RuntimeStartRequest
+
+    async def run() -> None:
+        adapter = AppServerWebSocketAdapter("ws://example.invalid")
+        request = RuntimeStartRequest(
+            task_id="task-1",
+            title="t",
+            prompt="p",
+            model="gpt-5.4",
+            profile="locked-profile",
+            repo_path="/tmp/repo",
+            working_directory="/tmp/repo",
+            default_branch="main",
+            workspace_type="branch",
+            workspace_ref="task/t",
+        )
+        adapter._sessions["thread-1"] = SessionState(thread_id="thread-1", start_request=request)
+
+        captured_params: dict = {}
+
+        async def fake_rpc(method, params):
+            captured_params.update(params)
+            return {"turn": {"id": "turn-1"}}
+
+        adapter._rpc = fake_rpc
+        original_get_profile = app_server_module.get_profile
+        app_server_module.get_profile = lambda profile_id, home=None: RuntimeProfile(
+            id="locked-profile", model="profile-locked-model"
+        )
+        try:
+            session = await adapter.followup_task("thread-1", "try to switch", model="gpt-5.3-codex")
+        finally:
+            app_server_module.get_profile = original_get_profile
+
+        assert captured_params["model"] == "profile-locked-model"
+        assert session.effective_model == "gpt-5.4"  # start_request.model untouched by the rejected override
+
+    asyncio.run(run())
+
+
+def test_followup_message_recovers_for_any_engines_expired_session_wording():
+    # Regression, hit for real live: only Codex's own "Unknown Codex App
+    # Server session" wording was recognized as "session expired, restart
+    # in place" -- Claude/Grok/Antigravity's adapters raise "Unknown
+    # Claude/Grok/Antigravity session" instead (same shape, different
+    # name), so a follow-up to any of those after their in-memory session
+    # was lost (e.g. an API process restart -- unlike Codex, which
+    # reconnects to the still-running App Server, these keep session state
+    # only in-process) hard-failed with a 409 instead of transparently
+    # restarting like Codex already did.
+    import app.service as service_module
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Session Recovery Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        conversation = client.post(
+            "/conversations",
+            json={"project_id": project["id"], "title": "Session recovery conversation"},
+        ).json()
+
+        first = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "Do the first thing."},
+        )
+        assert first.status_code == 201
+        task_id = first.json()["task_id"]
+        approve = client.post(f"/tasks/{task_id}/approve", json={"actor": "pytest"})
+        assert approve.status_code == 200
+
+        for engine_error in ("Unknown Claude session", "Unknown Grok session", "Unknown Antigravity session"):
+            call_count = {"n": 0}
+            original_followup = service_module.TaskOrchestrator.followup_task
+
+            async def flaky_followup_task(self, db, task, content, selected_skill=None, model=None, _msg=engine_error):
+                call_count["n"] += 1
+                raise RuntimeError(_msg)
+
+            service_module.TaskOrchestrator.followup_task = flaky_followup_task
+            try:
+                response = client.post(
+                    f"/conversations/{conversation['id']}/messages",
+                    json={"content": f"Follow up after losing the {engine_error} session."},
+                )
+            finally:
+                service_module.TaskOrchestrator.followup_task = original_followup
+
+            assert response.status_code == 201, f"{engine_error} should have recovered, got {response.status_code}"
+            assert call_count["n"] == 1
+            approve = client.post(f"/tasks/{response.json()['task_id']}/approve", json={"actor": "pytest"})
+            assert approve.status_code == 200
+
+        # A genuinely different failure must still surface as a real error, not silently "recover".
+        async def unrelated_failure(self, db, task, content, selected_skill=None, model=None):
+            raise RuntimeError("Some unrelated runtime failure")
+
+        service_module.TaskOrchestrator.followup_task = unrelated_failure
+        try:
+            response = client.post(
+                f"/conversations/{conversation['id']}/messages",
+                json={"content": "This one should genuinely fail."},
+            )
+        finally:
+            service_module.TaskOrchestrator.followup_task = original_followup
+        assert response.status_code == 409
