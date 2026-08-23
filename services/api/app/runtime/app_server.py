@@ -1,11 +1,8 @@
-"""The runtime layer: how Zenbar talks to an agent runtime.
+"""RuntimeAdapter for the Codex App Server — the default engine.
 
-Contains the RuntimeAdapter interface every engine implements, the
-AppServerWebSocketAdapter that speaks the Codex App Server's JSON-RPC-over-
-WebSocket protocol (the default engine), a MockRuntimeAdapter used by tests
-and ZENBAR_RUNTIME_MODE=mock, and the factories that build one adapter per
-engine. The CLI-backed engines live in their own *_adapter.py modules and
-import RuntimeAdapter from here.
+Speaks JSON-RPC over a WebSocket to a running App Server process, keeping one
+SessionState per task (thread id, buffered agent message, pending approval
+requests) and translating the server's notifications into RuntimeEvents.
 """
 
 from __future__ import annotations
@@ -13,27 +10,26 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from abc import ABC, abstractmethod
+import websockets
+
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from datetime import datetime
 from itertools import count
 from typing import Any
-
-import websockets
 from websockets.asyncio.client import ClientConnection
 
-from .codex_profiles import RuntimeProfile, get_profile
-from .schemas import (
+from ..codex_profiles import get_profile
+from ..schemas import (
     RuntimeEvent,
     RuntimeSession,
     RuntimeSkill,
     RuntimeStartRequest,
     RuntimeUsageInfo,
-    RuntimeUsageWindow,
     TaskDiff,
 )
-
+from .base import RuntimeAdapter, _prompt_with_workspace, is_default_model_alias
+from .diffs import _build_diff_payload, _coerce_diff_text, _extract_diff_payload
+from .usage import _classify_rate_limit_windows
 
 def _sandbox_policy_for_mode(mode: str, working_directory: str) -> dict[str, Any]:
     if mode == "read-only":
@@ -48,90 +44,6 @@ def _sandbox_policy_for_mode(mode: str, working_directory: str) -> dict[str, Any
         "excludeTmpdirEnvVar": False,
         "excludeSlashTmp": False,
     }
-
-
-def _extract_files_from_diff(diff: str) -> list[str]:
-    files: list[str] = []
-    for line in diff.splitlines():
-        if line.startswith("diff --git "):
-            parts = line.split()
-            if len(parts) >= 4:
-                files.append(parts[3].removeprefix("b/"))
-        elif line.startswith("+++ b/"):
-            files.append(line.removeprefix("+++ b/"))
-    return list(dict.fromkeys(files))
-
-
-def _build_diff_payload(diff: str) -> TaskDiff:
-    files = _extract_files_from_diff(diff)
-    summary = f"Updated {len(files)} file(s) in the Task Workspace." if files else "Diff updated in Codex App Server."
-    return TaskDiff(files_changed=files, summary=summary, raw_diff=diff)
-
-
-def _coerce_diff_text(raw: Any) -> str:
-    if isinstance(raw, str):
-        return raw
-    if isinstance(raw, dict):
-        for key in ("unifiedDiff", "unified_diff", "diff", "patch", "rawDiff", "raw_diff"):
-            value = raw.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-    return ""
-
-
-def _extract_changed_files(payload: dict[str, Any]) -> list[str]:
-    files: list[str] = []
-
-    def add_file(candidate: Any) -> None:
-        if isinstance(candidate, str) and candidate.strip():
-            files.append(candidate.strip())
-            return
-        if isinstance(candidate, dict):
-            for key in ("path", "file", "filePath", "filepath", "newPath", "oldPath"):
-                value = candidate.get(key)
-                if isinstance(value, str) and value.strip():
-                    files.append(value.strip())
-                    return
-
-    for key in ("files", "filePaths", "paths"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            for item in value:
-                add_file(item)
-
-    changes = payload.get("changes")
-    if isinstance(changes, list):
-        for item in changes:
-            add_file(item)
-
-    single_path = payload.get("path") or payload.get("filePath") or payload.get("file")
-    add_file(single_path)
-    return list(dict.fromkeys(files))
-
-
-def _extract_diff_payload(payload: dict[str, Any]) -> TaskDiff | None:
-    for key in ("diff", "unifiedDiff", "unified_diff", "patch", "rawDiff", "raw_diff"):
-        diff_text = _coerce_diff_text(payload.get(key))
-        if diff_text:
-            return _build_diff_payload(diff_text)
-
-    changes = payload.get("changes")
-    if isinstance(changes, list):
-        for item in changes:
-            if isinstance(item, dict):
-                for key in ("diff", "unifiedDiff", "unified_diff", "patch", "rawDiff", "raw_diff"):
-                    diff_text = _coerce_diff_text(item.get(key))
-                    if diff_text:
-                        return _build_diff_payload(diff_text)
-
-    files = _extract_changed_files(payload)
-    if files:
-        return TaskDiff(
-            files_changed=files,
-            summary=f"Updated {len(files)} file(s) in the Task Workspace.",
-            raw_diff=None,
-        )
-    return None
 
 
 def _extract_assistant_text_from_items(items: list[Any]) -> str:
@@ -159,42 +71,6 @@ def _extract_assistant_text_from_items(items: list[Any]) -> str:
     return "\n".join(parts).strip()
 
 
-def _prompt_with_workspace(request: RuntimeStartRequest) -> str:
-    operation = (
-        "Produce an implementation plan without modifying files or accepting final code changes."
-        if request.execution_mode == "plan"
-        else "Operate inside the current repository working directory."
-    )
-    skill_line = f"\nRequested skill: {request.selected_skill}" if request.selected_skill else ""
-    # This used to unconditionally instruct execute-mode tasks to "commit,
-    # push, and open a GitHub pull request" once done, regardless of what the
-    # user's own prompt actually asked for. Removed at the user's explicit
-    # request ("commit/PR 요청은 내가 명시적으로 할테니까 해당 프롬프트는
-    # 제거해줘") after it caused two real problems: (1) it fired even for
-    # purely informational requests with no code-change intent, pushing the
-    # agent to manufacture a change just to have something to commit/PR
-    # against; (2) it hardcoded "GitHub pull request", which doesn't hold for
-    # GitLab-backed projects -- the agent adapted on its own by opening a
-    # GitLab MR instead, using ad-hoc token-based push auth whose token then
-    # ended up logged in plaintext in the task's event history. The user now
-    # asks for commit/push/PR explicitly in the prompt itself when wanted.
-    return (
-        f"Task title: {request.title}\n"
-        f"Task workspace: {request.workspace_ref}\n"
-        f"Task working directory: {request.working_directory}\n"
-        f"Default branch: {request.default_branch}\n\n"
-        f"{request.prompt}{skill_line}\n\n"
-        f"{operation} "
-        "Human approval is required before the task result is accepted as final."
-    )
-
-
-def _is_default_model_alias(model: str | None) -> bool:
-    if not model:
-        return False
-    return model.strip().lower() in {"default", "runtime-default", "auto"}
-
-
 def _is_unsupported_model_error(message: str) -> bool:
     lowered = message.lower()
     return "model is not supported" in lowered or "not supported when using codex with a chatgpt account" in lowered
@@ -207,45 +83,6 @@ def _is_unsupported_model_error(message: str) -> bool:
 # available to confirm its exact minute count, so this classifies by
 # threshold (<=360 min ~ session-scale, >=10000 min ~ week-scale) rather
 # than an exact match, and drops anything in between as unrecognized.
-_SESSION_WINDOW_MAX_MINUTES = 360
-_WEEK_WINDOW_MIN_MINUTES = 10000
-
-
-def _rate_limit_window_to_usage_window(window: dict[str, Any] | None) -> RuntimeUsageWindow | None:
-    if not isinstance(window, dict):
-        return None
-    used_percent = window.get("usedPercent")
-    if not isinstance(used_percent, (int, float)):
-        return None
-    resets_label: str | None = None
-    resets_at_iso: str | None = None
-    resets_at = window.get("resetsAt")
-    if isinstance(resets_at, (int, float)):
-        try:
-            resets_dt = datetime.fromtimestamp(resets_at).astimezone()
-            resets_label = resets_dt.strftime("%b %d, %H:%M %Z")
-            resets_at_iso = resets_dt.isoformat()
-        except (OverflowError, OSError, ValueError):
-            resets_label = None
-    return RuntimeUsageWindow(percent_used=round(used_percent), resets_label=resets_label, resets_at=resets_at_iso)
-
-
-def _classify_rate_limit_windows(
-    primary: dict[str, Any] | None, secondary: dict[str, Any] | None
-) -> tuple[RuntimeUsageWindow | None, RuntimeUsageWindow | None]:
-    session_window: RuntimeUsageWindow | None = None
-    week_window: RuntimeUsageWindow | None = None
-    for raw in (primary, secondary):
-        if not isinstance(raw, dict):
-            continue
-        duration = raw.get("windowDurationMins")
-        if not isinstance(duration, (int, float)):
-            continue
-        if duration <= _SESSION_WINDOW_MAX_MINUTES:
-            session_window = _rate_limit_window_to_usage_window(raw)
-        elif duration >= _WEEK_WINDOW_MIN_MINUTES:
-            week_window = _rate_limit_window_to_usage_window(raw)
-    return session_window, week_window
 
 
 @dataclass
@@ -267,60 +104,6 @@ class SessionState:
     agent_message_buffer: str = ""
 
 
-class RuntimeAdapter(ABC):
-    stream_in_background = True
-
-    @abstractmethod
-    async def list_collaboration_modes(self) -> list[str] | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def list_models(self) -> list[str] | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def list_skills(self) -> list[RuntimeSkill] | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def get_usage(self) -> RuntimeUsageInfo | None:
-        """Account-level rate-limit/quota status, independent of any task or
-        session -- `None` for engines/CLIs with no way to report this."""
-        raise NotImplementedError
-
-    @abstractmethod
-    async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def stop_task(self, session_id: str) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def approve_task(self, session_id: str) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def respond_task(self, session_id: str, request_id: int | str, answers: dict[str, list[str]]) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def retry_task(self, session_id: str) -> RuntimeSession:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def followup_task(self, session_id: str, message: str, selected_skill: str | None = None) -> RuntimeSession:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def get_diff(self, session_id: str) -> TaskDiff:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def subscribe_events(self, session_id: str) -> AsyncIterator[RuntimeEvent]:
-        raise NotImplementedError
-
-
 class AppServerWebSocketAdapter(RuntimeAdapter):
     def __init__(self, url: str) -> None:
         self._url = url
@@ -336,7 +119,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
         await self._ensure_connection()
         requested_model = request.model.strip()
-        used_runtime_default = _is_default_model_alias(requested_model)
+        used_runtime_default = is_default_model_alias(requested_model)
         profile = get_profile(request.profile)
         thread_start_params: dict[str, Any] = {
             "cwd": request.working_directory,
@@ -368,7 +151,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         self._sessions[thread_id] = state
         turn = await self._rpc("turn/start", self._build_turn_start_params(thread_id, request))
         state.current_turn_id = turn["turn"]["id"]
-        if used_runtime_default and not _is_default_model_alias(requested_model):
+        if used_runtime_default and not is_default_model_alias(requested_model):
             await state.queue.put(
                 RuntimeEvent(
                     type="agent_status",
@@ -555,7 +338,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                     "mode": "plan",
                     "settings": {
                         "model": (profile.model if profile and profile.model else None) or (
-                            None if _is_default_model_alias(request.model) else request.model
+                            None if is_default_model_alias(request.model) else request.model
                         ),
                         "developer_instructions": None,
                         "reasoning_effort": request.reasoning_effort,
@@ -932,203 +715,3 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         if state is None:
             raise RuntimeError("Unknown Codex App Server session")
         return state
-
-
-class MockRuntimeAdapter(RuntimeAdapter):
-    stream_in_background = False
-
-    def __init__(self) -> None:
-        self._events: dict[str, list[RuntimeEvent]] = {}
-        self._diffs: dict[str, TaskDiff] = {}
-        self._requests: dict[str, RuntimeStartRequest] = {}
-
-    async def list_collaboration_modes(self) -> list[str] | None:
-        return ["default", "plan"]
-
-    async def list_models(self) -> list[str] | None:
-        return ["GPT-5.4", "GPT-5.3-Codex"]
-
-    async def list_skills(self) -> list[RuntimeSkill] | None:
-        return None
-
-    async def get_usage(self) -> RuntimeUsageInfo | None:
-        return None
-
-    async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
-        session_id = f"mock-{request.task_id}"
-        self._requests[session_id] = request
-        if request.execution_mode == "plan":
-            self._events[session_id] = [
-                RuntimeEvent(type="agent_status", message="Analyzing repository in plan mode"),
-                RuntimeEvent(
-                    type="plan_updated",
-                    message="Plan updated with 2 step(s)",
-                    payload={
-                        "explanation": "Produce a safe implementation sequence.",
-                        "plan": [
-                            {"step": "Inspect sitemap generation", "status": "in_progress"},
-                            {"step": "Add regression test coverage", "status": "pending"},
-                        ],
-                    },
-                ),
-                RuntimeEvent(type="plan_delta", message="Inspect sitemap generation"),
-                RuntimeEvent(type="completed", message="Plan completed"),
-            ]
-            self._diffs[session_id] = TaskDiff()
-        else:
-            self._events[session_id] = [
-                RuntimeEvent(type="agent_status", message="Analyzing repository"),
-                RuntimeEvent(type="file_changed", message="app/sitemap.ts", payload={"file": "app/sitemap.ts"}),
-                RuntimeEvent(type="diff_generated", message="Patch ready", payload={"files_changed": ["app/sitemap.ts"]}),
-                RuntimeEvent(
-                    type="result_approval_requested",
-                    message="Waiting for result approval",
-                    payload={"request_id": "mock-approval", "method": "item/fileChange/requestApproval"},
-                ),
-            ]
-            self._diffs[session_id] = TaskDiff(
-                files_changed=["app/sitemap.ts"],
-                summary="Added canonical tag fallback",
-                raw_diff="diff --git a/app/sitemap.ts b/app/sitemap.ts\n+ canonical fallback",
-            )
-        return RuntimeSession(session_id=session_id, effective_model=request.model)
-
-    async def stop_task(self, session_id: str) -> None:
-        if session_id not in self._events:
-            raise RuntimeError("Unknown Codex App Server session")
-        self._events.setdefault(session_id, []).append(RuntimeEvent(type="stopped", message="Task stopped"))
-
-    async def approve_task(self, session_id: str) -> None:
-        if session_id not in self._events:
-            raise RuntimeError("Unknown Codex App Server session")
-        self._events.setdefault(session_id, []).extend(
-            [
-                RuntimeEvent(
-                    type="result_approval_granted",
-                    message="Result approval granted",
-                    payload={"request_id": "mock-approval"},
-                ),
-                RuntimeEvent(type="agent_status", message="Running tests"),
-                RuntimeEvent(type="test_result", message="All tests passed"),
-                RuntimeEvent(type="completed", message="Accepted result completed"),
-            ]
-        )
-
-    async def respond_task(self, session_id: str, request_id: int | str, answers: dict[str, list[str]]) -> None:
-        if session_id not in self._events:
-            raise RuntimeError("Unknown Codex App Server session")
-        self._events.setdefault(session_id, []).extend(
-            [
-                RuntimeEvent(
-                    type="user_input_submitted",
-                    message="User input submitted",
-                    payload={"request_id": request_id, "answers": answers},
-                ),
-                RuntimeEvent(type="agent_status", message="Continuing after user input"),
-            ]
-        )
-
-    async def retry_task(self, session_id: str) -> RuntimeSession:
-        request = self._requests.get(session_id)
-        if request is None:
-            task_id = session_id.replace("mock-", "")
-            request = RuntimeStartRequest(
-                task_id=task_id,
-                title="retry",
-                prompt="retry",
-                model="GPT-5.4",
-                reasoning_effort="medium",
-                repo_path="/srv/repos/demo",
-                working_directory="/srv/repos/demo",
-                default_branch="main",
-                execution_mode="execute",
-                workspace_type="branch",
-                workspace_ref=f"task/retry-{task_id[:4]}",
-            )
-        return await self.start_task(request)
-
-    async def followup_task(self, session_id: str, message: str, selected_skill: str | None = None) -> RuntimeSession:
-        if session_id not in self._events:
-            raise RuntimeError("Unknown Codex App Server session")
-        request = self._requests.get(session_id)
-        if request is None:
-            raise RuntimeError("Follow-up unavailable because original task request is missing")
-        self._events.setdefault(session_id, []).extend(
-            [
-                RuntimeEvent(type="agent_status", message="Follow-up turn started"),
-                RuntimeEvent(type="command_executed", message="updated requested changes"),
-                RuntimeEvent(
-                    type="agent_status",
-                    message="Applied follow-up changes",
-                    payload={"role": "assistant", "content": "Applied requested follow-up changes."},
-                ),
-                # A follow-up's result needs approval just like the initial
-                # turn (zenbar's result-approval step is baked into every
-                # turn's prompt, not a one-time thing) -- matches
-                # start_task's own event sequence below.
-                RuntimeEvent(
-                    type="result_approval_requested",
-                    message="Waiting for result approval",
-                    payload={"request_id": "mock-approval", "method": "item/fileChange/requestApproval"},
-                ),
-            ]
-        )
-        return RuntimeSession(session_id=session_id, effective_model=request.model)
-
-    async def get_diff(self, session_id: str) -> TaskDiff:
-        if session_id not in self._diffs:
-            raise RuntimeError("Unknown Codex App Server session")
-        return self._diffs[session_id]
-
-    async def subscribe_events(self, session_id: str) -> AsyncIterator[RuntimeEvent]:
-        events = self._events.get(session_id, [])
-        while events:
-            event = events.pop(0)
-            await asyncio.sleep(0.01)
-            yield event
-
-
-def create_runtime_adapter() -> RuntimeAdapter:
-    mode = os.getenv("ZENBAR_RUNTIME_MODE", "app_server_ws")
-    if mode == "mock":
-        return MockRuntimeAdapter()
-    if mode == "antigravity_cli":
-        from .antigravity_adapter import AntigravityCliAdapter  # deferred: avoids a module-level circular import
-
-        return AntigravityCliAdapter()
-    return AppServerWebSocketAdapter(os.getenv("ZENBAR_APP_SERVER_WS_URL", "ws://127.0.0.1:18765"))
-
-
-ENGINE_LABELS = {"codex": "Codex", "antigravity": "Antigravity", "grok": "Grok", "claude": "Claude"}
-
-
-def create_engine_adapters() -> tuple[dict[str, RuntimeAdapter], str]:
-    """Builds every available engine's adapter (not just the one
-    ZENBAR_RUNTIME_MODE picks), so a task can select its engine
-    independently — ZENBAR_RUNTIME_MODE only controls which one new tasks use
-    when no engine is explicitly chosen.
-
-    Returns (adapters_by_engine_id, default_engine_id). The default engine's
-    adapter instance is shared with its entry in the dict (never construct it
-    twice — two AppServerWebSocketAdapter instances would each keep their own
-    disconnected `_sessions` state, silently splitting a task's session
-    history depending on whether its `engine` field happens to be None vs the
-    literal default engine id).
-    """
-    mode = os.getenv("ZENBAR_RUNTIME_MODE", "app_server_ws")
-    if mode == "mock":
-        mock = MockRuntimeAdapter()
-        return {"codex": mock, "antigravity": mock, "grok": mock, "claude": mock}, "codex"
-
-    from .antigravity_adapter import AntigravityCliAdapter  # deferred: avoids a module-level circular import
-    from .claude_adapter import ClaudeCliAdapter  # deferred: avoids a module-level circular import
-    from .grok_adapter import GrokCliAdapter  # deferred: avoids a module-level circular import
-
-    adapters: dict[str, RuntimeAdapter] = {
-        "codex": AppServerWebSocketAdapter(os.getenv("ZENBAR_APP_SERVER_WS_URL", "ws://127.0.0.1:18765")),
-        "antigravity": AntigravityCliAdapter(),
-        "grok": GrokCliAdapter(),
-        "claude": ClaudeCliAdapter(),
-    }
-    default_engine = {"antigravity_cli": "antigravity", "grok_cli": "grok", "claude_cli": "claude"}.get(mode, "codex")
-    return adapters, default_engine
