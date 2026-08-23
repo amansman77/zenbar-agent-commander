@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .cli_adapter_git import compute_workspace_diff, summarize_stderr_for_failure
-from .runtime import RuntimeAdapter, _is_default_model_alias
+from .runtime import RuntimeAdapter, is_default_model_alias
 from .schemas import RuntimeEvent, RuntimeSession, RuntimeSkill, RuntimeStartRequest, RuntimeUsageInfo, TaskDiff
 
 
@@ -104,7 +104,7 @@ class GrokCliAdapter(RuntimeAdapter):
         session = _GrokSession(
             working_directory=request.working_directory,
             default_branch=request.default_branch,
-            model=None if _is_default_model_alias(request.model) else request.model.strip(),
+            model=None if is_default_model_alias(request.model) else request.model.strip(),
             grok_session_id=request.task_id,
         )
         self._sessions[request.task_id] = session

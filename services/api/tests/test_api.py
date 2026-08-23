@@ -1860,7 +1860,7 @@ def test_task_prompt_no_longer_auto_instructs_commit_push_or_pull_request():
     # opening a GitLab MR on its own, via ad-hoc token-based push auth whose
     # token then ended up logged in the task's event history. The user now
     # asks for commit/push/PR explicitly in the prompt itself when wanted.
-    from app.runtime import _prompt_with_workspace
+    from app.runtime.base import _prompt_with_workspace
     from app.schemas import RuntimeStartRequest
 
     request = RuntimeStartRequest(
@@ -1890,7 +1890,7 @@ def test_task_prompt_no_longer_auto_instructs_commit_push_or_pull_request():
 
 
 def test_plan_mode_prompt_does_not_ask_for_a_pull_request():
-    from app.runtime import _prompt_with_workspace
+    from app.runtime.base import _prompt_with_workspace
     from app.schemas import RuntimeStartRequest
 
     request = RuntimeStartRequest(
@@ -1917,7 +1917,7 @@ def test_classify_rate_limit_windows_distinguishes_by_duration():
     # confirmed live against the actual running server: a weekly window
     # reports windowDurationMins=10080 (7*24*60). No secondary/5h example
     # was available live, so this uses a plausible 300-minute value for it.
-    from app.runtime import _classify_rate_limit_windows
+    from app.runtime.usage import _classify_rate_limit_windows
 
     primary = {"usedPercent": 12, "windowDurationMins": 10080, "resetsAt": 1787844336}
     secondary = {"usedPercent": 40, "windowDurationMins": 300, "resetsAt": 1787700000}
@@ -1935,7 +1935,7 @@ def test_classify_rate_limit_windows_distinguishes_by_duration():
 
 
 def test_classify_rate_limit_windows_handles_missing_secondary():
-    from app.runtime import _classify_rate_limit_windows
+    from app.runtime.usage import _classify_rate_limit_windows
 
     session, week = _classify_rate_limit_windows({"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": None}, None)
 

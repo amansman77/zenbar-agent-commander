@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .cli_adapter_git import compute_workspace_diff, summarize_stderr_for_failure
-from .runtime import RuntimeAdapter, _is_default_model_alias
+from .runtime import RuntimeAdapter, is_default_model_alias
 from .schemas import (
     RuntimeEvent,
     RuntimeSession,
@@ -164,7 +164,7 @@ class ClaudeCliAdapter(RuntimeAdapter):
         session = _ClaudeSession(
             working_directory=request.working_directory,
             default_branch=request.default_branch,
-            model=None if _is_default_model_alias(request.model) else request.model.strip(),
+            model=None if is_default_model_alias(request.model) else request.model.strip(),
             execution_mode=request.execution_mode,
         )
         self._sessions[request.task_id] = session
