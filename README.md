@@ -119,13 +119,10 @@ Tailscale
 
 ## Core Documents
 
-| Document                     | Description                                |
-| ---------------------------- | ------------------------------------------ |
-| `CLAUDE.md`                  | codebase map and conventions for AI agents |
-| `docs/plans/2026-03-11.plan.md` | canonical system design and roadmap     |
-| `docs/Deployment.md`         | deployment and infrastructure model        |
-| `docs/TOOLS.md`              | local tool layer and workspace model       |
-| `docs/plans/`                | dated design plans, newest last            |
+| Document    | Description                                                 |
+| ----------- | ----------------------------------------------------------- |
+| `README.md` | this file: what Zenbar is, its architecture, and how to run it |
+| `CLAUDE.md` | codebase map and conventions for anyone changing the code   |
 
 ## Guiding Principles
 
