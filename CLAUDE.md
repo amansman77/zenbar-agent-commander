@@ -46,7 +46,7 @@ Every module has a docstring; read it before reading the code.
 | Orchestration | `service.py` — `TaskOrchestrator`, the task lifecycle |
 | Persistence | `models.py` (ORM), `repository/` (all DB access + serializers), `db.py` |
 | Runtime | `runtime/` (adapter interface + Codex WebSocket adapter + mock + factory), `claude_adapter.py`, `grok_adapter.py`, `antigravity_adapter.py`, `cli_adapter_git.py` |
-| Workspace | `workspace.py` (branch/worktree per task), `codex_project_trust.py` |
+| Workspace | `workspace.py` (creates/removes the worktree), `workspace_git.py` (commit/push/diff inside it), `codex_project_trust.py` |
 | Support | `schemas.py`, `streaming.py`, `ttl_cache.py`, `model_catalog.py`, `pr_info.py`, `github_pr.py`, `repo_discovery.py`, `codex_profiles.py`, `app_server_manager.py` |
 
 **Where endpoints live.** `main.py` only builds the app (lifespan, CORS, the
@@ -92,7 +92,8 @@ not a pattern to copy.
 (`routers/conversations.py`) creates a task, then
 `TaskOrchestrator.start_task()` prepares a git worktree, asks the engine's
 `RuntimeAdapter` to start a session, and spawns a background consumer of that
-session's events. Each event is normalized and persisted by `repository.py`,
+session's events. Each event is normalized and persisted by the `repository`
+package,
 may move the task's status, and is fanned out over SSE
 (`streaming.py` → `GET /tasks/{id}/stream`) to the UI.
 
