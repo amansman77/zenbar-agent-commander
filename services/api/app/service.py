@@ -201,7 +201,10 @@ class TaskOrchestrator:
         try:
             await adapter.approve_task(task.runtime_session_id)
         except RuntimeError as exc:
-            if "Unknown Codex App Server session" not in str(exc):
+            # See reconcile_task_runtime_session's own comment: every
+            # adapter raises "Unknown <X> session" in this shape, not just Codex's.
+            exc_msg = str(exc)
+            if not (exc_msg.startswith("Unknown ") and exc_msg.endswith(" session")):
                 raise
             append_event(
                 db,
@@ -230,7 +233,10 @@ class TaskOrchestrator:
         try:
             await adapter.respond_task(task.runtime_session_id, task.pending_request_id, payload.answers)
         except RuntimeError as exc:
-            if "Unknown Codex App Server session" not in str(exc):
+            # See reconcile_task_runtime_session's own comment: every
+            # adapter raises "Unknown <X> session" in this shape, not just Codex's.
+            exc_msg = str(exc)
+            if not (exc_msg.startswith("Unknown ") and exc_msg.endswith(" session")):
                 raise
             append_event(
                 db,
@@ -310,7 +316,10 @@ class TaskOrchestrator:
         try:
             session = await adapter.retry_task(task.runtime_session_id)
         except RuntimeError as exc:
-            if "Unknown Codex App Server session" not in str(exc):
+            # See reconcile_task_runtime_session's own comment: every
+            # adapter raises "Unknown <X> session" in this shape, not just Codex's.
+            exc_msg = str(exc)
+            if not (exc_msg.startswith("Unknown ") and exc_msg.endswith(" session")):
                 raise
             refreshed = self._require_task(db, task.id, "recovering from stale retry session")
             refreshed = clear_runtime_session(db, refreshed)
@@ -374,7 +383,10 @@ class TaskOrchestrator:
             try:
                 runtime_diff = await self._adapter_for(task).get_diff(task.runtime_session_id)
             except RuntimeError as exc:
-                if "Unknown Codex App Server session" not in str(exc):
+                # See reconcile_task_runtime_session's own comment: every
+                # adapter raises "Unknown <X> session" in this shape, not just Codex's.
+                exc_msg = str(exc)
+                if not (exc_msg.startswith("Unknown ") and exc_msg.endswith(" session")):
                     raise
 
         fallback_diff = await asyncio.to_thread(self._compute_workspace_diff, task)
@@ -397,7 +409,19 @@ class TaskOrchestrator:
             await self._adapter_for(task).get_diff(task.runtime_session_id)
             return task
         except RuntimeError as exc:
-            if "Unknown Codex App Server session" not in str(exc):
+            # Every adapter's _require_session raises "Unknown <X> session"
+            # (Codex App Server, Claude, Grok, Antigravity) -- matched by
+            # shape rather than enumerating each one by name. Claude/Grok/
+            # Antigravity keep session state only in-process (unlike Codex,
+            # which reconnects to the still-running App Server), so any
+            # active task using one of them hits this on every restart --
+            # and this function runs at startup (reconcile_active_tasks, in
+            # the FastAPI lifespan), so before this the app couldn't even
+            # start with such a task in the database: the unhandled
+            # RuntimeError propagated out of lifespan and crashed the whole
+            # process on boot, not just that one task's reconciliation.
+            exc_msg = str(exc)
+            if not (exc_msg.startswith("Unknown ") and exc_msg.endswith(" session")):
                 raise
         refreshed = self._require_task(db, task.id, "reconciling stale runtime session")
         refreshed = clear_runtime_session(db, refreshed)
@@ -577,7 +601,9 @@ class TaskOrchestrator:
             except Exception as exc:
                 attempts += 1
                 detail = str(exc)
-                if "Unknown Codex App Server session" in detail:
+                # See reconcile_task_runtime_session's own comment: every
+                # adapter raises "Unknown <X> session" in this shape, not just Codex's.
+                if detail.startswith("Unknown ") and detail.endswith(" session"):
                     await self._handle_stale_runtime_session(task_id, attempts)
                     return
                 await self._handle_runtime_event(

@@ -20,7 +20,7 @@ def create_runtime_adapter() -> RuntimeAdapter:
     if mode == "mock":
         return MockRuntimeAdapter()
     if mode == "antigravity_cli":
-        from .antigravity_adapter import AntigravityCliAdapter  # deferred: avoids a module-level circular import
+        from ..antigravity_adapter import AntigravityCliAdapter  # deferred: avoids a module-level circular import
 
         return AntigravityCliAdapter()
     return AppServerWebSocketAdapter(os.getenv("ZENBAR_APP_SERVER_WS_URL", "ws://127.0.0.1:18765"))
@@ -47,9 +47,9 @@ def create_engine_adapters() -> tuple[dict[str, RuntimeAdapter], str]:
         mock = MockRuntimeAdapter()
         return {"codex": mock, "antigravity": mock, "grok": mock, "claude": mock}, "codex"
 
-    from .antigravity_adapter import AntigravityCliAdapter  # deferred: avoids a module-level circular import
-    from .claude_adapter import ClaudeCliAdapter  # deferred: avoids a module-level circular import
-    from .grok_adapter import GrokCliAdapter  # deferred: avoids a module-level circular import
+    from ..antigravity_adapter import AntigravityCliAdapter  # deferred: avoids a module-level circular import
+    from ..claude_adapter import ClaudeCliAdapter  # deferred: avoids a module-level circular import
+    from ..grok_adapter import GrokCliAdapter  # deferred: avoids a module-level circular import
 
     adapters: dict[str, RuntimeAdapter] = {
         "codex": AppServerWebSocketAdapter(os.getenv("ZENBAR_APP_SERVER_WS_URL", "ws://127.0.0.1:18765")),
