@@ -1,0 +1,171 @@
+/* App shell and header, the desktop grids, and the panel primitives
+   (.panel, .row-header, .panel-scroll) that every surface is built from. */
+
+.app-shell {
+  min-height: 100vh;
+  padding: 1rem 1rem 1.25rem;
+}
+
+.commander-header {
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow);
+}
+
+.header-copy h1 {
+  margin: 0;
+  font-size: clamp(1.2rem, 2vw, 1.8rem);
+}
+
+.notification-toggle-button {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 1.05rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.header-actions {
+  display: flex;
+  gap: 0.65rem;
+}
+
+.eyebrow {
+  margin: 0 0 0.15rem;
+  color: var(--text-soft);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hero-copy {
+  margin: 0.25rem 0 0;
+  color: var(--text-soft);
+  font-size: 0.9rem;
+}
+
+.hidden-on-mobile {
+  display: flex;
+}
+
+.workspace-grid {
+  height: calc(100vh - var(--header-height) - 2.6rem);
+  min-height: 620px;
+  display: grid;
+  grid-template-columns: 260px 420px minmax(480px, 1fr);
+  gap: 0.9rem;
+}
+
+/* Desktop conversation view: the same conversation list + chat components
+   the mobile shell renders one-at-a-time, shown side by side. */
+.chat-grid {
+  height: calc(100vh - var(--header-height) - 2.6rem);
+  min-height: 620px;
+  display: grid;
+  grid-template-columns: 340px minmax(520px, 1fr);
+  gap: 0.9rem;
+}
+
+/* Those components carry .mobile-screen/.chat-screen, which pin their own
+   viewport-relative heights for the mobile single-panel shell. Inside this
+   grid the track already supplies the height, so let them fill their cell
+   instead of overflowing it. */
+.chat-grid > .mobile-screen,
+.chat-grid > .chat-screen {
+  height: 100%;
+  min-height: 0;
+}
+
+.panel {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  padding: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-header {
+  margin-bottom: 0.65rem;
+}
+
+.row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.row-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.btn-danger-sm {
+  background: #e53935;
+  color: #fff;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.btn-danger-sm:hover:not(:disabled) {
+  background: #b71c1c;
+}
+
+.btn-danger-sm:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.inline-actions {
+  display: inline-flex;
+  gap: 0.5rem;
+}
+
+.panel-header h2,
+.panel-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.panel-header p {
+  margin: 0.2rem 0 0;
+  color: var(--text-soft);
+  font-size: 0.84rem;
+}
+
+.panel-scroll {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-right: 0.2rem;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mono {
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+}

@@ -1,0 +1,121 @@
+/* The mobile shell and screen stack, plus the two breakpoints. Last on
+   purpose: these media queries override what the files above set. */
+
+.mobile-shell {
+  min-height: calc(100vh - var(--header-height) - 2.4rem);
+}
+
+.mobile-screen {
+  min-height: calc(100vh - var(--header-height) - 2.4rem);
+}
+
+/* The conversation screen keeps its compose bar pinned at the bottom of the
+   viewport: unlike other mobile-screen panels (which are fine growing with
+   their content), this one must never grow taller than the viewport or the
+   compose bar gets pushed below the fold, forcing the whole page to scroll
+   to reach it. Only the message list (flex: 1, overflow-y: auto) scrolls. */
+.chat-screen {
+  height: calc(100vh - var(--header-height) - 2.4rem);
+}
+
+.mobile-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.mobile-back {
+  flex: 0 0 auto;
+  min-height: 44px;
+}
+
+@media (max-width: 1199px) {
+  .workspace-grid {
+    grid-template-columns: 240px minmax(0, 1fr);
+    grid-template-areas:
+      "projects tasks"
+      "projects detail";
+    height: auto;
+    min-height: 0;
+  }
+
+  .sidebar {
+    grid-area: projects;
+    max-height: calc(100vh - var(--header-height) - 2.6rem);
+  }
+
+  .tasks-panel {
+    grid-area: tasks;
+    max-height: 320px;
+  }
+
+  .detail-panel {
+    grid-area: detail;
+    min-height: 420px;
+  }
+}
+
+@media (max-width: 767px) {
+  .app-shell {
+    padding: 0.75rem;
+  }
+
+  .commander-header {
+    height: auto;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .mobile-header {
+    margin-bottom: 0.75rem;
+  }
+
+  .hidden-on-mobile {
+    display: none;
+  }
+
+  .header-actions {
+    width: 100%;
+  }
+
+  .header-actions button {
+    flex: 1;
+  }
+
+  .workspace-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "projects"
+      "tasks"
+      "detail";
+    gap: 0.75rem;
+  }
+
+  .sidebar,
+  .tasks-panel,
+  .detail-panel {
+    max-height: none;
+    min-height: 0;
+  }
+
+  .meta-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .inline-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .inline-actions button {
+    min-height: 44px;
+  }
+
+  .mobile-title-row {
+    justify-content: space-between;
+  }
+
+  .modal-overlay {
+    padding: 0;
+  }
+}

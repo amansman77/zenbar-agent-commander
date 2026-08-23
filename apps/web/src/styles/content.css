@@ -1,0 +1,77 @@
+/* Rendered agent output: markdown, inline code, plain event lists, and the
+   empty/copy status lines. */
+
+.markdown-view {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.markdown-view h3,
+.markdown-view h4,
+.markdown-view h5 {
+  margin: 0;
+}
+
+.markdown-paragraph {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.markdown-view ul,
+.markdown-view ol {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.inline-code {
+  border-radius: 6px;
+  background: #e8eef7;
+  padding: 0.05rem 0.35rem;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.84em;
+}
+
+.event-list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.event-list li {
+  padding: 0.6rem;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid var(--line);
+}
+
+.event-list li.event-item-important {
+  border-color: #97b7dd;
+  background: #edf4ff;
+}
+
+.event-list li span {
+  margin-bottom: 0.1rem;
+  color: var(--text-soft);
+  font-size: 0.76rem;
+}
+
+.event-list.log-list-conversation li,
+.event-list.log-list-execution li,
+.event-list.log-list-system li {
+  display: block;
+}
+
+.empty-state {
+  margin: 0.4rem 0;
+  color: var(--text-soft);
+  font-size: 0.88rem;
+}
+
+.copy-status {
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-soft);
+}

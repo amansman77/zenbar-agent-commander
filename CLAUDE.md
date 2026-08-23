@@ -46,7 +46,7 @@ Every module has a docstring; read it before reading the code.
 | Orchestration | `service.py` — `TaskOrchestrator`, the task lifecycle |
 | Persistence | `models.py` (ORM), `repository/` (all DB access + serializers), `db.py` |
 | Runtime | `runtime/` (adapter interface + Codex WebSocket adapter + mock + factory), `claude_adapter.py`, `grok_adapter.py`, `antigravity_adapter.py`, `cli_adapter_git.py` |
-| Workspace | `workspace.py` (branch/worktree per task), `codex_project_trust.py` |
+| Workspace | `workspace.py` (creates/removes the worktree), `workspace_git.py` (commit/push/diff inside it), `codex_project_trust.py` |
 | Support | `schemas.py`, `streaming.py`, `ttl_cache.py`, `model_catalog.py`, `pr_info.py`, `github_pr.py`, `repo_discovery.py`, `codex_profiles.py`, `app_server_manager.py` |
 
 **Where endpoints live.** `main.py` only builds the app (lifespan, CORS, the
@@ -92,8 +92,8 @@ not a pattern to copy.
 (`routers/conversations.py`) creates a task, then
 `TaskOrchestrator.start_task()` prepares a git worktree, asks the engine's
 `RuntimeAdapter` to start a session, and spawns a background consumer of that
-session's events. Each event is normalized and persisted by `repository.py`,
-may move the task's status, and is fanned out over SSE
+session's events. Each event is normalized and persisted by the `repository`
+package, may move the task's status, and is fanned out over SSE
 (`streaming.py` → `GET /tasks/{id}/stream`) to the UI.
 
 **Task status.** Runtime events drive the status; the mapping is
@@ -108,17 +108,35 @@ execute-mode task, approving it is also what merges the PR the agent opened
 ## Frontend — `apps/web/src/`
 
 ```
-App.tsx        root: selection state, top-level queries/mutations, mobile vs desktop shell
+App.tsx        root: selection state, mutations, mobile vs desktop shell
 api.ts         every HTTP call to the API
 screens/       full surfaces (conversation list, conversation detail, prompts)
 components/    reusable UI (diff view, timeline, forms, modals, badges)
 components/prompts/  saved-prompt and pipeline editing
 hooks/         data + browser hooks (SSE stream, breakpoint, notifications, prompts)
 lib/           pure logic, no React (event classification, diff parsing, formatting)
+styles/        CSS partials, imported in order by styles.css
 ```
 
+CSS is order-sensitive: `styles.css` is only a list of `@import`s, kept in the
+order the rules were in when it was one file. Add a rule to the partial that
+owns its surface, and leave `styles/mobile.css` last — its media queries
+override everything above them.
+
 Dependencies flow one way: `App.tsx → screens → components → hooks → lib`. Put
-anything testable without a DOM in `lib/`; `App.test.tsx` imports those directly.
+anything testable without a DOM in `lib/`, where it gets a unit test next to it
+(`lib/diff.test.ts` and friends).
+
+The DOM-level tests are integration tests against the whole app, grouped by
+surface — `App.shell.test.tsx`, `App.taskCreation.test.tsx`,
+`App.taskDetail.test.tsx` — and they share `test/appHarness.tsx`, which owns the
+fetch mock standing in for the API, the `fixtures` object a test seeds, and
+`renderApp()`. A new integration test goes in the suite for its surface and
+seeds `fixtures`; it should not build its own fetch mock.
+
+`hooks/useCommanderData.ts` is where App's server data comes from — every query
+behind the current project/task selection, plus the values derived from them,
+returned as plain values rather than query objects.
 
 `App.tsx` still owns the selection state and the mutations, so a component it
 renders takes what it needs as props — `components/TaskDetailPanel.tsx` is the

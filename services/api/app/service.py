@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import subprocess
 from collections.abc import AsyncIterator
 
 from sqlalchemy import select
@@ -36,6 +35,7 @@ from .repository import (
     set_task_workspace,
     set_task_status,
 )
+from . import workspace_git
 from .runtime import RuntimeAdapter
 from .schemas import (
     RespondTaskRequest,
@@ -389,7 +389,7 @@ class TaskOrchestrator:
                 if not (exc_msg.startswith("Unknown ") and exc_msg.endswith(" session")):
                     raise
 
-        fallback_diff = await asyncio.to_thread(self._compute_workspace_diff, task)
+        fallback_diff = await asyncio.to_thread(workspace_git.compute_workspace_diff, task)
         # Workspace git diff is ground truth (staged/unstaged only — empty after commit).
         # If workspace is clean, clear any stale diff in the DB.
         chosen = fallback_diff if fallback_diff is not None else TaskDiff()
@@ -494,7 +494,7 @@ class TaskOrchestrator:
     async def commit_workspace(self, db: Session, task: Task, payload: TaskCommitRequest) -> TaskGitActionResponse:
         if not task.workspace_path:
             raise RuntimeError("Task workspace is not ready")
-        result = await asyncio.to_thread(self._commit_workspace_sync, task.workspace_path, payload.message, payload.actor)
+        result = await asyncio.to_thread(workspace_git.commit_workspace, task.workspace_path, payload.message, payload.actor)
         append_event(
             db,
             task,
@@ -510,7 +510,7 @@ class TaskOrchestrator:
         if not task.workspace_path:
             raise RuntimeError("Task workspace is not ready")
         result = await asyncio.to_thread(
-            self._push_workspace_sync,
+            workspace_git.push_workspace,
             task.workspace_path,
             payload.remote,
             payload.set_upstream,
@@ -748,163 +748,6 @@ class TaskOrchestrator:
             )
             return self._require_task(db, task.id, "pipeline followup failure")
         return task
-
-    def _has_diff_content(self, diff: TaskDiff | None) -> bool:
-        if diff is None:
-            return False
-        if diff.raw_diff and diff.raw_diff.strip():
-            return True
-        if diff.files_changed:
-            return True
-        return False
-
-    def _run_git(self, cwd: str, args: list[str]) -> str:
-        completed = subprocess.run(
-            ["git", "-C", cwd, *args],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return completed.stdout.strip()
-
-    def _run_git_noquote(self, cwd: str, args: list[str]) -> str:
-        """Like _run_git but with core.quotepath=false so non-ASCII paths are not octal-escaped."""
-        completed = subprocess.run(
-            ["git", "-C", cwd, "-c", "core.quotepath=false", *args],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return completed.stdout.strip()
-
-    def _run_git_full(self, cwd: str, args: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", "-C", cwd, *args],
-            check=False,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-
-    def _git_checked(self, cwd: str, args: list[str], env: dict[str, str] | None = None) -> str:
-        completed = self._run_git_full(cwd, args, env=env)
-        if completed.returncode != 0:
-            message = completed.stderr.strip() or completed.stdout.strip() or f"git {' '.join(args)} failed"
-            raise RuntimeError(message)
-        return (completed.stdout.strip() or completed.stderr.strip()).strip()
-
-    def _commit_workspace_sync(self, workspace_path: str, message: str, actor: str) -> TaskGitActionResponse:
-        self._git_checked(workspace_path, ["rev-parse", "--is-inside-work-tree"])
-        status = self._git_checked(workspace_path, ["status", "--porcelain"])
-        if not status:
-            raise RuntimeError("No changes to commit in Task Workspace")
-
-        self._git_checked(workspace_path, ["add", "-A"])
-        env = os.environ.copy()
-        if actor.strip():
-            name = actor.strip()
-            email = os.getenv("ZENBAR_GIT_AUTHOR_EMAIL", "zenbar@local")
-            env.setdefault("GIT_AUTHOR_NAME", name)
-            env.setdefault("GIT_COMMITTER_NAME", name)
-            env.setdefault("GIT_AUTHOR_EMAIL", email)
-            env.setdefault("GIT_COMMITTER_EMAIL", email)
-        commit_output = self._git_checked(workspace_path, ["commit", "-m", message], env=env)
-        branch = self._git_checked(workspace_path, ["rev-parse", "--abbrev-ref", "HEAD"])
-        return TaskGitActionResponse(ok=True, branch=branch, message="Committed workspace changes", output=commit_output or None)
-
-    def _push_workspace_sync(self, workspace_path: str, remote: str, set_upstream: bool) -> TaskGitActionResponse:
-        branch = self._git_checked(workspace_path, ["rev-parse", "--abbrev-ref", "HEAD"])
-        args = ["push"]
-        if set_upstream:
-            args.append("-u")
-        args.extend([remote, branch])
-        push_output = self._git_checked(workspace_path, args)
-        return TaskGitActionResponse(
-            ok=True,
-            branch=branch,
-            remote=remote,
-            message="Pushed workspace branch",
-            output=push_output or None,
-        )
-
-    def _compute_workspace_diff(self, task: Task) -> TaskDiff | None:
-        workspace = task.workspace_path
-        if not workspace:
-            return None
-
-        try:
-            self._run_git(workspace, ["rev-parse", "--is-inside-work-tree"])
-        except Exception:
-            return None
-
-        files: list[str] = []
-        raw_candidates: list[str] = []
-        default_branch = task.project.default_branch if task.project else "main"
-
-        def add_files(lines: str) -> None:
-            for line in lines.splitlines():
-                value = line.strip()
-                if value:
-                    files.append(value)
-
-        # Show only uncommitted changes: staged + unstaged (not vs base branch).
-        # After a commit the diff will be empty — matching user expectation.
-        name_only_cmds = [
-            ["diff", "--cached", "--name-only"],
-            ["diff", "--name-only"],
-        ]
-        for args in name_only_cmds:
-            try:
-                output = self._run_git_noquote(workspace, args)
-                if output:
-                    add_files(output)
-            except Exception:
-                continue
-
-        raw_priority = [
-            ["diff", "--cached"],
-            ["diff"],
-        ]
-        for args in raw_priority:
-            try:
-                output = self._run_git_noquote(workspace, args)
-                if output and output.strip():
-                    raw_candidates.append(output)
-            except Exception:
-                continue
-
-        # Generate diffs for untracked (new) files via --no-index
-        # Use core.quotepath=false so non-ASCII (Korean) paths are not octal-escaped.
-        # git diff --no-index always exits 1 when files differ, so use check=False.
-        untracked_diffs: list[str] = []
-        try:
-            untracked_out = subprocess.run(
-                ["git", "-C", workspace, "-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard"],
-                check=True, capture_output=True, text=True,
-            ).stdout.strip()
-            for rel_path in (untracked_out or "").splitlines():
-                rel_path = rel_path.strip()
-                if not rel_path:
-                    continue
-                files.append(rel_path)
-                result = subprocess.run(
-                    ["git", "-C", workspace, "-c", "core.quotepath=false", "diff", "--no-index", "/dev/null", rel_path],
-                    check=False, capture_output=True, text=True,
-                )
-                # exit 0 = identical (shouldn't happen vs /dev/null), 1 = differs (normal), 2+ = error
-                if result.returncode <= 1 and result.stdout.strip():
-                    untracked_diffs.append(result.stdout.strip())
-        except Exception:
-            pass
-
-        deduped_files = list(dict.fromkeys(files))
-        base_diff = raw_candidates[0] if raw_candidates else ""
-        combined = "\n".join(filter(None, [base_diff] + untracked_diffs))
-        raw_diff = combined.strip() or None
-        if not deduped_files and not raw_diff:
-            return None
-        summary = f"Updated {len(deduped_files)} file(s) in the Task Workspace."
-        return TaskDiff(files_changed=deduped_files, summary=summary, raw_diff=raw_diff)
 
 
 async def stream_task_events(task_id: str) -> AsyncIterator[str]:

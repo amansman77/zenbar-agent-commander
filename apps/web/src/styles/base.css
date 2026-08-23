@@ -1,0 +1,102 @@
+/* Reset, typography and the default look of every form control. */
+
+:root {
+  --bg-top: #f6f8fc;
+  --bg-bottom: #eef2f8;
+  --panel: #ffffff;
+  --panel-soft: #f7f9fd;
+  --text: #16253a;
+  --text-soft: #5d6b7e;
+  --line: #dbe3ee;
+  --primary: #0f3158;
+  --primary-strong: #0a2441;
+  --shadow: 0 12px 30px rgba(17, 34, 58, 0.08);
+  --header-height: 96px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background:
+    radial-gradient(circle at top left, rgba(15, 72, 125, 0.08), transparent 35%),
+    linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  border-radius: 10px;
+  padding: 0.6rem 0.9rem;
+  background: var(--primary);
+  color: #fff;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--primary-strong);
+}
+
+button.secondary {
+  background: #dde5f0;
+  color: var(--primary);
+}
+
+button.secondary:hover:not(:disabled) {
+  background: #dbe8fb;
+  color: #0b2d50;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid #0d3b6a;
+  outline-offset: 2px;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.7rem 0.8rem;
+  background: #fff;
+  color: var(--text);
+}
+
+/* The blanket `input { width: 100% }` above is meant for text/number
+   inputs -- a checkbox in a flex row inheriting it stretches to fill the
+   row (its own tiny glyph rendering somewhere inside that oversized box),
+   pushing any sibling content far off to the side. Hit for real: a
+   checklist row's title/description ended up rendered ~800px past the
+   viewport edge, off-screen but present in the DOM. */
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+}
+
+textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+
+.task-prompt-input {
+  min-height: 220px;
+}

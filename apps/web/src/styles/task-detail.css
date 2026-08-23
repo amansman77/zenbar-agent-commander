@@ -1,0 +1,252 @@
+/* The task detail surface: PR/MR cards, the desktop detail panel, and the
+   mobile detail screen with its run-state control bar and metadata grid. */
+
+.pr-info-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-soft);
+}
+
+.pr-info-card:hover {
+  border-color: var(--primary);
+}
+
+/* Only the title/summary area opens the PR/MR (target="_blank") -- the
+   diff toggle below it is a plain button, not nested inside the anchor, to
+   keep the two independently clickable without one swallowing the other's
+   click. */
+.pr-info-card-link {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.pr-info-card-header {
+  display: flex;
+  align-items: center;
+}
+
+.pr-info-card-title {
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+.pr-info-card-description {
+  margin: 0;
+  font-size: 0.83rem;
+  color: var(--text-soft);
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.pr-info-card-diff {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.pr-info-card-diff-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.83rem;
+  color: var(--primary);
+  cursor: pointer;
+}
+
+.pr-info-card-diff-toggle:hover {
+  text-decoration: underline;
+}
+
+.pr-info-card-diff-filelist {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.83rem;
+  color: var(--text-soft);
+}
+
+.pr-info-card-diff-filelist li {
+  margin-bottom: 0.2rem;
+}
+
+.pr-info-card .diff-groups {
+  margin-top: 0.5rem;
+}
+
+.detail-panel {
+  min-height: 0;
+}
+
+.detail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.mobile-detail-screen {
+  padding: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  min-height: calc(100vh - var(--header-height) - 2.4rem);
+}
+
+.mobile-detail-control {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.98);
+  display: grid;
+  gap: 12px;
+}
+
+.mobile-detail-control-running {
+  border-bottom-color: #c7daf3;
+}
+
+.mobile-detail-control-waiting_approval {
+  border-bottom-color: #ffd79f;
+}
+
+.mobile-detail-control-completed {
+  border-bottom-color: #b7e4c5;
+}
+
+.mobile-detail-control-failed {
+  border-bottom-color: #f3bcc0;
+}
+
+.mobile-detail-control-top {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Without the Back button (desktop, where the conversation list stays
+   visible) there are only two children, so the trailing action would land
+   in the 1fr column and stretch across the header. */
+.mobile-detail-control-top-no-back {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.mobile-detail-action-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mobile-detail-action-row button,
+.mobile-detail-control-top button {
+  min-height: 44px;
+}
+
+.mobile-detail-action-row button:only-child {
+  grid-column: 1 / -1;
+}
+
+.meta-grid {
+  margin-bottom: 0.7rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.mobile-meta-section {
+  margin: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfdff;
+}
+
+.mobile-run-context {
+  margin: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfdff;
+  padding: 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.mobile-run-context h3 {
+  margin: 0 0 4px;
+}
+
+.mobile-run-context p {
+  margin: 0;
+  color: #27425f;
+}
+
+.mobile-meta-section > summary {
+  cursor: pointer;
+  padding: 12px;
+  font-weight: 700;
+}
+
+.mobile-meta-grid {
+  margin: 0;
+  padding: 0 12px 12px;
+  grid-template-columns: 1fr;
+}
+
+.mobile-meta-grid > div {
+  padding: 0.55rem 0.65rem;
+}
+
+.meta-grid > div {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  background: #fbfdff;
+}
+
+.meta-label {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: var(--text-soft);
+  font-size: 0.76rem;
+}
+
+.break-value {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.action-row {
+  margin-bottom: 0.7rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.action-row button.secondary:hover:not(:disabled) {
+  background: #dbe8fb;
+  color: #0b2d50;
+  box-shadow: inset 0 0 0 1px #98b7dd;
+}
+
+.retry-model-control {
+  min-width: 220px;
+  color: var(--text-soft);
+  font-size: 0.82rem;
+}
+
+.retry-model-control select {
+  margin-top: 0.25rem;
+}
+
+.retry-model-control-mobile {
+  min-width: 0;
+}

@@ -15,8 +15,9 @@ import type {
 } from "@zenbar/shared";
 import { api } from "../api";
 import { UsageBadge } from "../components/Badges";
-import { AssistantMessageGroup, ChatBubble } from "../components/ChatMessages";
-import { GroupedDiff, PrDiffSection } from "../components/DiffView";
+import { ConversationTranscript } from "../components/ConversationTranscript";
+import type { MessageGroup } from "../components/ConversationTranscript";
+import { useCloseOnOutsideClick } from "../hooks/useCloseOnOutsideClick";
 import { useIsMobileBreakpoint } from "../hooks/useIsMobileBreakpoint";
 import { USAGE_SUPPORTED_ENGINES, actor } from "../lib/constants";
 import { ACTIVE_TASK_STATUSES } from "../lib/notifications";
@@ -44,12 +45,12 @@ export function ConversationDetailScreen({
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [skillSearch, setSkillSearch] = useState("");
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
-  const skillMenuRef = useRef<HTMLDivElement>(null);
+  const skillMenuRef = useCloseOnOutsideClick(skillMenuOpen, setSkillMenuOpen);
   const [promptMenuOpen, setPromptMenuOpen] = useState(false);
-  const promptMenuRef = useRef<HTMLDivElement>(null);
+  const promptMenuRef = useCloseOnOutsideClick(promptMenuOpen, setPromptMenuOpen);
   const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(null);
   const [pipelineMenuOpen, setPipelineMenuOpen] = useState(false);
-  const pipelineMenuRef = useRef<HTMLDivElement>(null);
+  const pipelineMenuRef = useCloseOnOutsideClick(pipelineMenuOpen, setPipelineMenuOpen);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const deleteConversationMutation = useMutation({
@@ -255,39 +256,6 @@ export function ConversationDetailScreen({
   }, [activeTab]);
 
   useEffect(() => {
-    if (!skillMenuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (skillMenuRef.current && !skillMenuRef.current.contains(e.target as Node)) {
-        setSkillMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [skillMenuOpen]);
-
-  useEffect(() => {
-    if (!promptMenuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (promptMenuRef.current && !promptMenuRef.current.contains(e.target as Node)) {
-        setPromptMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [promptMenuOpen]);
-
-  useEffect(() => {
-    if (!pipelineMenuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (pipelineMenuRef.current && !pipelineMenuRef.current.contains(e.target as Node)) {
-        setPipelineMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [pipelineMenuOpen]);
-
-  useEffect(() => {
     // Model/profile catalogs are engine-specific; a pick from the previous
     // engine is meaningless (or invalid) after switching.
     setSelectedModel(null);
@@ -308,10 +276,7 @@ export function ConversationDetailScreen({
   // the earlier ones in the run render collapsed, similar to the Codex
   // app's own "thinking" section.
   const messageGroups = useMemo(() => {
-    const groups: Array<
-      | { kind: "user"; message: ConversationMessageItem }
-      | { kind: "assistant"; intermediates: ConversationMessageItem[]; final: ConversationMessageItem }
-    > = [];
+    const groups: MessageGroup[] = [];
     let run: ConversationMessageItem[] = [];
     const flushRun = () => {
       if (run.length > 0) {
@@ -408,140 +373,26 @@ export function ConversationDetailScreen({
         </div>
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto", padding: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
-        {isLoading && <p className="empty-state">Loading...</p>}
-        {!isLoading && conversation?.messages.length === 0 && activeTab === "chat" && (
-          <p className="empty-state" style={{ textAlign: "center", marginTop: "2rem" }}>
-            Start typing below to begin the conversation.
-          </p>
-        )}
-        {activeTab === "diff" &&
-          prInfos?.map((prInfo) => (
-            <div className="pr-info-card" key={prInfo.url}>
-              <a href={prInfo.url} target="_blank" rel="noreferrer" className="pr-info-card-link">
-                <div className="pr-info-card-header">
-                  <span
-                    className={`status ${
-                      prInfo.state === "merged" ? "status-blue" : prInfo.state === "open" ? "status-green" : "status-red"
-                    }`}
-                  >
-                    {prInfo.platform === "github" ? "GitHub" : "GitLab"} #{prInfo.number} · {prInfo.state}
-                  </span>
-                </div>
-                <strong className="pr-info-card-title">{prInfo.title}</strong>
-                {prInfo.source_branch && prInfo.target_branch ? (
-                  <span className="item-secondary mono">
-                    {prInfo.source_branch} → {prInfo.target_branch}
-                  </span>
-                ) : null}
-                {prInfo.description ? <p className="pr-info-card-description">{prInfo.description}</p> : null}
-              </a>
-              <PrDiffSection conversationId={conversationId} url={prInfo.url} diff={prInfo.diff} />
-            </div>
-          ))}
-        {activeTab === "diff" && (prInfos?.length ?? 0) === 0 && (
-          // No PR/MR mentioned yet -- fall back to the task's own workspace
-          // diff (uncommitted changes). Once a PR/MR shows up, each card
-          // above carries its own diff instead, so this flat block steps
-          // aside rather than showing a redundant "latest PR/MR only" copy.
-          diffData?.raw_diff ? (
-            <GroupedDiff
-              rawDiff={diffData.raw_diff}
-              filesChanged={diffData.files_changed ?? []}
-              expanded={diffExpanded}
-              onToggle={(id) => setDiffExpanded((prev) => ({ ...prev, [id]: !prev[id] }))}
-            />
-          ) : (
-            <p className="empty-state">변경된 파일이 없습니다.</p>
-          )
-        )}
-        {activeTab === "chat" && messageGroups.map((group) =>
-          group.kind === "user" ? (
-            <div key={group.message.id} style={{ display: "flex", justifyContent: "flex-end" }}>
-              <ChatBubble message={group.message} />
-            </div>
-          ) : (
-            <AssistantMessageGroup key={group.final.id} intermediates={group.intermediates} final={group.final} />
-          )
-        )}
-        {activeTab === "chat" && isTaskActive && (
-          <div style={{ display: "flex", justifyContent: "flex-start" }}>
-            <div
-              style={{
-                padding: "0.55rem 0.75rem",
-                borderRadius: "14px 14px 14px 4px",
-                background: "#f0f4fa",
-                color: "#16253a",
-                fontSize: "0.88rem",
-              }}
-            >
-              {isWaitingApproval ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  <span>Codex가 변경 사항 승인을 요청하고 있습니다.</span>
-                  <div style={{ display: "flex", gap: "8px" }}>
-                    <button
-                      onClick={() => approveTaskMutation.mutate()}
-                      disabled={approveTaskMutation.isPending || stopTaskMutation.isPending}
-                      style={{ fontSize: "0.85rem" }}
-                    >
-                      {approveTaskMutation.isPending ? "승인 중..." : "승인"}
-                    </button>
-                    <button
-                      onClick={() => stopTaskMutation.mutate()}
-                      disabled={approveTaskMutation.isPending || stopTaskMutation.isPending}
-                      style={{ fontSize: "0.85rem", background: "#e53935", color: "#fff" }}
-                    >
-                      {stopTaskMutation.isPending ? "거절 중..." : "거절"}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
-                  <span style={{ opacity: 0.7 }}>Codex is thinking...</span>
-                  <button
-                    onClick={() => stopTaskMutation.mutate()}
-                    disabled={stopTaskMutation.isPending}
-                    style={{ fontSize: "0.78rem", padding: "4px 12px", background: "#e53935", color: "#fff", flexShrink: 0 }}
-                  >
-                    {stopTaskMutation.isPending ? "중지 중..." : "중지"}
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-        {activeTab === "chat" && (isTaskFailed || isTaskStopped) && (
-          <div style={{ display: "flex", justifyContent: "flex-start" }}>
-            <div
-              style={{
-                padding: "0.55rem 0.75rem",
-                borderRadius: "14px 14px 14px 4px",
-                background: isTaskFailed ? "#fdecea" : "#f0f4fa",
-                color: isTaskFailed ? "#7a1f1f" : "#16253a",
-                fontSize: "0.88rem",
-                maxWidth: "85%",
-              }}
-            >
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                <span>
-                  {isTaskFailed ? "⚠️ 작업이 실패했습니다." : "⏹ 작업이 중지되었습니다."}
-                  {failureReason ? ` ${failureReason}` : ""}
-                </span>
-                {isTaskFailed && (
-                  <button
-                    onClick={() => retryTaskMutation.mutate()}
-                    disabled={retryTaskMutation.isPending}
-                    style={{ fontSize: "0.8rem", alignSelf: "flex-start" }}
-                  >
-                    {retryTaskMutation.isPending ? "재시도 중..." : "다시 시도"}
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
+      <ConversationTranscript
+        conversationId={conversationId}
+        conversation={conversation}
+        isLoading={isLoading}
+        messageGroups={messageGroups}
+        messagesEndRef={messagesEndRef}
+        activeTab={activeTab}
+        diffData={diffData}
+        diffExpanded={diffExpanded}
+        setDiffExpanded={setDiffExpanded}
+        prInfos={prInfos}
+        isTaskActive={isTaskActive}
+        isWaitingApproval={isWaitingApproval}
+        isTaskFailed={isTaskFailed}
+        isTaskStopped={isTaskStopped}
+        failureReason={failureReason}
+        approveTaskMutation={approveTaskMutation}
+        stopTaskMutation={stopTaskMutation}
+        retryTaskMutation={retryTaskMutation}
+      />
 
       <div
         style={{
