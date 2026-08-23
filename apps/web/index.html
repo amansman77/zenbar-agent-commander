@@ -2,8 +2,23 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Zenbar Agent Commander</title>
+
+    <!-- "Add to Home Screen" support: iOS/Android background tabs are far
+         more likely to be killed and reloaded from scratch under memory
+         pressure than a standalone/installed app is -- reported live as
+         "매번 새로고침 된다" from a bookmarked/URL-bar tab. This doesn't
+         eliminate that (still an OS memory-management decision, not
+         something a web page controls), but it's the actual lever
+         available: install as a home-screen app instead of a browser tab. -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0f3158" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Zenbar" />
   </head>
   <body>
     <div id="root"></div>
