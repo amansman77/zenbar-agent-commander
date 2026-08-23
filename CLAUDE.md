@@ -118,7 +118,15 @@ lib/           pure logic, no React (event classification, diff parsing, formatt
 ```
 
 Dependencies flow one way: `App.tsx → screens → components → hooks → lib`. Put
-anything testable without a DOM in `lib/`; `App.test.tsx` imports those directly.
+anything testable without a DOM in `lib/`, where it gets a unit test next to it
+(`lib/diff.test.ts` and friends).
+
+The DOM-level tests are integration tests against the whole app, grouped by
+surface — `App.shell.test.tsx`, `App.taskCreation.test.tsx`,
+`App.taskDetail.test.tsx` — and they share `test/appHarness.tsx`, which owns the
+fetch mock standing in for the API, the `fixtures` object a test seeds, and
+`renderApp()`. A new integration test goes in the suite for its surface and
+seeds `fixtures`; it should not build its own fetch mock.
 
 `App.tsx` still owns the selection state and the mutations, so a component it
 renders takes what it needs as props — `components/TaskDetailPanel.tsx` is the
