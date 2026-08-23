@@ -116,7 +116,13 @@ components/    reusable UI (diff view, timeline, forms, modals, badges)
 components/prompts/  saved-prompt and pipeline editing
 hooks/         data + browser hooks (SSE stream, breakpoint, notifications, prompts)
 lib/           pure logic, no React (event classification, diff parsing, formatting)
+styles/        CSS partials, imported in order by styles.css
 ```
+
+CSS is order-sensitive: `styles.css` is only a list of `@import`s, kept in the
+order the rules were in when it was one file. Add a rule to the partial that
+owns its surface, and leave `styles/mobile.css` last — its media queries
+override everything above them.
 
 Dependencies flow one way: `App.tsx → screens → components → hooks → lib`. Put
 anything testable without a DOM in `lib/`, where it gets a unit test next to it

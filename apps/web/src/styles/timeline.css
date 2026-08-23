@@ -1,0 +1,203 @@
+/* Watching a task run: the mobile log/diff tabs, the event list, the grouped
+   timeline, and the session composer. */
+
+.output-stack {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.7rem;
+}
+
+.mobile-prompt-section {
+  margin: 0 12px 12px;
+}
+
+.mobile-prompt-preview {
+  margin: 0.35rem 0 0;
+  color: #385776;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.mobile-detail-tabs {
+  margin: 0 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 4px;
+  background: #f3f7fd;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.mobile-detail-tabs button {
+  min-height: 44px;
+  background: transparent;
+  color: #264666;
+}
+
+.mobile-detail-tabs button.active {
+  background: #0f3158;
+  color: #fff;
+}
+
+.mobile-detail-tab-panel {
+  margin: 0 12px 12px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.mobile-log-scroll,
+.mobile-diff-scroll {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+  max-height: 100%;
+  overflow: auto;
+}
+
+.mobile-event-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.mobile-event-list li {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+}
+
+.mobile-event-list li.event-item-important {
+  border-color: #97b7dd;
+  background: #edf4ff;
+}
+
+.event-icon {
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.event-icon-normal {
+  color: #2e679d;
+}
+
+.event-icon-error {
+  color: #b12a34;
+}
+
+.event-message {
+  margin: 0;
+  color: #173555;
+  line-height: 1.35;
+  font-size: 0.93rem;
+  font-weight: 600;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.event-message-agent-status {
+  font-size: 0.84rem;
+  font-weight: 500;
+  color: #3f5875;
+}
+
+.event-meta {
+  margin: 3px 0 0;
+  color: var(--text-soft);
+  font-size: 0.76rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.log-timeline {
+  display: grid;
+  gap: 10px;
+}
+
+.log-timeline-load-full {
+  justify-self: start;
+}
+
+.timeline-item {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 0.65rem;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.timeline-conversation {
+  background: #f6faff;
+  border-color: #c5d9f2;
+  padding: 0.75rem;
+}
+
+.timeline-execution {
+  background: #fbfdff;
+}
+
+.timeline-system-high {
+  background: #f8fbff;
+  border-color: #d5e3f6;
+}
+
+.timeline-technical {
+  background: #fbfcfe;
+}
+
+.timeline-technical summary {
+  cursor: pointer;
+  color: #365679;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.execution-summary p {
+  margin: 0;
+  color: #2a4969;
+  font-size: 0.86rem;
+}
+
+.execution-summary p + p {
+  margin-top: 0.16rem;
+}
+
+.timeline-details-list {
+  margin-top: 0.55rem;
+}
+
+.timeline-details-list li {
+  display: block;
+  padding: 0.55rem 0.6rem;
+}
+
+.session-composer {
+  margin-top: 0.7rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.7rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.session-composer-input {
+  min-height: 88px;
+}
+
+.session-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+}

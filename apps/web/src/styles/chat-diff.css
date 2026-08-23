@@ -1,0 +1,185 @@
+/* Chat messages, output panels, and diff rendering (raw lines, grouped
+   per-file view and its status badges). */
+
+.conversation-message {
+  font-size: 0.97rem;
+  line-height: 1.45;
+  font-weight: 600;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.conversation-message.mobile {
+  -webkit-line-clamp: 4;
+}
+
+.output-panel {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-soft);
+  padding: 0.75rem;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.output-pre {
+  margin: 0.45rem 0 0;
+  border-radius: 10px;
+  background: #0f2743;
+  color: #f1f7ff;
+  padding: 0.75rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff-pre {
+  background: #111f2f;
+}
+
+.diff-pre code {
+  display: block;
+  white-space: pre;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.diff-line {
+  display: block;
+  padding: 0 0.3rem;
+  border-radius: 4px;
+}
+
+.diff-line-meta {
+  color: #9ac2f0;
+}
+
+.diff-line-hunk {
+  background: rgba(255, 221, 120, 0.15);
+  color: #ffd77b;
+}
+
+.diff-line-add {
+  background: rgba(57, 171, 93, 0.22);
+  color: #bff2ce;
+}
+
+.diff-line-remove {
+  background: rgba(184, 74, 74, 0.25);
+  color: #ffd0d0;
+}
+
+.diff-line-neutral {
+  color: #f1f7ff;
+}
+
+.diff-groups {
+  display: grid;
+  gap: 8px;
+}
+
+.diff-group {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.diff-group-header {
+  width: 100%;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-radius: 0;
+  border: 0;
+  background: #eef4fd;
+  color: #173a62;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  text-align: left;
+  padding: 0.6rem 0.7rem;
+}
+
+.diff-group-header:hover:not(:disabled) {
+  background: #e2ecfb;
+}
+
+.diff-change-count {
+  font-size: 0.75rem;
+  color: #426487;
+}
+
+.diff-group-header-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.diff-status-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.diff-status-added {
+  background: rgba(46, 160, 67, 0.18);
+  color: #1a7431;
+}
+
+.diff-status-modified {
+  background: rgba(66, 100, 135, 0.15);
+  color: #426487;
+}
+
+.diff-status-deleted {
+  background: rgba(209, 62, 62, 0.16);
+  color: #b3261e;
+}
+
+.diff-status-renamed {
+  background: rgba(149, 92, 222, 0.16);
+  color: #6b3fa0;
+}
+
+.status-action-danger {
+  background: #b12a34;
+}
+
+.status-action-danger:hover:not(:disabled) {
+  background: #93222c;
+}
+
+.run-context-panel {
+  margin-bottom: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfdff;
+  padding: 0.65rem 0.75rem;
+}
+
+.run-context-panel h3,
+.run-context-panel p {
+  margin: 0;
+}
+
+.run-context-panel p + p {
+  margin-top: 0.25rem;
+}
+
+.plan-output code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
