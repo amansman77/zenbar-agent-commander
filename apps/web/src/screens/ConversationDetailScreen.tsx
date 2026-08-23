@@ -993,7 +993,12 @@ export function ConversationDetailScreen({
                 handleSend();
               }
             }}
-            autoFocus
+            // On mobile this pops the on-screen keyboard open the instant a
+            // conversation is opened, covering the very messages the user
+            // just came to read -- forcing a dismiss-then-scroll-back every
+            // single time. Desktop has no on-screen keyboard to fight, so
+            // autofocus-on-open is still the right default there.
+            autoFocus={!isMobile}
           />
           <button
             onClick={handleSend}
