@@ -93,8 +93,7 @@ not a pattern to copy.
 `TaskOrchestrator.start_task()` prepares a git worktree, asks the engine's
 `RuntimeAdapter` to start a session, and spawns a background consumer of that
 session's events. Each event is normalized and persisted by the `repository`
-package,
-may move the task's status, and is fanned out over SSE
+package, may move the task's status, and is fanned out over SSE
 (`streaming.py` → `GET /tasks/{id}/stream`) to the UI.
 
 **Task status.** Runtime events drive the status; the mapping is
@@ -109,7 +108,7 @@ execute-mode task, approving it is also what merges the PR the agent opened
 ## Frontend — `apps/web/src/`
 
 ```
-App.tsx        root: selection state, top-level queries/mutations, mobile vs desktop shell
+App.tsx        root: selection state, mutations, mobile vs desktop shell
 api.ts         every HTTP call to the API
 screens/       full surfaces (conversation list, conversation detail, prompts)
 components/    reusable UI (diff view, timeline, forms, modals, badges)
@@ -134,6 +133,10 @@ surface — `App.shell.test.tsx`, `App.taskCreation.test.tsx`,
 fetch mock standing in for the API, the `fixtures` object a test seeds, and
 `renderApp()`. A new integration test goes in the suite for its surface and
 seeds `fixtures`; it should not build its own fetch mock.
+
+`hooks/useCommanderData.ts` is where App's server data comes from — every query
+behind the current project/task selection, plus the values derived from them,
+returned as plain values rather than query objects.
 
 `App.tsx` still owns the selection state and the mutations, so a component it
 renders takes what it needs as props — `components/TaskDetailPanel.tsx` is the

@@ -3,8 +3,8 @@
 // the desktop chat/workspace shell. Screens and components live alongside it in
 // screens/, components/, hooks/ and lib/.
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
   ExecutionMode,
   ProjectSummary
@@ -17,12 +17,11 @@ import { ProjectForm } from "./components/ProjectForm";
 import { ProjectList } from "./components/ProjectList";
 import { RunActionSheet } from "./components/RunActionSheet";
 import { TaskForm } from "./components/TaskForm";
+import { useCommanderData } from "./hooks/useCommanderData";
 import { useIsMobileBreakpoint } from "./hooks/useIsMobileBreakpoint";
 import { useTaskCompletionNotifications } from "./hooks/useTaskCompletionNotifications";
-import { useTaskStream } from "./hooks/useTaskStream";
-import { CONVERSATION_GROUP_PREVIEW_COUNT, LAST_TASK_MODEL_KEY, USAGE_SUPPORTED_ENGINES, actor } from "./lib/constants";
+import { LAST_TASK_MODEL_KEY, actor } from "./lib/constants";
 import { TASK_NOTIFICATIONS_ENABLED_KEY, isNotificationSupported, loadTaskNotificationsEnabled } from "./lib/notifications";
-import { extractLatestPlan } from "./lib/taskEvents";
 import { defaultAnswers } from "./lib/taskQuestions";
 import type { RunExecutionAction } from "./lib/taskStatus";
 import { LAST_VIEW_KEY, loadLastView } from "./lib/viewState";
@@ -58,137 +57,31 @@ export function App() {
   const [followupDraft, setFollowupDraft] = useState("");
   const isMobile = useIsMobileBreakpoint();
 
-  const projectsQuery = useQuery({
-    queryKey: ["projects"],
-    queryFn: api.listProjects
-  });
-
-  const runtimeProfilesQuery = useQuery({
-    queryKey: ["runtime-profiles"],
-    queryFn: api.listRuntimeProfiles,
-    staleTime: 5 * 60 * 1000
-  });
-
-  const selectedProject = useMemo(
-    () => projectsQuery.data?.find((project) => project.id === selectedProjectId) ?? null,
-    [projectsQuery.data, selectedProjectId]
-  );
-
-  const tasksQuery = useQuery({
-    queryKey: ["tasks", selectedProjectId],
-    queryFn: () => api.listTasks(selectedProjectId!),
-    enabled: Boolean(selectedProjectId)
-  });
-
-  const taskDetailQuery = useQuery({
-    queryKey: ["task", selectedTaskId],
-    queryFn: () => api.getTask(selectedTaskId!),
-    enabled: Boolean(selectedTaskId)
-  });
-
-  const runtimeModelsQuery = useQuery({
-    // Keyed and filtered on the selected task's own engine -- without this,
-    // the query always fetched Codex's model list (the backend's default
-    // when no `engine` is given) regardless of which engine the task
-    // actually ran on, so the "Retry model" dropdown for an Antigravity or
-    // Grok task silently offered Codex model ids instead.
-    queryKey: ["runtime-models", selectedTaskId, taskDetailQuery.data?.engine],
-    queryFn: () => api.listRuntimeModels(taskDetailQuery.data?.engine),
-    enabled: Boolean(selectedTaskId),
-    staleTime: 0
-  });
-
-  // Same account-level rate-limit badge as the conversation compose bar
-  // (ConversationDetailScreen), but for this desktop Task Detail panel --
-  // reported as a real gap: the compose bar's badge only shows while a
-  // task's engine/model pickers are visible (i.e. before a task starts, or
-  // in the chat view once it has), but this panel has no such indicator at
-  // all, and it's the only place to inspect an already-running/completed
-  // task without an editable model field.
-  const taskDetailEnginesQuery = useQuery({
-    queryKey: ["runtime-engines"],
-    queryFn: () => api.listRuntimeEngines(),
-    staleTime: 5 * 60 * 1000,
-  });
-  // Tasks stored with "" for engine (created before per-task engine
-  // selection existed, or with none explicitly picked) mean "the default
-  // engine", same convention the backend applies (see
-  // TaskOrchestrator._adapter_for) -- `||`, not `??`, since "" is falsy but
-  // not null/undefined. Caught live: the badge never appeared for exactly
-  // these tasks.
-  const taskDetailUsageEngine =
-    taskDetailQuery.data?.engine || taskDetailEnginesQuery.data?.default_engine || null;
-  const taskDetailUsageEngineSupported =
-    taskDetailUsageEngine != null && USAGE_SUPPORTED_ENGINES.includes(taskDetailUsageEngine);
-  const taskDetailUsageQuery = useQuery({
-    queryKey: ["runtime-usage", "task-detail", taskDetailUsageEngine],
-    queryFn: () => api.getRuntimeUsage(taskDetailUsageEngine!),
-    enabled: taskDetailUsageEngineSupported,
-    staleTime: 5 * 60 * 1000,
-    refetchInterval: 5 * 60 * 1000,
-  });
-  const taskDetailUsageInfo = taskDetailUsageEngineSupported ? taskDetailUsageQuery.data?.usage ?? null : null;
-
-  // Split into a small default fetch (command_executed/agent_status
-  // excluded -- 98% of a long task's payload, measured live, for content
-  // the timeline keeps collapsed by default anyway) and a full fetch only
-  // triggered when the user actually taps "load full timeline" below.
-  const [technicalEventsRequested, setTechnicalEventsRequested] = useState(false);
-  useEffect(() => {
-    setTechnicalEventsRequested(false);
-  }, [selectedTaskId]);
-
-  const taskEventsLeanQuery = useQuery({
-    queryKey: ["task-events", selectedTaskId, "lean"],
-    queryFn: () => api.getEventsLean(selectedTaskId!),
-    enabled: Boolean(selectedTaskId),
-    // SSE (useTaskStream below) already keeps this current in real time
-    // while a task is open -- staleTime just stops focus/reconnect churn
-    // (common on mobile: switching apps, wifi<->cellular handoff) from
-    // redownloading it.
-    staleTime: 60_000
-  });
-  const taskEventsFullQuery = useQuery({
-    queryKey: ["task-events", selectedTaskId, "full"],
-    queryFn: () => api.getEvents(selectedTaskId!),
-    enabled: Boolean(selectedTaskId) && technicalEventsRequested,
-    staleTime: 60_000
-  });
-
-  const taskDiffQuery = useQuery({
-    queryKey: ["task-diff", selectedTaskId],
-    queryFn: () => api.getDiff(selectedTaskId!),
-    enabled: Boolean(selectedTaskId)
-  });
-
-  useTaskStream(selectedTaskId);
-
-  const conversationsQuery = useQuery({
-    queryKey: ["conversations", "preview", CONVERSATION_GROUP_PREVIEW_COUNT],
-    queryFn: () => api.listConversations(CONVERSATION_GROUP_PREVIEW_COUNT),
-    // Drives the whole conversations list + the notification watcher below,
-    // so it can't stop polling entirely -- 8s (was 5s) is still prompt for
-    // status changes while cutting request volume by ~40%.
-    //
-    // preview_count caps each project to its default-visible conversations
-    // (server-side, still always including any conversation with an active
-    // task regardless of position -- see list_conversations' own docstring
-    // -- so the notification watcher below stays correct) -- measured
-    // live, this cuts what was a 35KB/poll response down to ~7-8KB for the
-    // account this was built against.
-    refetchInterval: 8000,
-  });
-  const conversationCountsQuery = useQuery({
-    queryKey: ["conversation-counts"],
-    queryFn: api.getConversationCounts,
-    // A tiny response (one number per project) -- doesn't need the same
-    // 8s cadence as the list itself; it only backs the "더보기 (N)" label.
-    staleTime: 30_000,
-    refetchInterval: 30_000,
-  });
+  const {
+    projects,
+    selectedProject,
+    tasks,
+    runtimeProfiles,
+    runtimeModels,
+    task,
+    diff,
+    events,
+    latestPlan,
+    planMarkdown,
+    runActionModelOptions,
+    taskDetailUsageInfo,
+    hiddenTechnicalCount,
+    latestEventAt,
+    technicalEventsRequested,
+    setTechnicalEventsRequested,
+    technicalEventsLoading,
+    conversations,
+    conversationsLoading,
+    conversationCounts
+  } = useCommanderData(selectedProjectId, selectedTaskId);
 
   const [taskNotificationsEnabled, setTaskNotificationsEnabled] = useState(loadTaskNotificationsEnabled);
-  useTaskCompletionNotifications(conversationsQuery.data, taskNotificationsEnabled);
+  useTaskCompletionNotifications(conversations, taskNotificationsEnabled);
 
   const handleToggleTaskNotifications = async () => {
     if (!isNotificationSupported()) {
@@ -345,38 +238,6 @@ export function App() {
     }
   });
 
-  const task = taskDetailQuery.data ?? null;
-  const events = technicalEventsRequested
-    ? taskEventsFullQuery.data ?? []
-    : taskEventsLeanQuery.data?.events ?? [];
-  const hiddenTechnicalCount = technicalEventsRequested ? 0 : taskEventsLeanQuery.data?.hiddenTechnicalCount ?? 0;
-  const diff = taskDiffQuery.data ?? task?.latest_diff;
-  const runActionModelOptions = useMemo(() => {
-    const ids = runtimeModelsQuery.data?.models.map((item) => item.id) ?? [];
-    if (task?.model && !ids.includes(task.model)) {
-      return [task.model, ...ids];
-    }
-    return ids;
-  }, [runtimeModelsQuery.data?.models, task?.model]);
-  const latestPlan = useMemo(() => extractLatestPlan(events), [events]);
-  const planMarkdown = useMemo(() => {
-    if (!latestPlan) {
-      return "";
-    }
-    const sections: string[] = [];
-    if (latestPlan.explanation) {
-      sections.push(latestPlan.explanation);
-    }
-    if (latestPlan.steps.length > 0) {
-      sections.push(
-        ["## Plan steps", ...latestPlan.steps.map((step, idx) => `${idx + 1}. **${step.step}** - ${step.status}`)].join("\n")
-      );
-    }
-    if (latestPlan.text) {
-      sections.push(latestPlan.text);
-    }
-    return sections.join("\n\n");
-  }, [latestPlan]);
 
   const handleDeleteProject = () => {
     if (!selectedProject) {
@@ -568,11 +429,11 @@ export function App() {
     latestPlan,
     planMarkdown,
     hiddenTechnicalCount,
-    latestEventAt: taskEventsLeanQuery.data?.latestEventAt,
+    latestEventAt: latestEventAt,
     taskDetailUsageInfo,
     technicalEventsRequested,
     setTechnicalEventsRequested,
-    technicalEventsLoading: taskEventsFullQuery.isFetching,
+    technicalEventsLoading: technicalEventsLoading,
     runActionModel,
     setRunActionModel,
     runActionModelOptions,
@@ -660,10 +521,10 @@ export function App() {
         <main className="mobile-shell">
           {mobileScreen === "conversations" ? (
             <ConversationListScreen
-              conversations={conversationsQuery.data ?? []}
-              conversationCounts={conversationCountsQuery.data ?? {}}
-              projects={projectsQuery.data ?? []}
-              isLoading={conversationsQuery.isLoading}
+              conversations={conversations ?? []}
+              conversationCounts={conversationCounts ?? {}}
+              projects={projects ?? []}
+              isLoading={conversationsLoading}
               onSelect={(id) => {
                 setSelectedConversationId(id);
                 setMobileScreen("conversation-detail");
@@ -710,7 +571,7 @@ export function App() {
               </div>
               <div className="panel-scroll">
                 <ProjectList
-                  projects={projectsQuery.data}
+                  projects={projects}
                   selectedProjectId={selectedProjectId}
                   onSelect={(project) => {
                     setSelectedProjectId(project.id);
@@ -750,8 +611,8 @@ export function App() {
               </div>
               <div className="panel-scroll">
                 {selectedProject ? (
-                  tasksQuery.data?.length ? (
-                    tasksQuery.data.map((item) => (
+                  tasks?.length ? (
+                    tasks.map((item) => (
                       <button
                         key={item.id}
                         className={item.id === selectedTaskId ? "task-row active" : "task-row"}
@@ -794,10 +655,10 @@ export function App() {
         // exactly the duplication that let desktop fall behind before.
         <main className="chat-grid">
           <ConversationListScreen
-            conversations={conversationsQuery.data ?? []}
-            conversationCounts={conversationCountsQuery.data ?? {}}
-            projects={projectsQuery.data ?? []}
-            isLoading={conversationsQuery.isLoading}
+            conversations={conversations ?? []}
+            conversationCounts={conversationCounts ?? {}}
+            projects={projects ?? []}
+            isLoading={conversationsLoading}
             onSelect={(id) => setSelectedConversationId(id)}
             onCreate={(projectId) => createConversationMutation.mutate(projectId)}
             onDelete={(id) => deleteConversationMutation.mutate(id)}
@@ -836,7 +697,7 @@ export function App() {
             </div>
             <div className="panel-scroll">
               <ProjectList
-                projects={projectsQuery.data}
+                projects={projects}
                 selectedProjectId={selectedProjectId}
                 onSelect={(project) => {
                   setSelectedProjectId(project.id);
@@ -879,8 +740,8 @@ export function App() {
             </div>
             <div className="panel-scroll">
               {selectedProject ? (
-                tasksQuery.data?.length ? (
-                  tasksQuery.data.map((item) => (
+                tasks?.length ? (
+                  tasks.map((item) => (
                     <button
                       key={item.id}
                       className={item.id === selectedTaskId ? "task-row active" : "task-row"}
