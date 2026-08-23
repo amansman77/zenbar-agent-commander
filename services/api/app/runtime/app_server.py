@@ -526,13 +526,39 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
 
         if method == "thread/status/changed":
             status = params.get("status", {})
+            status_type = status.get("type", "unknown")
+            if status_type in ("notLoaded", "systemError"):
+                # The App Server's own definitive signal that this thread
+                # has stopped being processed -- not a time-based guess
+                # (which would risk false-positiving on a single
+                # long-running command, e.g. a full e2e suite that
+                # legitimately produces no events for a long stretch while
+                # genuinely `active` the whole time). Reproduced live: a
+                # session sat "running" for 10+ hours on nothing but idle
+                # heartbeats after the server had already told us
+                # `notLoaded` right at the start of that stretch -- that
+                # notification was logged as routine agent_status chatter
+                # instead of treated as the definitive "this turn is dead"
+                # signal it actually was, so the task never surfaced as
+                # failed and nothing prompted a retry.
+                await state.queue.put(
+                    RuntimeEvent(
+                        type="failed",
+                        message=(
+                            f"Codex App Server reports this session as '{status_type}' -- "
+                            "it has stopped processing this turn. Retry the task to continue."
+                        ),
+                        payload={"reason": f"thread_status_{status_type}"},
+                    )
+                )
+                return
             active_flags = status.get("activeFlags", [])
             if "waitingOnApproval" in active_flags and state.pending_requests:
                 return
             if "waitingOnApproval" in active_flags:
                 await state.queue.put(RuntimeEvent(type="agent_status", message="Codex App Server is waiting on user interaction"))
             else:
-                await state.queue.put(RuntimeEvent(type="agent_status", message=f"Thread status: {status.get('type', 'unknown')}"))
+                await state.queue.put(RuntimeEvent(type="agent_status", message=f"Thread status: {status_type}"))
             return
 
         if method == "turn/started":

@@ -411,6 +411,88 @@ def test_ws_subscribe_events_fails_when_reader_task_stopped():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("status_type", ["notLoaded", "systemError"])
+def test_thread_status_changed_notload_or_error_emits_failed_event(status_type: str):
+    # The App Server's own authoritative signal that a thread has stopped
+    # being processed -- confirmed against a real stuck session where
+    # `thread/status/changed` reported `notLoaded` at the very start of a
+    # 10+ hour idle-heartbeat stretch, but was only ever logged as generic
+    # agent_status chatter. This must now translate into a `failed` event
+    # so map_status_from_event flips task.status automatically instead of
+    # requiring a human to notice the task never actually progressed.
+    from app.runtime import AppServerWebSocketAdapter, SessionState
+
+    async def run() -> None:
+        adapter = AppServerWebSocketAdapter("ws://example.invalid")
+        adapter._sessions["thread-1"] = SessionState(thread_id="thread-1")
+
+        await adapter._handle_notification(
+            {
+                "method": "thread/status/changed",
+                "params": {"threadId": "thread-1", "status": {"type": status_type}},
+            }
+        )
+
+        state = adapter._sessions["thread-1"]
+        event = state.queue.get_nowait()
+        assert event.type == "failed"
+        assert status_type in event.message
+        assert event.payload == {"reason": f"thread_status_{status_type}"}
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("status_type", ["idle", "active"])
+def test_thread_status_changed_idle_or_active_stays_informational(status_type: str):
+    # Healthy statuses must keep using the existing generic agent_status
+    # logging -- they must never auto-fail the task.
+    from app.runtime import AppServerWebSocketAdapter, SessionState
+
+    async def run() -> None:
+        adapter = AppServerWebSocketAdapter("ws://example.invalid")
+        adapter._sessions["thread-1"] = SessionState(thread_id="thread-1")
+
+        await adapter._handle_notification(
+            {
+                "method": "thread/status/changed",
+                "params": {"threadId": "thread-1", "status": {"type": status_type}},
+            }
+        )
+
+        state = adapter._sessions["thread-1"]
+        event = state.queue.get_nowait()
+        assert event.type == "agent_status"
+
+    asyncio.run(run())
+
+
+def test_thread_status_changed_waiting_on_approval_still_takes_priority():
+    # The waitingOnApproval branch is a distinct, pre-existing behavior and
+    # must be untouched by the notLoaded/systemError fail-fast addition.
+    from app.runtime import AppServerWebSocketAdapter, SessionState
+
+    async def run() -> None:
+        adapter = AppServerWebSocketAdapter("ws://example.invalid")
+        adapter._sessions["thread-1"] = SessionState(thread_id="thread-1")
+
+        await adapter._handle_notification(
+            {
+                "method": "thread/status/changed",
+                "params": {
+                    "threadId": "thread-1",
+                    "status": {"type": "active", "activeFlags": ["waitingOnApproval"]},
+                },
+            }
+        )
+
+        state = adapter._sessions["thread-1"]
+        event = state.queue.get_nowait()
+        assert event.type == "agent_status"
+        assert "waiting on user interaction" in event.message
+
+    asyncio.run(run())
+
+
 def test_create_task_rejects_invalid_model():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
