@@ -255,9 +255,22 @@ export function ConversationDetailScreen({
     }
   }, [activeTab]);
 
+  // Model/profile catalogs are engine-specific; a pick from the previous
+  // engine is meaningless (or invalid) after switching. But effectiveEngine
+  // also changes on *mount* -- it starts null before /runtime/engines
+  // resolves, then flips to the real default -- which isn't a user-driven
+  // switch at all. Without the skip-first-run guard below, a profile picked
+  // in that brief loading window (a real race, not a hypothetical: the
+  // profile <select> is already interactive while engines are still
+  // in-flight) got silently cleared out from under the user right before
+  // they hit Send, so the task started on the plain default engine/model
+  // with no visible sign anything had changed.
+  const isFirstEngineRender = useRef(true);
   useEffect(() => {
-    // Model/profile catalogs are engine-specific; a pick from the previous
-    // engine is meaningless (or invalid) after switching.
+    if (isFirstEngineRender.current) {
+      isFirstEngineRender.current = false;
+      return;
+    }
     setSelectedModel(null);
     setSelectedProfile(null);
   }, [effectiveEngine]);

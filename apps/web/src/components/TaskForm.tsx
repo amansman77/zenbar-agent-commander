@@ -79,7 +79,18 @@ export function TaskForm({
   });
   const savedPrompts: ProjectPrompt[] = savedPromptsQuery.data ?? [];
 
+  // effectiveEngine also changes on *mount* (null while /runtime/engines is
+  // in flight, then the real default) -- not a user-driven engine switch,
+  // so it shouldn't clear a profile picked in that window. See the matching
+  // guard in ConversationDetailScreen for the reproduction: a real task
+  // silently started on the plain default engine instead of the profile
+  // picked seconds earlier, with no visible sign the pick had been dropped.
+  const isFirstEngineRender = useRef(true);
   useEffect(() => {
+    if (isFirstEngineRender.current) {
+      isFirstEngineRender.current = false;
+      return;
+    }
     setProfile("");
   }, [effectiveEngine]);
 
