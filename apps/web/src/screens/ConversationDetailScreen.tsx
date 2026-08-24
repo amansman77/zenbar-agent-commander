@@ -344,8 +344,14 @@ export function ConversationDetailScreen({
         content: input.trim(),
         selected_skill: null,
         engine: engineToUse,
-        model: null,
-        profile: null,
+        // Previously hardcoded to null regardless of what was actually
+        // picked in the model/profile dropdowns -- a pipeline-started task
+        // could never use a selected profile at all, silently falling back
+        // to the plain default engine/model every time. Reproduced live:
+        // a pipeline step ran on the subscription model despite
+        // azure-sqlgen being selected in the picker.
+        model: modelToUse,
+        profile: profileToUse,
         pipeline_id: selectedPipelineId,
       });
       setSelectedPipelineId(null);
