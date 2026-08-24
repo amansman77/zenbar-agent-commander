@@ -66,6 +66,16 @@
   color: var(--text);
   padding: 0.65rem 0.7rem;
   min-height: 44px;
+  /* .panel-scroll is a flex column with a height cap (e.g. the project
+     Prompts modal's inline max-height: 50vh) -- without this, flex's
+     default shrink:1 squeezes an item's box shorter than its own text
+     content once the list overflows that cap, and the squeezed-out content
+     visually bleeds down into the next item's box. That next item's DOM
+     node is painted on top there, so it silently eats clicks meant for
+     this item's own edit/delete buttons underneath -- reproduced live:
+     the 편집 button was fully present and styled correctly, just
+     unreachable because the "배포 진행" row below it owned that pixel. */
+  flex-shrink: 0;
 }
 
 .list-item:hover,
