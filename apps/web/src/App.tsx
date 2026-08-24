@@ -659,6 +659,7 @@ export function App() {
             conversationCounts={conversationCounts ?? {}}
             projects={projects ?? []}
             isLoading={conversationsLoading}
+            selectedConversationId={selectedConversationId}
             onSelect={(id) => setSelectedConversationId(id)}
             onCreate={(projectId) => createConversationMutation.mutate(projectId)}
             onDelete={(id) => deleteConversationMutation.mutate(id)}

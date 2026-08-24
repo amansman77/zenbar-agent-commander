@@ -15,6 +15,7 @@ export function ConversationListScreen({
   conversationCounts,
   projects,
   isLoading,
+  selectedConversationId,
   onSelect,
   onCreate,
   onDelete,
@@ -29,6 +30,12 @@ export function ConversationListScreen({
   conversationCounts: Record<string, number>;
   projects: ProjectSummary[];
   isLoading: boolean;
+  // Only meaningfully visible on desktop, where the list stays on screen
+  // next to the detail panel -- mobile unmounts this screen the moment a
+  // conversation opens, so there's nothing to highlight there. Reported
+  // live: with no highlight at all, there was no way to tell which
+  // conversation the open detail panel actually belonged to.
+  selectedConversationId?: string | null;
   onSelect: (id: string) => void;
   onCreate: (projectId: string) => void;
   onDelete: (id: string) => void;
@@ -89,7 +96,11 @@ export function ConversationListScreen({
               <div className="conversation-group-header">{group.projectName ?? "프로젝트 없음"}</div>
               {visibleConversations.map((conv) => (
                 <div key={conv.id} style={{ display: "flex", alignItems: "stretch", gap: "4px" }}>
-                  <button className="list-item" style={{ flex: 1, minWidth: 0 }} onClick={() => onSelect(conv.id)}>
+                  <button
+                    className={conv.id === selectedConversationId ? "list-item active" : "list-item"}
+                    style={{ flex: 1, minWidth: 0 }}
+                    onClick={() => onSelect(conv.id)}
+                  >
                     <div className="list-row">
                       <strong className="truncate">{conv.title}</strong>
                     </div>
