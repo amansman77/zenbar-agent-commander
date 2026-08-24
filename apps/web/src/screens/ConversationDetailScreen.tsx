@@ -394,18 +394,12 @@ export function ConversationDetailScreen({
         retryTaskMutation={retryTaskMutation}
       />
 
-      <div
-        style={{
-          borderTop: "1px solid var(--line)",
-          background: "rgba(255,255,255,0.98)",
-          paddingBottom: "calc(0px + env(safe-area-inset-bottom))",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px 0", flexWrap: "wrap" }}>
+      <div className="compose-bar">
+        <div className="compose-toolbar">
           {conversation?.task_workspace_ref ? (
             <span
               title={`기본 브랜치: ${conversation.task_base_branch ?? "unknown"}`}
-              style={{ fontSize: "0.73rem", color: "var(--text-soft)", whiteSpace: "nowrap" }}
+              className="compose-meta"
             >
               ⎇ {conversation.task_workspace_ref}
               {conversation.task_base_branch && (
@@ -415,28 +409,19 @@ export function ConversationDetailScreen({
           ) : null}
           {taskStarted ? (
             conversation?.task_engine ? (
-              <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }}>
+              <span className="compose-meta">
                 🧠 {availableEngines.find((e) => e.id === conversation.task_engine)?.label ?? conversation.task_engine}
               </span>
             ) : null
           ) : (
             availableEngines.length > 1 && (
-              <label style={{ display: "flex", alignItems: "center", gap: "3px", fontSize: "0.73rem", color: "var(--text-soft)" }}>
+              <label className="compose-meta-picker">
                 <span>🧠</span>
                 <select
                   value={effectiveEngine ?? ""}
                   onChange={(e) => setSelectedEngine(e.target.value || null)}
                   title="AI engine"
-                  style={{
-                    fontSize: "0.73rem",
-                    border: "none",
-                    background: "transparent",
-                    color: "var(--text-soft)",
-                    cursor: "pointer",
-                    padding: 0,
-                    outline: "none",
-                    maxWidth: "140px",
-                  }}
+                  className="compose-meta-select"
                 >
                   {availableEngines.map((eng) => (
                     <option key={eng.id} value={eng.id}>{eng.label}</option>
@@ -446,7 +431,7 @@ export function ConversationDetailScreen({
             )
           )}
           {profileControlsModel ? (
-            <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }} title="Model is set by the selected profile">
+            <span className="compose-meta" title="Model is set by the selected profile">
               ◎ {selectedProfileOption?.model}
             </span>
           ) : taskStarted && isTaskActive ? (
@@ -454,7 +439,7 @@ export function ConversationDetailScreen({
             // (where a model switch actually applies) can only be sent
             // once the current turn finishes.
             effectiveModel ? (
-              <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }}>◎ {effectiveModel}</span>
+              <span className="compose-meta">◎ {effectiveModel}</span>
             ) : null
           ) : modelsLoading ? (
             // Engines whose model list comes from a real CLI subprocess call
@@ -465,10 +450,10 @@ export function ConversationDetailScreen({
             // dropdown and watching the selector vanish for several
             // seconds. Codex's own list resolves near-instantly, which is
             // why this was never noticed there.
-            <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }}>◎ Loading models...</span>
+            <span className="compose-meta">◎ Loading models...</span>
           ) : (
             availableModels.length > 0 && (
-              <label style={{ display: "flex", alignItems: "center", gap: "3px", fontSize: "0.73rem", color: "var(--text-soft)" }}>
+              <label className="compose-meta-picker">
                 <span>◎</span>
                 <select
                   // selectedModel (the user's own not-yet-sent pick) must
@@ -484,16 +469,7 @@ export function ConversationDetailScreen({
                   // follow-up sends this model for that and every turn
                   // after it, same session/workspace/history the whole way.
                   title={taskStarted ? "다음 메시지부터 이 모델이 적용됩니다" : undefined}
-                  style={{
-                    fontSize: "0.73rem",
-                    border: "none",
-                    background: "transparent",
-                    color: "var(--text-soft)",
-                    cursor: "pointer",
-                    padding: 0,
-                    outline: "none",
-                    maxWidth: "140px",
-                  }}
+                  className="compose-meta-select"
                 >
                   {availableModels.map((m) => (
                     <option key={m} value={m}>{m}</option>
@@ -504,26 +480,17 @@ export function ConversationDetailScreen({
           )}
           {taskStarted ? (
             conversation?.task_profile ? (
-              <span style={{ fontSize: "0.73rem", color: "var(--text-soft)" }}>▤ {conversation.task_profile}</span>
+              <span className="compose-meta">▤ {conversation.task_profile}</span>
             ) : null
           ) : (
             availableProfiles.length > 0 && (
-              <label style={{ display: "flex", alignItems: "center", gap: "3px", fontSize: "0.73rem", color: "var(--text-soft)" }}>
+              <label className="compose-meta-picker">
                 <span>▤</span>
                 <select
                   value={selectedProfile ?? ""}
                   onChange={(e) => setSelectedProfile(e.target.value || null)}
                   title="Codex profile"
-                  style={{
-                    fontSize: "0.73rem",
-                    border: "none",
-                    background: "transparent",
-                    color: "var(--text-soft)",
-                    cursor: "pointer",
-                    padding: 0,
-                    outline: "none",
-                    maxWidth: "140px",
-                  }}
+                  className="compose-meta-select"
                 >
                   <option value="">No profile</option>
                   {availableProfiles.map((p) => (
@@ -540,18 +507,8 @@ export function ConversationDetailScreen({
             <button
               type="button"
               onClick={() => { setActiveTab((t) => t === "chat" ? "diff" : "chat"); if (activeTab === "chat") refetchDiff(); }}
-              style={{
-                marginLeft: skills.length > 0 ? "0" : "auto",
-                padding: "4px 12px",
-                borderRadius: "14px",
-                fontSize: "0.78rem",
-                fontWeight: activeTab === "diff" ? 600 : 400,
-                border: activeTab === "diff" ? "1.5px solid #0f3158" : "1.5px solid var(--line)",
-                background: activeTab === "diff" ? "#0f3158" : "transparent",
-                color: activeTab === "diff" ? "#fff" : "var(--text-soft)",
-                cursor: "pointer",
-                whiteSpace: "nowrap",
-              }}
+              className={activeTab === "diff" ? "compose-pill active" : "compose-pill"}
+              style={{ marginLeft: skills.length > 0 ? "0" : "auto" }}
             >
               {activeTab === "diff" ? "💬 대화" : "📄 변경사항"}
             </button>
@@ -561,105 +518,50 @@ export function ConversationDetailScreen({
               <button
                 type="button"
                 onClick={() => { setSkillMenuOpen((o) => !o); setSkillSearch(""); }}
-              style={{
-                padding: "4px 12px",
-                borderRadius: "14px",
-                fontSize: "0.78rem",
-                fontWeight: selectedSkill ? 600 : 400,
-                border: selectedSkill ? "1.5px solid #0f3158" : "1.5px solid var(--line)",
-                background: selectedSkill ? "#0f3158" : "transparent",
-                color: selectedSkill ? "#fff" : "var(--text-soft)",
-                cursor: "pointer",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {selectedSkillName ? `⚡ ${selectedSkillName}` : "⚡ Auto"}
-            </button>
-            {skillMenuOpen && (
-              <div style={{
-                position: "absolute",
-                bottom: "calc(100% + 6px)",
-                left: 0,
-                zIndex: 200,
-                background: "var(--panel)",
-                border: "1px solid var(--line)",
-                borderRadius: "10px",
-                boxShadow: "var(--shadow)",
-                width: "260px",
-                overflow: "hidden",
-              }}>
-                <div style={{ padding: "8px" }}>
-                  <input
-                    autoFocus
-                    type="text"
-                    placeholder="스킬 검색..."
-                    value={skillSearch}
-                    onChange={(e) => setSkillSearch(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: "6px 10px",
-                      borderRadius: "8px",
-                      border: "1px solid var(--line)",
-                      fontSize: "0.82rem",
-                      background: "var(--panel-soft)",
-                      color: "var(--text)",
-                      outline: "none",
-                    }}
-                  />
-                </div>
-                <div style={{ maxHeight: "220px", overflowY: "auto" }}>
-                  <button
-                    type="button"
-                    onClick={() => { setSelectedSkill(null); setSkillMenuOpen(false); }}
-                    style={{
-                      display: "block",
-                      width: "100%",
-                      textAlign: "left",
-                      padding: "8px 14px",
-                      fontSize: "0.82rem",
-                      background: !selectedSkill ? "var(--panel-soft)" : "transparent",
-                      color: !selectedSkill ? "var(--primary)" : "var(--text)",
-                      fontWeight: !selectedSkill ? 600 : 400,
-                      border: "none",
-                      borderRadius: 0,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Auto
-                  </button>
-                  {filteredSkills.map((skill) => (
+                className={selectedSkill ? "compose-pill active" : "compose-pill"}
+              >
+                {selectedSkillName ? `⚡ ${selectedSkillName}` : "⚡ Auto"}
+              </button>
+              {skillMenuOpen && (
+                <div className="compose-dropdown compose-dropdown-clip">
+                  <div className="compose-dropdown-search-wrap">
+                    <input
+                      autoFocus
+                      type="text"
+                      placeholder="스킬 검색..."
+                      value={skillSearch}
+                      onChange={(e) => setSkillSearch(e.target.value)}
+                      className="compose-dropdown-search-input"
+                    />
+                  </div>
+                  <div className="compose-dropdown-list">
                     <button
-                      key={skill.id}
                       type="button"
-                      onClick={() => { setSelectedSkill(skill.id); setSkillMenuOpen(false); }}
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        textAlign: "left",
-                        padding: "8px 14px",
-                        fontSize: "0.82rem",
-                        background: selectedSkill === skill.id ? "var(--panel-soft)" : "transparent",
-                        color: selectedSkill === skill.id ? "var(--primary)" : "var(--text)",
-                        fontWeight: selectedSkill === skill.id ? 600 : 400,
-                        border: "none",
-                        borderRadius: 0,
-                        cursor: "pointer",
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}
+                      onClick={() => { setSelectedSkill(null); setSkillMenuOpen(false); }}
+                      className={!selectedSkill ? "compose-dropdown-item active" : "compose-dropdown-item"}
                     >
-                      {skill.name}
+                      Auto
                     </button>
-                  ))}
-                  {filteredSkills.length === 0 && (
-                    <p style={{ padding: "8px 14px", fontSize: "0.8rem", color: "var(--text-soft)", margin: 0 }}>
-                      검색 결과 없음
-                    </p>
-                  )}
+                    {filteredSkills.map((skill) => (
+                      <button
+                        key={skill.id}
+                        type="button"
+                        onClick={() => { setSelectedSkill(skill.id); setSkillMenuOpen(false); }}
+                        className={
+                          selectedSkill === skill.id
+                            ? "compose-dropdown-item active truncate"
+                            : "compose-dropdown-item truncate"
+                        }
+                      >
+                        {skill.name}
+                      </button>
+                    ))}
+                    {filteredSkills.length === 0 && (
+                      <p className="compose-dropdown-empty">검색 결과 없음</p>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
             </div>
           )}
           {savedPrompts.length > 0 && (
@@ -668,33 +570,12 @@ export function ConversationDetailScreen({
                 type="button"
                 onClick={() => setPromptMenuOpen((o) => !o)}
                 title="저장된 프롬프트"
-                style={{
-                  padding: "4px 12px",
-                  borderRadius: "14px",
-                  fontSize: "0.78rem",
-                  border: "1.5px solid var(--line)",
-                  background: "transparent",
-                  color: "var(--text-soft)",
-                  cursor: "pointer",
-                  whiteSpace: "nowrap",
-                }}
+                className="compose-pill"
               >
                 📋 프롬프트
               </button>
               {promptMenuOpen && (
-                <div style={{
-                  position: "absolute",
-                  bottom: "calc(100% + 6px)",
-                  left: 0,
-                  zIndex: 200,
-                  background: "var(--panel)",
-                  border: "1px solid var(--line)",
-                  borderRadius: "10px",
-                  boxShadow: "var(--shadow)",
-                  width: "260px",
-                  maxHeight: "260px",
-                  overflowY: "auto",
-                }}>
+                <div className="compose-dropdown compose-dropdown-scroll">
                   {savedPrompts.map((item) => (
                     <button
                       key={item.id}
@@ -703,18 +584,7 @@ export function ConversationDetailScreen({
                         setInput(item.content);
                         setPromptMenuOpen(false);
                       }}
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        textAlign: "left",
-                        padding: "8px 14px",
-                        fontSize: "0.82rem",
-                        background: "transparent",
-                        color: "var(--text)",
-                        border: "none",
-                        borderRadius: 0,
-                        cursor: "pointer",
-                      }}
+                      className="compose-dropdown-item"
                     >
                       <strong style={{ display: "block" }}>{item.title}</strong>
                       <span
@@ -735,51 +605,17 @@ export function ConversationDetailScreen({
                 type="button"
                 onClick={() => setPipelineMenuOpen((o) => !o)}
                 title="파이프라인 실행"
-                style={{
-                  padding: "4px 12px",
-                  borderRadius: "14px",
-                  fontSize: "0.78rem",
-                  fontWeight: selectedPipelineId ? 600 : 400,
-                  border: selectedPipelineId ? "1.5px solid #0f3158" : "1.5px solid var(--line)",
-                  background: selectedPipelineId ? "#0f3158" : "transparent",
-                  color: selectedPipelineId ? "#fff" : "var(--text-soft)",
-                  cursor: "pointer",
-                  whiteSpace: "nowrap",
-                }}
+                className={selectedPipelineId ? "compose-pill active" : "compose-pill"}
               >
                 {selectedPipelineName ? `🔗 ${selectedPipelineName}` : "🔗 파이프라인"}
               </button>
               {pipelineMenuOpen && (
-                <div style={{
-                  position: "absolute",
-                  bottom: "calc(100% + 6px)",
-                  left: 0,
-                  zIndex: 200,
-                  background: "var(--panel)",
-                  border: "1px solid var(--line)",
-                  borderRadius: "10px",
-                  boxShadow: "var(--shadow)",
-                  width: "260px",
-                  maxHeight: "260px",
-                  overflowY: "auto",
-                }}>
+                <div className="compose-dropdown compose-dropdown-scroll">
                   {selectedPipelineId && (
                     <button
                       type="button"
                       onClick={() => { setSelectedPipelineId(null); setPipelineMenuOpen(false); }}
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        textAlign: "left",
-                        padding: "8px 14px",
-                        fontSize: "0.82rem",
-                        background: "var(--panel-soft)",
-                        color: "var(--primary)",
-                        fontWeight: 600,
-                        border: "none",
-                        borderRadius: 0,
-                        cursor: "pointer",
-                      }}
+                      className="compose-dropdown-item active"
                     >
                       선택 해제
                     </button>
@@ -792,19 +628,11 @@ export function ConversationDetailScreen({
                         setSelectedPipelineId(pipeline.id);
                         setPipelineMenuOpen(false);
                       }}
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        textAlign: "left",
-                        padding: "8px 14px",
-                        fontSize: "0.82rem",
-                        background: selectedPipelineId === pipeline.id ? "var(--panel-soft)" : "transparent",
-                        color: selectedPipelineId === pipeline.id ? "var(--primary)" : "var(--text)",
-                        fontWeight: selectedPipelineId === pipeline.id ? 600 : 400,
-                        border: "none",
-                        borderRadius: 0,
-                        cursor: "pointer",
-                      }}
+                      className={
+                        selectedPipelineId === pipeline.id
+                          ? "compose-dropdown-item active"
+                          : "compose-dropdown-item"
+                      }
                     >
                       <strong style={{ display: "block" }}>{pipeline.name}</strong>
                       <span
@@ -821,11 +649,11 @@ export function ConversationDetailScreen({
           )}
         </div>
         {selectedPipelineId && (
-          <p className="item-secondary" style={{ padding: "0 12px", fontSize: "0.78rem" }}>
+          <p className="item-secondary compose-pipeline-note">
             🔗 "{selectedPipelineName}" 파이프라인이 선택됨 — 보내기를 누르면 전체 단계가 자동으로 순서대로 실행돼요. 아래에 이슈 번호 등을 적으면 1단계 프롬프트 앞에 함께 전달돼요.
           </p>
         )}
-        <div style={{ display: "flex", gap: "8px", padding: "8px 12px" }}>
+        <div className="compose-input-row">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -837,7 +665,7 @@ export function ConversationDetailScreen({
                   : "메시지를 입력하세요..."
             }
             disabled={isTaskActive}
-            style={{ flex: 1, minHeight: "44px", maxHeight: "120px", resize: "none", opacity: isTaskActive ? 0.5 : 1 }}
+            className="compose-textarea"
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !isMobile) {
                 e.preventDefault();
@@ -854,7 +682,7 @@ export function ConversationDetailScreen({
           <button
             onClick={handleSend}
             disabled={isSendDisabled}
-            style={{ alignSelf: "flex-end", minHeight: "44px", padding: "0 16px" }}
+            className="compose-send-button"
           >
             {addMessageMutation.isPending ? "..." : "Send"}
           </button>
