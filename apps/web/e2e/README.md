@@ -1,0 +1,43 @@
+# Visual smoke checks
+
+Plain Playwright scripts, not a test framework and not wired into `pnpm test`
+or CI. jsdom (what `pnpm test` actually runs on) never computes real CSS
+layout, so it structurally cannot catch overlap/clipping bugs like the one
+these exist for — [`.list-item` losing `flex-shrink: 0`](../src/styles/lists.css)
+let a card's overflow bleed into the next row and silently eat clicks meant
+for its own Edit/Delete buttons. Only a real browser render catches that
+class of bug, so these are meant to be re-run by hand (or via a subagent)
+whenever a shared list/card class gets reused in a new container, not on
+every commit.
+
+## Requirements
+
+- The dev servers running (`pnpm dev:external:bg` or `pnpm dev`) — these
+  scripts drive the real app over HTTP, they don't build/serve anything
+  themselves.
+- `WEB_URL` env var if the web server isn't at the default
+  `http://127.0.0.1:15173` (external mode's local-loopback address).
+
+## Scripts
+
+- `check-list-overlap.mjs` — the general-purpose check: opens a shared
+  `.list-item`/`.task-row` surface with deliberately long/multi-line content
+  (mocked via `page.route`, not real DB data — so this doesn't depend on
+  what happens to exist in the database right now) and asserts every
+  action button inside each row still resolves to itself via
+  `elementFromPoint`, not a neighboring row. Currently covers:
+  - the project Prompts modal (`--surface=prompts`)
+  - the project Pipelines modal (`--surface=pipelines`)
+
+Run with:
+
+```sh
+pnpm --filter web e2e:list-overlap -- --surface=prompts
+pnpm --filter web e2e:list-overlap -- --surface=pipelines
+pnpm --filter web e2e:list-overlap             # both surfaces, the default
+
+# equivalently, from apps/web:
+node e2e/check-list-overlap.mjs --surface=all
+```
+
+Exits non-zero and prints which row/button failed if anything overlaps.
