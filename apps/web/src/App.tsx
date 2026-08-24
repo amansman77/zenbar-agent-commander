@@ -509,19 +509,29 @@ export function App() {
   return (
     <div className="app-shell">
       <header className={isMobile ? "commander-header mobile-header" : "commander-header"}>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", minWidth: 0 }}>
+        {isMobile ? (
+          // The header-actions button cluster is hidden on mobile (see
+          // .hidden-on-mobile), so this is the bell's only always-visible
+          // spot there. Its own row, paired with the small label line
+          // instead of vertically centered against the whole 3-line
+          // title+description block -- centering against that whole block
+          // put the icon at the paragraph's vertical middle, not aligned
+          // with any single line, which read as randomly placed.
+          <div className="header-copy">
+            <div className="header-copy-top-row">
+              <p className="eyebrow">Web Commander</p>
+              {notificationBellButton}
+            </div>
+            <h1>Agent Supervision Console</h1>
+            <p className="hero-copy">Projects, tasks, and runtime detail in one stable control plane layout.</p>
+          </div>
+        ) : (
           <div className="header-copy">
             <p className="eyebrow">Web Commander</p>
             <h1>Agent Supervision Console</h1>
             <p className="hero-copy">Projects, tasks, and runtime detail in one stable control plane layout.</p>
           </div>
-          {/* Desktop moves this into the header-actions button cluster below
-              (grouped with the other controls, instead of floating alone in
-              this mostly-empty space) -- but that whole cluster is hidden on
-              mobile (see .hidden-on-mobile), so mobile keeps it here, its
-              only always-visible spot in the header. */}
-          {isMobile ? notificationBellButton : null}
-        </div>
+        )}
         <div className={isMobile ? "header-actions hidden-on-mobile" : "header-actions"}>
           {!isMobile ? (
             <div className="inline-actions" style={{ marginRight: "0.5rem" }}>

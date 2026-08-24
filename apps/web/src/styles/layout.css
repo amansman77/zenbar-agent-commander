@@ -20,9 +20,34 @@
   box-shadow: var(--shadow);
 }
 
+.header-copy {
+  /* Its parent row doesn't stretch children (flex-start alignment), so
+     without an explicit width this shrinks to whatever its longest line of
+     text measures -- on a narrow-enough viewport the description text
+     happens to wrap close to the full available width and hides the bug,
+     but on a wider phone the text has more room before wrapping, so the
+     block (and the .header-copy-top-row space-between inside it) ends
+     noticeably short of the card's real right edge, leaving the bell
+     stranded next to a wide blank gap instead of anchored to the corner. */
+  width: 100%;
+}
+
 .header-copy h1 {
   margin: 0;
   font-size: clamp(1.2rem, 2vw, 1.8rem);
+}
+
+/* Mobile only (see App.tsx) -- pairs the eyebrow label with the bell toggle
+   on their own row, so the icon has a specific line to sit next to instead
+   of being centered against the full title+description block below it. */
+.header-copy-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.header-copy-top-row .eyebrow {
+  margin: 0;
 }
 
 .notification-toggle-button {
