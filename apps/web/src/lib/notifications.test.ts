@@ -1,4 +1,4 @@
-import { isNotifyWorthyTransition } from "./notifications";
+import { isNotificationPermissionGranted, isNotifyWorthyTransition } from "./notifications";
 
 describe("isNotifyWorthyTransition", () => {
   it("notifies when an active task becomes terminal", () => {
@@ -30,5 +30,35 @@ describe("isNotifyWorthyTransition", () => {
 
   it("does not notify when there is no current status", () => {
     expect(isNotifyWorthyTransition("running", null)).toBe(false);
+  });
+});
+
+describe("isNotificationPermissionGranted", () => {
+  const original = (window as { Notification?: { permission: string } }).Notification;
+
+  afterEach(() => {
+    (window as { Notification?: unknown }).Notification = original;
+  });
+
+  it("is true only when the browser's live permission is actually granted", () => {
+    (window as { Notification?: { permission: string } }).Notification = { permission: "granted" };
+    expect(isNotificationPermissionGranted()).toBe(true);
+  });
+
+  it("is false when permission was revoked/blocked after being enabled", () => {
+    // The exact drift this exists for: something (localStorage, React
+    // state) still says "enabled", but the browser itself now says no.
+    (window as { Notification?: { permission: string } }).Notification = { permission: "denied" };
+    expect(isNotificationPermissionGranted()).toBe(false);
+  });
+
+  it("is false when the browser never asked at all", () => {
+    (window as { Notification?: { permission: string } }).Notification = { permission: "default" };
+    expect(isNotificationPermissionGranted()).toBe(false);
+  });
+
+  it("is false when the Notification API doesn't exist in this browser", () => {
+    delete (window as { Notification?: unknown }).Notification;
+    expect(isNotificationPermissionGranted()).toBe(false);
   });
 });

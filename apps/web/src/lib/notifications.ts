@@ -18,6 +18,17 @@ export function loadTaskNotificationsEnabled(): boolean {
   return window.localStorage.getItem(TASK_NOTIFICATIONS_ENABLED_KEY) === "true";
 }
 
+// The stored "enabled" flag only ever gets set to true right after the
+// browser actually granted permission (see App.tsx's toggle handler), but
+// nothing re-checks it later -- so if the user (or the browser) revokes
+// notification permission afterwards, the flag stays stale and the bell
+// keeps showing 🔔 even though no notification will ever actually fire.
+// Reported live: the icon showed "on" while the browser's own permission
+// was blocked, with no visible reason why until the bell was clicked.
+export function isNotificationPermissionGranted(): boolean {
+  return isNotificationSupported() && Notification.permission === "granted";
+}
+
 export const TASK_STATUS_NOTIFICATION_LABEL: Partial<Record<TaskStatus, string>> = {
   completed: "완료",
   failed: "실패",

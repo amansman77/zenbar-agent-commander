@@ -21,7 +21,12 @@ import { useCommanderData } from "./hooks/useCommanderData";
 import { useIsMobileBreakpoint } from "./hooks/useIsMobileBreakpoint";
 import { useTaskCompletionNotifications } from "./hooks/useTaskCompletionNotifications";
 import { LAST_TASK_MODEL_KEY, actor } from "./lib/constants";
-import { TASK_NOTIFICATIONS_ENABLED_KEY, isNotificationSupported, loadTaskNotificationsEnabled } from "./lib/notifications";
+import {
+  TASK_NOTIFICATIONS_ENABLED_KEY,
+  isNotificationPermissionGranted,
+  isNotificationSupported,
+  loadTaskNotificationsEnabled
+} from "./lib/notifications";
 import { defaultAnswers } from "./lib/taskQuestions";
 import type { RunExecutionAction } from "./lib/taskStatus";
 import { LAST_VIEW_KEY, loadLastView } from "./lib/viewState";
@@ -82,6 +87,23 @@ export function App() {
 
   const [taskNotificationsEnabled, setTaskNotificationsEnabled] = useState(loadTaskNotificationsEnabled);
   useTaskCompletionNotifications(conversations, taskNotificationsEnabled);
+
+  // The stored flag only ever gets set true right after the browser grants
+  // permission -- nothing rechecks it afterwards, so if permission is later
+  // revoked (browser settings, OS-level block, etc.) the bell kept showing
+  // 🔔 with no notifications ever actually firing, and no visible reason
+  // why until it was clicked. Reconcile against the live permission once on
+  // mount so the icon can't lie about what's actually going to happen.
+  useEffect(() => {
+    if (taskNotificationsEnabled && !isNotificationPermissionGranted()) {
+      setTaskNotificationsEnabled(false);
+      window.localStorage.setItem(TASK_NOTIFICATIONS_ENABLED_KEY, "false");
+    }
+    // Mount-only: this catches the common case (permission was revoked
+    // since the last time the page was loaded). A user revoking it while
+    // this tab is already open and left open is a much rarer edge case,
+    // and there's no browser event to react to for it anyway.
+  }, []);
 
   const handleToggleTaskNotifications = async () => {
     if (!isNotificationSupported()) {
@@ -465,6 +487,25 @@ export function App() {
     setMobileScreen
   };
 
+  const notificationBellButton = isNotificationSupported() ? (
+    <button
+      type="button"
+      className={taskNotificationsEnabled ? "notification-toggle-button active" : "notification-toggle-button"}
+      onClick={handleToggleTaskNotifications}
+      title={
+        taskNotificationsEnabled
+          ? "진행 중인 모든 작업의 완료/실패 알림이 켜져 있어요. 클릭하면 꺼져요."
+          : "켜면 지금 열려 있지 않은 대화를 포함해, 모든 작업이 끝날 때 브라우저 알림을 받아요."
+      }
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+        {taskNotificationsEnabled ? null : <line x1="3" y1="3" x2="21" y2="21" />}
+      </svg>
+    </button>
+  ) : null;
+
   return (
     <div className="app-shell">
       <header className={isMobile ? "commander-header mobile-header" : "commander-header"}>
@@ -474,20 +515,12 @@ export function App() {
             <h1>Agent Supervision Console</h1>
             <p className="hero-copy">Projects, tasks, and runtime detail in one stable control plane layout.</p>
           </div>
-          {isNotificationSupported() ? (
-            <button
-              type="button"
-              className="secondary notification-toggle-button"
-              onClick={handleToggleTaskNotifications}
-              title={
-                taskNotificationsEnabled
-                  ? "진행 중인 모든 작업의 완료/실패 알림이 켜져 있어요. 클릭하면 꺼져요."
-                  : "켜면 지금 열려 있지 않은 대화를 포함해, 모든 작업이 끝날 때 브라우저 알림을 받아요."
-              }
-            >
-              {taskNotificationsEnabled ? "🔔" : "🔕"}
-            </button>
-          ) : null}
+          {/* Desktop moves this into the header-actions button cluster below
+              (grouped with the other controls, instead of floating alone in
+              this mostly-empty space) -- but that whole cluster is hidden on
+              mobile (see .hidden-on-mobile), so mobile keeps it here, its
+              only always-visible spot in the header. */}
+          {isMobile ? notificationBellButton : null}
         </div>
         <div className={isMobile ? "header-actions hidden-on-mobile" : "header-actions"}>
           {!isMobile ? (
@@ -508,6 +541,7 @@ export function App() {
               </button>
             </div>
           ) : null}
+          {!isMobile ? notificationBellButton : null}
           <button type="button" onClick={() => setProjectModalOpen(true)}>
             New Project
           </button>
