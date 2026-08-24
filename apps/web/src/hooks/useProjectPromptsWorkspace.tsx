@@ -59,12 +59,15 @@ export function useProjectPromptsWorkspace(project: ProjectSummary | null) {
         isLoading={pm.promptsQuery.isLoading}
         hasProject={Boolean(project)}
         deletePending={pm.deleteMutation.isPending}
+        reorderPending={pm.reorderMutation.isPending}
         onEdit={pm.openEditForm}
         onDelete={(prompt) => {
           if (confirm(`"${prompt.title}" 프롬프트를 삭제할까요?`)) {
             pm.deleteMutation.mutate(prompt.id);
           }
         }}
+        onMoveUp={(prompt) => pm.movePrompt(prompt.id, "up")}
+        onMoveDown={(prompt) => pm.movePrompt(prompt.id, "down")}
       />
     ) : (
       <ProjectPipelineList

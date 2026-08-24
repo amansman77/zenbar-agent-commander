@@ -76,6 +76,13 @@ class UpdateProjectPromptRequest(BaseModel):
     content: str | None = Field(default=None, min_length=1)
 
 
+class ReorderProjectPromptsRequest(BaseModel):
+    # The full, reordered list of the project's prompt ids -- validated in
+    # the router as an exact permutation of what's already there (see
+    # put_project_prompts_order), not a partial update.
+    prompt_ids: list[str]
+
+
 class ProjectPipelineItem(BaseModel):
     id: str
     project_id: str

@@ -67,6 +67,19 @@ def delete_project_prompt(db: Session, prompt_id: str) -> None:
         db.commit()
 
 
+def reorder_project_prompts(db: Session, project_id: str, prompt_ids: list[str]) -> list[ProjectPrompt]:
+    # Router validates prompt_ids is exactly this project's current prompt
+    # set before calling this -- position here is just each id's index in
+    # the given order, matching list_project_prompts' own ORDER BY.
+    for index, prompt_id in enumerate(prompt_ids):
+        prompt = db.get(ProjectPrompt, prompt_id)
+        if prompt is not None and prompt.project_id == project_id:
+            prompt.position = index
+            db.add(prompt)
+    db.commit()
+    return list_project_prompts(db, project_id)
+
+
 def list_project_pipelines(db: Session, project_id: str) -> list[ProjectPipeline]:
     stmt = (
         select(ProjectPipeline)

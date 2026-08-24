@@ -16,6 +16,7 @@ from ..repository import (
     get_project_prompt,
     list_project_pipelines,
     list_project_prompts,
+    reorder_project_prompts,
     serialize_project_pipeline,
     serialize_project_prompt,
     update_project_pipeline,
@@ -26,6 +27,7 @@ from ..schemas import (
     CreateProjectPromptRequest,
     ProjectPipelineItem,
     ProjectPromptItem,
+    ReorderProjectPromptsRequest,
     UpdateProjectPipelineRequest,
     UpdateProjectPromptRequest,
 )
@@ -45,6 +47,20 @@ def post_project_prompt(project_id: str, payload: CreateProjectPromptRequest, db
     if get_project(db, project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return serialize_project_prompt(create_project_prompt(db, project_id, payload))
+
+
+@router.put("/projects/{project_id}/prompts/order", response_model=list[ProjectPromptItem])
+def put_project_prompts_order(project_id: str, payload: ReorderProjectPromptsRequest, db: Session = Depends(get_db)):
+    if get_project(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    existing_ids = {item.id for item in list_project_prompts(db, project_id)}
+    # Must be an exact permutation of what's already there -- a partial or
+    # mismatched list would silently leave some prompts' positions
+    # untouched (reorder_project_prompts only ever sets what it's given),
+    # which is more surprising than just rejecting it outright.
+    if set(payload.prompt_ids) != existing_ids or len(payload.prompt_ids) != len(existing_ids):
+        raise HTTPException(status_code=400, detail="prompt_ids must be exactly this project's current prompts, reordered")
+    return [serialize_project_prompt(item) for item in reorder_project_prompts(db, project_id, payload.prompt_ids)]
 
 
 @router.patch("/projects/{project_id}/prompts/{prompt_id}", response_model=ProjectPromptItem)

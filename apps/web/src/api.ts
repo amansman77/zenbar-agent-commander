@@ -23,6 +23,7 @@ import type {
   ProjectPrompt,
   ProjectSummary,
   PushTaskRequest,
+  ReorderProjectPromptsRequest,
   RespondTaskRequest,
   TaskDetail,
   TaskDiff,
@@ -140,6 +141,11 @@ export const api = {
   deleteProjectPrompt: (projectId: string, promptId: string) =>
     request<void>(`/projects/${projectId}/prompts/${promptId}`, {
       method: "DELETE"
+    }),
+  reorderProjectPrompts: (projectId: string, payload: ReorderProjectPromptsRequest) =>
+    request<ProjectPrompt[]>(`/projects/${projectId}/prompts/order`, {
+      method: "PUT",
+      body: JSON.stringify(payload)
     }),
   listProjectPipelines: (projectId: string) =>
     request<ProjectPipeline[]>(`/projects/${projectId}/pipelines`),

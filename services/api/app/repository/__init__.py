@@ -26,6 +26,7 @@ from .prompts import (
     get_project_prompt,
     list_project_pipelines,
     list_project_prompts,
+    reorder_project_prompts,
     update_project_pipeline,
     update_project_prompt,
 )
@@ -102,6 +103,7 @@ __all__ = [
     "get_project_prompt",
     "list_project_pipelines",
     "list_project_prompts",
+    "reorder_project_prompts",
     "update_project_pipeline",
     "update_project_prompt",
     "can_approve",

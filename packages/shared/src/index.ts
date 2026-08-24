@@ -246,6 +246,10 @@ export interface UpdateProjectPromptRequest {
   content?: string;
 }
 
+export interface ReorderProjectPromptsRequest {
+  prompt_ids: string[];
+}
+
 export interface ProjectPipeline {
   id: string;
   project_id: string;

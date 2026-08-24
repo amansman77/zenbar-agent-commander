@@ -1575,6 +1575,56 @@ def test_project_prompts_404_for_unknown_project_or_prompt():
     ).status_code == 404
 
 
+def test_project_prompts_reorder():
+    project = _create_project_for_prompts()
+    a = client.post(f"/projects/{project['id']}/prompts", json={"title": "A", "content": "a"}).json()
+    b = client.post(f"/projects/{project['id']}/prompts", json={"title": "B", "content": "b"}).json()
+    c = client.post(f"/projects/{project['id']}/prompts", json={"title": "C", "content": "c"}).json()
+    assert [p["title"] for p in client.get(f"/projects/{project['id']}/prompts").json()] == ["A", "B", "C"]
+
+    reordered = client.put(
+        f"/projects/{project['id']}/prompts/order",
+        json={"prompt_ids": [c["id"], a["id"], b["id"]]},
+    )
+    assert reordered.status_code == 200
+    assert [p["title"] for p in reordered.json()] == ["C", "A", "B"]
+
+    # Persisted, not just echoed back in the response.
+    listed = client.get(f"/projects/{project['id']}/prompts").json()
+    assert [p["title"] for p in listed] == ["C", "A", "B"]
+
+
+def test_project_prompts_reorder_rejects_partial_or_mismatched_lists():
+    project = _create_project_for_prompts()
+    a = client.post(f"/projects/{project['id']}/prompts", json={"title": "A", "content": "a"}).json()
+    b = client.post(f"/projects/{project['id']}/prompts", json={"title": "B", "content": "b"}).json()
+
+    # Missing one of the project's own prompts.
+    assert client.put(
+        f"/projects/{project['id']}/prompts/order", json={"prompt_ids": [a["id"]]}
+    ).status_code == 400
+
+    # A prompt id that isn't even in this project.
+    other_project = _create_project_for_prompts()
+    foreign = client.post(f"/projects/{other_project['id']}/prompts", json={"title": "X", "content": "x"}).json()
+    assert client.put(
+        f"/projects/{project['id']}/prompts/order",
+        json={"prompt_ids": [a["id"], foreign["id"]]},
+    ).status_code == 400
+
+    # Order untouched by either rejected attempt.
+    assert client.put(
+        f"/projects/{project['id']}/prompts/order", json={"prompt_ids": [b["id"], a["id"]]}
+    ).status_code == 200
+    assert [p["title"] for p in client.get(f"/projects/{project['id']}/prompts").json()] == ["B", "A"]
+
+
+def test_project_prompts_reorder_404_for_unknown_project():
+    assert client.put(
+        "/projects/does-not-exist/prompts/order", json={"prompt_ids": []}
+    ).status_code == 404
+
+
 def test_project_pipelines_crud_flow():
     project = _create_project_for_prompts()
     prompt_a = client.post(
