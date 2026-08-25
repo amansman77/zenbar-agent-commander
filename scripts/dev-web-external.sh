@@ -2,6 +2,28 @@
 set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+WEB_DIR="$ROOT_DIR/apps/web"
+
+load_env_file() {
+  env_file="$1"
+  if [ -f "$env_file" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$env_file"
+    set +a
+  fi
+}
+
+# Without this, a durable VITE_API_BASE_URL set in apps/web/.env.local
+# (e.g. an HTTPS URL via `tailscale serve`, needed for the browser
+# Notification API's secure-context requirement) only took effect for
+# whatever shell happened to have it manually exported that one time --
+# `pnpm dev:external:bg` on its own silently regressed back to the
+# resolve_host() default on every restart since nothing here ever read the
+# file. Loaded before resolve_host() so a set value still wins below.
+load_env_file "$ROOT_DIR/.env.local"
+load_env_file "$WEB_DIR/.env.local"
+
 WEB_HOST="${ZENBAR_WEB_HOST:-0.0.0.0}"
 WEB_PORT="${ZENBAR_WEB_PORT:-15173}"
 API_PORT="${ZENBAR_API_PORT:-18000}"
