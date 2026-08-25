@@ -95,19 +95,27 @@ export function ConversationListScreen({
             <div key={group.key}>
               <div className="conversation-group-header">{group.projectName ?? "프로젝트 없음"}</div>
               {visibleConversations.map((conv) => (
-                <div key={conv.id} style={{ display: "flex", alignItems: "stretch", gap: "4px" }}>
+                // position: relative wrapper + an absolutely-positioned
+                // delete button lets it sit inside the card's own top-right
+                // corner (matching the header bell's now-established
+                // convention) without nesting a <button> inside the row's
+                // own <button> -- invalid HTML, and would fire both click
+                // handlers on every delete tap. They're DOM siblings that
+                // visually overlap instead; the later one (delete) simply
+                // paints on top and owns that corner's clicks.
+                <div key={conv.id} style={{ position: "relative" }}>
                   <button
                     className={conv.id === selectedConversationId ? "list-item active" : "list-item"}
-                    style={{ flex: 1, minWidth: 0 }}
+                    style={{ width: "100%" }}
                     onClick={() => onSelect(conv.id)}
                   >
                     <div className="list-row">
-                      <strong className="truncate">{conv.title}</strong>
+                      <strong className="truncate conversation-title">{conv.title}</strong>
                     </div>
                     {conv.last_message && (
-                      <span className="item-secondary truncate">{conv.last_message}</span>
+                      <span className="item-secondary truncate conversation-preview">{conv.last_message}</span>
                     )}
-                    <span className="item-secondary" style={{ fontSize: "0.75rem" }}>
+                    <span className="item-secondary conversation-time">
                       {new Date(conv.updated_at).toLocaleString()}
                     </span>
                   </button>
@@ -117,7 +125,13 @@ export function ConversationListScreen({
                     title="대화 삭제"
                     aria-label="대화 삭제"
                   >
-                    ✕
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                      <path d="M10 11v6" />
+                      <path d="M14 11v6" />
+                      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                    </svg>
                   </button>
                 </div>
               ))}

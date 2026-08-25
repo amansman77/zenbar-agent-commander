@@ -29,31 +29,47 @@
 }
 
 .conversation-delete-button {
-  /* A quiet icon button (transparent until hovered) instead of a solid gray
-     chip -- the chip version was the same visual weight as the group
-     header and show-more button, so every row read as "button, button,
-     button" instead of one primary action (open) plus one minor one. */
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
+  /* Was a sibling column outside the card, centered against its whole
+     (variable, multi-line) height -- floated in the middle of nowhere, the
+     same complaint as the header bell before it moved into the header's
+     corner. Now positioned inside the card's own top-right corner instead,
+     the same convention. Muted at rest rather than the old flat
+     var(--text-soft) -- always at least faintly visible (so it stays
+     findable on touch, where there's no hover to reveal it), but the
+     constant full-strength icon on every single row was itself part of
+     the list reading as visually loud/dense. */
+  position: absolute;
+  top: 0.5rem;
+  right: 0.45rem;
+  width: 24px;
+  height: 24px;
   padding: 0;
-  flex-shrink: 0;
-  align-self: center;
   border-radius: 999px;
-  border: 1px solid transparent;
+  border: none;
   background: transparent;
   color: var(--text-soft);
-  font-size: 0.8rem;
-  line-height: 1;
+  opacity: 0.55;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
 .conversation-delete-button:hover {
+  opacity: 1;
   background: #fdecea;
-  border-color: #f6c9cb;
   color: #b12a34;
+}
+
+.conversation-title {
+  padding-right: 2.1rem;
+}
+
+.conversation-preview {
+  padding-right: 2.1rem;
+}
+
+.conversation-time {
+  font-size: 0.75rem;
 }
 
 .list-item,
