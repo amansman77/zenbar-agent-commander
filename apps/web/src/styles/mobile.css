@@ -66,6 +66,17 @@
     align-items: flex-start;
   }
 
+  /* .header-copy is shared with the desktop header, where it must keep
+     hugging its own content so the header-actions button row on the same
+     line still gets all the space it needs -- widening it unconditionally
+     ate into that room and wrapped button labels mid-word at common
+     desktop widths (reproduced live at 1024-1400px). Only the mobile
+     layout (bell paired with the eyebrow label on its own row, see
+     .header-copy-top-row / App.tsx) actually needs the full card width. */
+  .header-copy {
+    width: 100%;
+  }
+
   .mobile-header {
     margin-bottom: 0.75rem;
   }
