@@ -80,7 +80,7 @@ describe("App", () => {
 
     // Mobile opens on Conversations; step into the Projects screen first.
     fireEvent.click(await screen.findByRole("button", { name: "Projects" }));
-    fireEvent.click((await screen.findAllByRole("button", { name: "New Project" }))[1]);
+    fireEvent.click((await screen.findAllByRole("button", { name: "새 프로젝트" }))[1]);
     fireEvent.change(screen.getByLabelText("Project name"), { target: { value: "agent-commander" } });
     fireEvent.change(screen.getByLabelText("Repository path"), { target: { value: "/Users/hosung/Workspace/zenbar/agent-commander" } });
     fireEvent.change(screen.getByLabelText("Default branch"), { target: { value: "main" } });

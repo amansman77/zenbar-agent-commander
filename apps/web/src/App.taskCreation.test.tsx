@@ -12,7 +12,7 @@ describe("App", () => {
   it("autofills project fields from repository discovery and keeps them editable", async () => {
     renderApp();
 
-    fireEvent.click(await screen.findByRole("button", { name: "New Project" }));
+    fireEvent.click(await screen.findByRole("button", { name: "새 프로젝트" }));
     // Picking a repo goes through the folder browser: open it, then confirm
     // the folder it lands on, which is what triggers discovery.
     fireEvent.click(await screen.findByRole("button", { name: "Browse folder" }));
@@ -49,7 +49,7 @@ describe("App", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: /agent-commander/i }));
-    fireEvent.click(await screen.findByRole("button", { name: "New Task" }));
+    fireEvent.click(await screen.findByRole("button", { name: "새 태스크" }));
     await waitFor(() => {
       expect(screen.getByLabelText("Execution mode")).toBeEnabled();
       expect(screen.getByLabelText("Model")).toBeEnabled();
@@ -98,7 +98,7 @@ describe("App", () => {
     // this test only cares about the New Task form's own per-engine query.
 
     fireEvent.click(await screen.findByRole("button", { name: /agent-commander/i }));
-    fireEvent.click(await screen.findByRole("button", { name: "New Task" }));
+    fireEvent.click(await screen.findByRole("button", { name: "새 태스크" }));
 
     const createButton = await screen.findByRole("button", { name: "Create task" });
     expect(createButton).toBeDisabled();
@@ -134,7 +134,7 @@ describe("App", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: /agent-commander/i }));
-    fireEvent.click(await screen.findByRole("button", { name: "New Task" }));
+    fireEvent.click(await screen.findByRole("button", { name: "새 태스크" }));
 
     const createButton = await screen.findByRole("button", { name: "Create task" });
     expect(createButton).toBeDisabled();
@@ -180,7 +180,7 @@ describe("App", () => {
     // Mobile opens on Conversations; projects live one tap away.
     fireEvent.click(await screen.findByRole("button", { name: "Projects" }));
     fireEvent.click(await screen.findByRole("button", { name: /agent-commander/i }));
-    fireEvent.click((await screen.findAllByRole("button", { name: "New Task" }))[0]);
+    fireEvent.click((await screen.findAllByRole("button", { name: "새 태스크" }))[0]);
 
     const nextButtonStep1 = await screen.findByRole("button", { name: "Next" });
     expect(nextButtonStep1).toBeDisabled();

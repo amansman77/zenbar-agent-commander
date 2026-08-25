@@ -551,13 +551,23 @@ export function App() {
               </button>
             </div>
           ) : null}
-          {!isMobile ? notificationBellButton : null}
           <button type="button" onClick={() => setProjectModalOpen(true)}>
-            New Project
+            새 프로젝트
           </button>
           <button type="button" onClick={() => setTaskModalOpen(true)} disabled={!selectedProject}>
-            New Task
+            새 태스크
           </button>
+          {!isMobile ? (
+            <>
+              {/* Trailing, past a divider -- not grouped with 대화/프로젝트
+                  (view switch) or 새 프로젝트/새 태스크 (create), since the
+                  bell is neither; it's a preference toggle. See the
+                  published design proposal for why a divider alone
+                  (tried first, without moving position) wasn't enough. */}
+              <span className="header-actions-divider" />
+              {notificationBellButton}
+            </>
+          ) : null}
         </div>
       </header>
 
@@ -600,7 +610,7 @@ export function App() {
                   </div>
                   <div className="inline-actions">
                     <button type="button" onClick={() => setProjectModalOpen(true)}>
-                      New Project
+                      새 프로젝트
                     </button>
                     <button
                       type="button"
@@ -650,7 +660,7 @@ export function App() {
                   <p>{selectedProject?.name ?? "Select project"}</p>
                 </div>
                 <button type="button" onClick={() => setTaskModalOpen(true)} disabled={!selectedProject}>
-                  New Task
+                  새 태스크
                 </button>
               </div>
               <div className="panel-scroll">
@@ -752,7 +762,7 @@ export function App() {
                   setSelectedProjectId(project.id);
                   setPromptsModalOpen(true);
                 }}
-                emptyText="No projects yet. Create one from New Project."
+                emptyText="아직 프로젝트가 없어요. '새 프로젝트'로 추가해주세요."
               />
             </div>
           </section>
@@ -778,7 +788,7 @@ export function App() {
                     Delete
                   </button>
                   <button type="button" onClick={() => setTaskModalOpen(true)} disabled={!selectedProject}>
-                    + New Task
+                    + 새 태스크
                   </button>
                 </div>
               </div>
@@ -841,7 +851,7 @@ export function App() {
         onConfirm={handleRunActionConfirm}
       />
 
-      <Modal title="New Project" open={projectModalOpen} onClose={() => setProjectModalOpen(false)} isMobile={isMobile}>
+      <Modal title="새 프로젝트" open={projectModalOpen} onClose={() => setProjectModalOpen(false)} isMobile={isMobile}>
         <ProjectForm onCreate={(payload) => createProjectMutation.mutate(payload)} onClose={() => setProjectModalOpen(false)} />
       </Modal>
 
@@ -852,7 +862,7 @@ export function App() {
       />
 
       <Modal
-        title="New Task"
+        title="새 태스크"
         open={taskModalOpen}
         onClose={() => setTaskModalOpen(false)}
         fullScreenMobile

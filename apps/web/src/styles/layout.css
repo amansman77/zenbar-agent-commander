@@ -20,18 +20,6 @@
   box-shadow: var(--shadow);
 }
 
-.header-copy {
-  /* Its parent row doesn't stretch children (flex-start alignment), so
-     without an explicit width this shrinks to whatever its longest line of
-     text measures -- on a narrow-enough viewport the description text
-     happens to wrap close to the full available width and hides the bug,
-     but on a wider phone the text has more room before wrapping, so the
-     block (and the .header-copy-top-row space-between inside it) ends
-     noticeably short of the card's real right edge, leaving the bell
-     stranded next to a wide blank gap instead of anchored to the corner. */
-  width: 100%;
-}
-
 .header-copy h1 {
   margin: 0;
   font-size: clamp(1.2rem, 2vw, 1.8rem);
@@ -89,7 +77,15 @@
 
 .header-actions {
   display: flex;
+  align-items: center;
   gap: 0.65rem;
+}
+
+.header-actions-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--line);
+  margin: 0 0.1rem;
 }
 
 .eyebrow {
