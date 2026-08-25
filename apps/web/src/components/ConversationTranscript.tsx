@@ -114,10 +114,15 @@ export function ConversationTranscript({
     {activeTab === "chat" && messageGroups.map((group) =>
       group.kind === "user" ? (
         <div key={group.message.id} style={{ display: "flex", justifyContent: "flex-end" }}>
-          <ChatBubble message={group.message} />
+          <ChatBubble message={group.message} taskId={conversation?.task_id ?? null} />
         </div>
       ) : (
-        <AssistantMessageGroup key={group.final.id} intermediates={group.intermediates} final={group.final} />
+        <AssistantMessageGroup
+          key={group.final.id}
+          intermediates={group.intermediates}
+          final={group.final}
+          taskId={conversation?.task_id ?? null}
+        />
       )
     )}
     {activeTab === "chat" && isTaskActive && (

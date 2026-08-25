@@ -305,3 +305,49 @@ async def stream_task(task_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Task not found")
     task = await reconcile_and_ensure_task_runtime_stream(task, db)
     return StreamingResponse(stream_task_events(task_id), media_type="text/event-stream")
+
+
+# Agents report screenshot/evidence images by just mentioning a file path in
+# their plain-text response (e.g. "증거: `docs/evidence/issue-86/foo.png`"),
+# not as a URL or markdown image -- there's nothing else to fetch that path
+# from, since it only ever existed on this machine's disk (in the task's
+# worktree, or occasionally a scratch /tmp path the agent chose itself).
+# Deliberately narrow: only these image extensions are servable, regardless
+# of whether the requested path is workspace-relative or absolute -- this is
+# an image viewer, not a general file-read endpoint.
+_WORKSPACE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+
+
+@router.get("/tasks/{task_id}/workspace-file")
+def get_task_workspace_file(task_id: str, path: str, db: Session = Depends(get_db)):
+    from mimetypes import guess_type
+    from pathlib import Path
+
+    from fastapi.responses import FileResponse
+
+    task = require_task(get_task(db, task_id))
+    suffix = Path(path).suffix.lower()
+    if suffix not in _WORKSPACE_IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Only image files can be served from this endpoint")
+
+    requested = Path(path)
+    if requested.is_absolute():
+        # Same trust level as /fs/browse (also unauthenticated-beyond-the-
+        # app-token, also reads whatever this local user can read) -- the
+        # extension allowlist above is what keeps this endpoint narrow, not
+        # path scoping, since an agent-chosen /tmp path has no workspace to
+        # be relative to.
+        resolved = requested.resolve()
+    else:
+        if not task.workspace_path:
+            raise HTTPException(status_code=404, detail="Task has no workspace")
+        workspace_root = Path(task.workspace_path).resolve()
+        resolved = (workspace_root / requested).resolve()
+        if not (resolved == workspace_root or workspace_root in resolved.parents):
+            raise HTTPException(status_code=400, detail="Path escapes the task workspace")
+
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    media_type = guess_type(str(resolved))[0] or "application/octet-stream"
+    return FileResponse(resolved, media_type=media_type)

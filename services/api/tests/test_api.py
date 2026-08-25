@@ -284,6 +284,103 @@ def test_stream_task_emits_sse_payload_shape():
         assert payload["event"]["message"] == "hi"
 
 
+def test_workspace_file_serves_image_relative_to_task_workspace():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Evidence", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Screenshot task", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        evidence_dir = Path(task["workspace_path"]) / "docs" / "evidence"
+        evidence_dir.mkdir(parents=True)
+        image_bytes = b"\x89PNG\r\n\x1a\n" + b"fake-png-body"
+        (evidence_dir / "issue-1.png").write_bytes(image_bytes)
+
+        response = client.get(f"/tasks/{task['id']}/workspace-file", params={"path": "docs/evidence/issue-1.png"})
+        assert response.status_code == 200
+        assert response.content == image_bytes
+        assert response.headers["content-type"] == "image/png"
+
+
+def test_workspace_file_rejects_path_escaping_the_workspace():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Evidence Escape", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Escape task", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        response = client.get(
+            f"/tasks/{task['id']}/workspace-file", params={"path": "../../../../../../etc/hosts.png"}
+        )
+        assert response.status_code == 400
+
+
+def test_workspace_file_rejects_non_image_extensions():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Evidence Ext", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Ext task", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        response = client.get(f"/tasks/{task['id']}/workspace-file", params={"path": "README.md"})
+        assert response.status_code == 400
+
+
+def test_workspace_file_serves_absolute_path_outside_workspace():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Evidence Abs", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Abs task", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        # Agents occasionally save evidence to a scratch path outside the
+        # workspace entirely (e.g. /tmp/screenshot.png) -- there's no
+        # workspace to scope that against, so an absolute path is served
+        # as-is (same trust level as /fs/browse).
+        with TemporaryDirectory() as scratch:
+            scratch_file = Path(scratch) / "evidence.jpg"
+            scratch_file.write_bytes(b"\xff\xd8\xff" + b"fake-jpeg-body")
+            response = client.get(f"/tasks/{task['id']}/workspace-file", params={"path": str(scratch_file)})
+            assert response.status_code == 200
+            assert response.content == b"\xff\xd8\xff" + b"fake-jpeg-body"
+
+
+def test_workspace_file_404_for_missing_file():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Evidence Missing", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Missing task", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        response = client.get(f"/tasks/{task['id']}/workspace-file", params={"path": "does-not-exist.png"})
+        assert response.status_code == 404
+
+
 def test_invalid_retry_transition():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)

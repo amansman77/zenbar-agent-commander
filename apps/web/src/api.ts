@@ -239,5 +239,15 @@ export const api = {
       url.searchParams.set("token", API_TOKEN);
     }
     return url.toString();
+  },
+  // <img src> can't send an Authorization header, so the token (same as
+  // streamUrl above) rides along as a query param instead.
+  workspaceFileUrl: (taskId: string, path: string) => {
+    const url = new URL(`${API_BASE}/tasks/${taskId}/workspace-file`);
+    url.searchParams.set("path", path);
+    if (API_TOKEN) {
+      url.searchParams.set("token", API_TOKEN);
+    }
+    return url.toString();
   }
 };
