@@ -21,6 +21,31 @@
   border-bottom: 1px solid var(--line);
 }
 
+/* The header doubles as the collapse/expand toggle -- reset the button
+   defaults (base.css's rounded, filled, centered look) back to this
+   label's own flat/left-aligned/transparent one, plus the chevron gap. */
+.conversation-group-header-button {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  cursor: pointer;
+}
+
+/* base.css's `button:hover:not(:disabled)` outweighs a same-specificity
+   class selector (its :not() pseudo-class ties on the class/pseudo column,
+   and the bare `button` type then wins the tiebreak) -- qualifying with
+   `button.` here matches that specificity instead of losing to it, which
+   is what let this (now clickable) header flip to unreadable solid navy
+   on hover, background overridden but not the text color to match. */
+button.conversation-group-header-button:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+
 .conversation-group-more-button {
   width: 100%;
   margin-top: 4px;

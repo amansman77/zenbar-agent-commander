@@ -8,7 +8,11 @@ import type {
 } from "@zenbar/shared";
 import { api } from "../api";
 import { CONVERSATION_GROUP_PREVIEW_COUNT } from "../lib/constants";
-import { groupConversationsByProject } from "../lib/conversations";
+import {
+  groupConversationsByProject,
+  loadCollapsedConversationGroups,
+  saveCollapsedConversationGroups,
+} from "../lib/conversations";
 
 export function ConversationListScreen({
   conversations,
@@ -44,6 +48,10 @@ export function ConversationListScreen({
 }) {
   const [projectSheetOpen, setProjectSheetOpen] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  // Whether a project's whole group (header + rows) is collapsed down to
+  // just the header -- persisted (unlike expandedGroups' preview/full
+  // toggle, which is fine resetting each visit) so it survives a reload.
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(loadCollapsedConversationGroups);
 
   // Expanding any single group needs that project's full conversation
   // list, which the preview response doesn't carry -- fetched once,
@@ -61,12 +69,40 @@ export function ConversationListScreen({
     anyExpanded && fullConversationsQuery.data ? fullConversationsQuery.data : conversations;
   const groups = useMemo(() => groupConversationsByProject(effectiveConversations), [effectiveConversations]);
 
+  const toggleGroupCollapsed = (key: string) => {
+    setCollapsedGroups((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      saveCollapsedConversationGroups(next);
+      return next;
+    });
+  };
+
+  const allGroupsCollapsed = groups.length > 0 && groups.every((group) => collapsedGroups[group.key]);
+  const toggleAllGroups = () => {
+    const next: Record<string, boolean> = {};
+    for (const group of groups) {
+      next[group.key] = !allGroupsCollapsed;
+    }
+    setCollapsedGroups(next);
+    saveCollapsedConversationGroups(next);
+  };
+
   return (
     <section className="panel mobile-screen">
       <div className="panel-header">
         <div className="row-header">
           <h2>Conversations</h2>
           <div style={{ display: "flex", gap: "8px" }}>
+            {groups.length > 0 ? (
+              <button
+                type="button"
+                className="secondary"
+                onClick={toggleAllGroups}
+                style={{ fontSize: "0.8rem", padding: "4px 10px" }}
+              >
+                {allGroupsCollapsed ? "모두 펼치기" : "모두 접기"}
+              </button>
+            ) : null}
             {onManageProjects ? (
               <button type="button" className="secondary" onClick={onManageProjects} style={{ fontSize: "0.8rem", padding: "4px 10px" }}>Projects</button>
             ) : null}
@@ -91,10 +127,19 @@ export function ConversationListScreen({
           // actually hidden.
           const totalForGroup = conversationCounts[group.key] ?? group.conversations.length;
           const hiddenCount = isExpanded ? 0 : Math.max(0, totalForGroup - visibleConversations.length);
+          const isCollapsed = Boolean(collapsedGroups[group.key]);
           return (
             <div key={group.key}>
-              <div className="conversation-group-header">{group.projectName ?? "프로젝트 없음"}</div>
-              {visibleConversations.map((conv) => (
+              <button
+                type="button"
+                className="conversation-group-header conversation-group-header-button"
+                onClick={() => toggleGroupCollapsed(group.key)}
+                aria-expanded={!isCollapsed}
+              >
+                <span aria-hidden="true">{isCollapsed ? "▸" : "▾"}</span>
+                <span>{group.projectName ?? "프로젝트 없음"}</span>
+              </button>
+              {!isCollapsed && visibleConversations.map((conv) => (
                 // position: relative wrapper + an absolutely-positioned
                 // delete button lets it sit inside the card's own top-right
                 // corner (matching the header bell's now-established
@@ -135,7 +180,7 @@ export function ConversationListScreen({
                   </button>
                 </div>
               ))}
-              {hiddenCount > 0 ? (
+              {!isCollapsed && hiddenCount > 0 ? (
                 <button
                   type="button"
                   className="secondary conversation-group-more-button"
@@ -144,7 +189,7 @@ export function ConversationListScreen({
                   더보기 ({hiddenCount})
                 </button>
               ) : null}
-              {isExpanded && totalForGroup > CONVERSATION_GROUP_PREVIEW_COUNT ? (
+              {!isCollapsed && isExpanded && totalForGroup > CONVERSATION_GROUP_PREVIEW_COUNT ? (
                 <button
                   type="button"
                   className="secondary conversation-group-more-button"
