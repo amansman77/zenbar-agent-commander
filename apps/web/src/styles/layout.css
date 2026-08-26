@@ -38,6 +38,9 @@
   margin: 0;
 }
 
+/* Pairs with the shared .icon-button base (see base.css) for shape --
+   this owns only what makes it a *toggle*: a border to read as "off" by
+   default, and the filled .active state below for "on". */
 .notification-toggle-button {
   /* A single-color SVG bell instead of the 🔔/🔕 emoji it replaced --
      emoji render differently per OS/browser (part of what made this look
@@ -48,11 +51,6 @@
   width: 36px;
   height: 36px;
   min-width: 36px;
-  padding: 0;
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   background: transparent;
   color: var(--text-soft);
   border: 1.5px solid var(--line);

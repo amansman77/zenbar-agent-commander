@@ -165,7 +165,7 @@ export function ConversationListScreen({
                     </span>
                   </button>
                   <button
-                    className="conversation-delete-button"
+                    className="icon-button conversation-delete-button"
                     onClick={() => onDelete(conv.id)}
                     title="대화 삭제"
                     aria-label="대화 삭제"

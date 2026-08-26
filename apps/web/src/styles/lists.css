@@ -53,30 +53,27 @@ button.conversation-group-header-button:hover {
   padding: 0.4rem 0.7rem;
 }
 
+/* Pairs with the shared .icon-button base (see base.css) for shape --
+   this owns only what makes it a momentary destructive action: no
+   border, muted via opacity rather than a toggle's outline (still at
+   least faintly visible at rest, unlike a hover-only reveal, so touch
+   devices without hover can still find it), and a red hover instead of a
+   toggle's "on" fill. */
 .conversation-delete-button {
   /* Was a sibling column outside the card, centered against its whole
      (variable, multi-line) height -- floated in the middle of nowhere, the
      same complaint as the header bell before it moved into the header's
      corner. Now positioned inside the card's own top-right corner instead,
-     the same convention. Muted at rest rather than the old flat
-     var(--text-soft) -- always at least faintly visible (so it stays
-     findable on touch, where there's no hover to reveal it), but the
-     constant full-strength icon on every single row was itself part of
-     the list reading as visually loud/dense. */
+     the same convention. */
   position: absolute;
   top: 0.5rem;
   right: 0.45rem;
   width: 24px;
   height: 24px;
-  padding: 0;
-  border-radius: 999px;
   border: none;
   background: transparent;
   color: var(--text-soft);
   opacity: 0.55;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
 }
 
 .conversation-delete-button:hover {

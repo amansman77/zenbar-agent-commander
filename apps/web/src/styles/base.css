@@ -100,3 +100,18 @@ textarea {
 .task-prompt-input {
   min-height: 220px;
 }
+
+/* Shared shape for every small circular icon-only button (the header
+   notification toggle, a conversation's delete button, and whatever's
+   next) -- callers add their own modifier class alongside this one for
+   size/border/color/hover, so those can legitimately differ (a persistent
+   on/off toggle looks and behaves differently from a momentary
+   destructive action), but the base geometry can't quietly drift between
+   them one at a time the way two independently-written classes can. */
+.icon-button {
+  padding: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}

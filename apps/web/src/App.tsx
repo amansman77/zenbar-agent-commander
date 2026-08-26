@@ -490,7 +490,7 @@ export function App() {
   const notificationBellButton = isNotificationSupported() ? (
     <button
       type="button"
-      className={taskNotificationsEnabled ? "notification-toggle-button active" : "notification-toggle-button"}
+      className={taskNotificationsEnabled ? "icon-button notification-toggle-button active" : "icon-button notification-toggle-button"}
       onClick={handleToggleTaskNotifications}
       title={
         taskNotificationsEnabled

@@ -123,6 +123,17 @@ order the rules were in when it was one file. Add a rule to the partial that
 owns its surface, and leave `styles/mobile.css` last — its media queries
 override everything above them.
 
+A few structural shapes get a shared base class in `styles/base.css` instead
+of being redefined per component (currently just `.icon-button`, the circular
+icon-only button shape). A new component that reuses one of these shapes adds
+the base class alongside its own modifier class rather than restating the
+base's properties; see the comment on `.icon-button` for why. This project
+treats prose style guides as low-value — design consistency here means
+consolidated CSS plus `apps/web/e2e/` (Playwright scripts that render the app
+for real and check it, since jsdom cannot compute layout), not a written
+document — so extend `.icon-button`-style base classes and
+`e2e/check-shared-patterns.mjs` when adding another reused shape, not a new doc.
+
 Dependencies flow one way: `App.tsx → screens → components → hooks → lib`. Put
 anything testable without a DOM in `lib/`, where it gets a unit test next to it
 (`lib/diff.test.ts` and friends).
