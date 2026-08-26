@@ -12,14 +12,29 @@ import os
 import shutil
 from contextlib import suppress
 from pathlib import Path
+from typing import IO
 from urllib.parse import urlparse
 
 import httpx
 
 
+def _log_file_path() -> Path:
+    configured = os.getenv("ZENBAR_APP_SERVER_LOG_FILE")
+    if configured:
+        return Path(configured).expanduser()
+    return Path(os.getenv("TMPDIR", "/tmp")) / "zenbar-app-server.log"
+
+
 class ManagedAppServer:
     def __init__(self) -> None:
         self._process: asyncio.subprocess.Process | None = None
+        # Kept open for the process's lifetime; closed in stop(). Was
+        # DEVNULL before -- when several sessions on this App Server all
+        # reported notLoaded within the same instant (see
+        # runtime/app_server.py's thread/status/changed handling), there
+        # was no way to tell whether the process itself had hiccuped,
+        # since nothing it printed was ever kept.
+        self._log_file: IO[bytes] | None = None
 
     async def start(self) -> None:
         if os.getenv("ZENBAR_RUNTIME_MODE", "app_server_ws") == "mock":
@@ -37,13 +52,19 @@ class ManagedAppServer:
             return
 
         command = self._resolve_command()
+        log_path = _log_file_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Truncated per start, matching how the dev scripts' own
+        # `>"$log_file"` (not `>>`) resets each restart -- this is a
+        # rolling diagnostic log, not a retained audit trail.
+        self._log_file = open(log_path, "wb")
         self._process = await asyncio.create_subprocess_exec(
             command,
             "app-server",
             "--listen",
             ws_url,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stdout=self._log_file,
+            stderr=asyncio.subprocess.STDOUT,
         )
         for _ in range(30):
             if await self._is_ready(ready_url):
@@ -52,14 +73,19 @@ class ManagedAppServer:
         raise RuntimeError("Timed out waiting for managed Codex App Server to become ready")
 
     async def stop(self) -> None:
-        if self._process is None or self._process.returncode is not None:
-            return
-        self._process.terminate()
-        with suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(self._process.wait(), timeout=5)
-            return
-        self._process.kill()
-        await self._process.wait()
+        try:
+            if self._process is None or self._process.returncode is not None:
+                return
+            self._process.terminate()
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._process.wait(), timeout=5)
+                return
+            self._process.kill()
+            await self._process.wait()
+        finally:
+            if self._log_file is not None:
+                self._log_file.close()
+                self._log_file = None
 
     def _resolve_command(self) -> str:
         configured = os.getenv("ZENBAR_APP_SERVER_COMMAND")
