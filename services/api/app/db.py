@@ -41,6 +41,14 @@ def ensure_schema() -> None:
         if "deleted_at" not in project_columns:
             connection.execute(text("ALTER TABLE projects ADD COLUMN deleted_at TIMESTAMP NULL"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_projects_deleted_at ON projects(deleted_at)"))
+        # task_events had no index on task_id at all -- every append_event,
+        # list_events, count_events and latest_event_at call was a full
+        # table scan. Cheap per row (SQLite handles it fine even at 200k+
+        # rows), but it only grows, and get_task() eagerly loading the whole
+        # relationship (see repository/tasks.py) made that scan's cost
+        # visible: fixed there, but the underlying queries still deserve a
+        # real index rather than relying on the table staying small.
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_task_events_task_id ON task_events(task_id)"))
         if "execution_mode" not in columns:
             connection.execute(
                 text("ALTER TABLE tasks ADD COLUMN execution_mode VARCHAR(32) NOT NULL DEFAULT 'execute'")

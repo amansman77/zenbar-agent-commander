@@ -48,7 +48,19 @@ def get_task(db: Session, task_id: str) -> Task | None:
         .options(
             selectinload(Task.project),
             selectinload(Task.approvals),
-            selectinload(Task.events),
+            # Deliberately NOT selectinload(Task.events) -- nothing that
+            # calls get_task() ever reads task.events (events reach the API
+            # through list_events()'s own targeted query, in
+            # GET /tasks/{id}/events). Eagerly hydrating it here used to mean
+            # every get_task() call -- which is most of this file's own
+            # functions, plus every route that re-fetches a task to
+            # serialize it -- materialized the task's *entire* event history
+            # as ORM objects. Invisible for a small task, but reproduced
+            # live at 2+ seconds for one with ~86k events, on every single
+            # call. Cascade delete (Task.events has
+            # cascade="all, delete-orphan") is untouched by this: it lazy-
+            # loads the collection itself when a task is actually deleted,
+            # independent of what this query eager-loads.
             selectinload(Task.turns),
             selectinload(Task.runs),
         )
