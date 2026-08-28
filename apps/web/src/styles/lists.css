@@ -106,6 +106,36 @@ button.conversation-group-header-button:hover {
   flex-shrink: 0;
 }
 
+/* In progress = the task hasn't produced a final reply yet (see
+   inferRunStatus's "running" bucket in ConversationListScreen.tsx) -- a
+   spinner rather than a dot, deliberately: "something is happening right
+   now" reads more clearly as motion than as another static color, and a
+   spinner is the one shape that conventionally means only that (unlike a
+   dot, which could be mistaken for another unread indicator). Colors match
+   .status-blue below exactly, so it reads as the same "running" language
+   the task detail view already uses. */
+.conversation-progress-spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  border: 1.5px solid #dce9fb;
+  border-top-color: #1f508c;
+  flex-shrink: 0;
+  animation: conversation-progress-spin 0.8s linear infinite;
+}
+
+@keyframes conversation-progress-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-progress-spinner {
+    animation: none;
+  }
+}
+
 .conversation-unread .conversation-title {
   font-weight: 700;
 }

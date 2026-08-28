@@ -13,6 +13,7 @@ import {
   loadCollapsedConversationGroups,
   saveCollapsedConversationGroups,
 } from "../lib/conversations";
+import { inferRunStatus } from "../lib/taskStatus";
 
 export function ConversationListScreen({
   conversations,
@@ -139,7 +140,15 @@ export function ConversationListScreen({
                 <span aria-hidden="true">{isCollapsed ? "▸" : "▾"}</span>
                 <span>{group.projectName ?? "프로젝트 없음"}</span>
               </button>
-              {!isCollapsed && visibleConversations.map((conv) => (
+              {!isCollapsed && visibleConversations.map((conv) => {
+                // "In progress" = the task hasn't produced a final reply yet
+                // (queued/starting/running/waiting_user_input -- exactly
+                // inferRunStatus's "running" bucket, reused rather than
+                // re-listing those statuses here). waiting_result_approval
+                // is deliberately excluded: that means the agent already
+                // finished its turn, which is what the unread dot covers.
+                const isInProgress = conv.task_status != null && inferRunStatus(conv.task_status) === "running";
+                return (
                 // position: relative wrapper + an absolutely-positioned
                 // delete button lets it sit inside the card's own top-right
                 // corner (matching the header bell's now-established
@@ -160,6 +169,7 @@ export function ConversationListScreen({
                   >
                     <div className="list-row">
                       <span className="conversation-title-row">
+                        {isInProgress && <span className="conversation-progress-spinner" aria-hidden="true" />}
                         {conv.is_unread && <span className="conversation-unread-dot" aria-hidden="true" />}
                         <strong className="truncate conversation-title">{conv.title}</strong>
                       </span>
@@ -186,7 +196,8 @@ export function ConversationListScreen({
                     </svg>
                   </button>
                 </div>
-              ))}
+                );
+              })}
               {!isCollapsed && hiddenCount > 0 ? (
                 <button
                   type="button"
