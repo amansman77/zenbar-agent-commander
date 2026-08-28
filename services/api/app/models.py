@@ -186,6 +186,11 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(String(255), default="New Conversation")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    # Set to "now" whenever the user opens this conversation (see
+    # repository.mark_conversation_read) -- compared against the latest
+    # assistant message's created_at to derive is_unread. Null means "never
+    # opened", i.e. unread as soon as any assistant message exists.
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     project: Mapped["Project | None"] = relationship(foreign_keys="[Conversation.project_id]")
     task: Mapped["Task | None"] = relationship(foreign_keys="[Conversation.task_id]")

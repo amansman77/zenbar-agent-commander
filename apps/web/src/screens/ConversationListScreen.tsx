@@ -150,12 +150,19 @@ export function ConversationListScreen({
                 // paints on top and owns that corner's clicks.
                 <div key={conv.id} style={{ position: "relative" }}>
                   <button
-                    className={conv.id === selectedConversationId ? "list-item active" : "list-item"}
+                    className={[
+                      "list-item",
+                      conv.id === selectedConversationId ? "active" : "",
+                      conv.is_unread ? "conversation-unread" : "",
+                    ].filter(Boolean).join(" ")}
                     style={{ width: "100%" }}
                     onClick={() => onSelect(conv.id)}
                   >
                     <div className="list-row">
-                      <strong className="truncate conversation-title">{conv.title}</strong>
+                      <span className="conversation-title-row">
+                        {conv.is_unread && <span className="conversation-unread-dot" aria-hidden="true" />}
+                        <strong className="truncate conversation-title">{conv.title}</strong>
+                      </span>
                     </div>
                     {conv.last_message && (
                       <span className="item-secondary truncate conversation-preview">{conv.last_message}</span>

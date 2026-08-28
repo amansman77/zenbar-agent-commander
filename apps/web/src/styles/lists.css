@@ -82,8 +82,41 @@ button.conversation-group-header-button:hover {
   color: #b12a34;
 }
 
+/* Unread = the newest thing in the conversation is an agent reply the user
+   hasn't opened yet (see is_unread in schemas.py) -- dot + bold together
+   (design "D" from the mockup the user picked) rather than either alone, so
+   the row reads as unread both scanning the list at a glance (the dot) and
+   actually reading that one row's text (the weight). A wrapper of its own
+   (rather than putting the dot directly in .list-row) so .list-row's
+   existing space-between contract -- title left, a status badge right, used
+   elsewhere for task rows -- stays untouched; this is a single flex child
+   of it, same as the plain title was before. */
+.conversation-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.conversation-unread-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--primary);
+  flex-shrink: 0;
+}
+
+.conversation-unread .conversation-title {
+  font-weight: 700;
+}
+
+.conversation-unread .conversation-preview {
+  color: var(--text);
+}
+
 .conversation-title {
   padding-right: 2.1rem;
+  min-width: 0;
 }
 
 .conversation-preview {

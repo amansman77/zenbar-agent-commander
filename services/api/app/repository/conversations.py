@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from ..models import Conversation, ConversationMessage, Task
+from ..models import Conversation, ConversationMessage, Task, utcnow
 from ..schemas import AddConversationMessageRequest, CreateConversationRequest
 
 
@@ -89,6 +89,18 @@ def delete_conversation(db: Session, conversation_id: str) -> None:
     if conv:
         db.delete(conv)
         db.commit()
+
+
+def mark_conversation_read(db: Session, conversation_id: str) -> None:
+    # utcnow() (Python-side, microsecond precision), not
+    # func.current_timestamp() (SQLite-side, truncated to whole seconds) --
+    # ConversationMessage.created_at uses the former, so comparing the two
+    # for is_unread (serializers.serialize_conversation_summary) with
+    # mismatched precision made a message that arrived earlier in the same
+    # second as this write look newer than this read, leaving is_unread
+    # stuck True right after marking read. Reproduced live by a test.
+    db.execute(update(Conversation).where(Conversation.id == conversation_id).values(last_read_at=utcnow()))
+    db.commit()
 
 
 def set_conversation_task_id(db: Session, conversation_id: str, task_id: str) -> None:

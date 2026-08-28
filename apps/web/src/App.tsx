@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
+  ConversationSummary,
   ExecutionMode,
   ProjectSummary
 } from "@zenbar/shared";
@@ -148,6 +149,25 @@ export function App() {
       }
     },
   });
+
+  // Fire-and-forget: the unread dot clearing a beat late is harmless, but
+  // making the user wait on a network round trip before a conversation even
+  // opens is not. The optimistic setQueriesData below (prefix-matched, so it
+  // covers both the preview list and the "show all" full list without
+  // hardcoding either query's exact key) is what actually clears the dot
+  // instantly -- the mutation is just there to persist it server-side for
+  // next time / other devices.
+  const markConversationReadMutation = useMutation({
+    mutationFn: (id: string) => api.markConversationRead(id),
+  });
+
+  const handleSelectConversation = (id: string) => {
+    setSelectedConversationId(id);
+    queryClient.setQueriesData<ConversationSummary[]>({ queryKey: ["conversations"] }, (previous) =>
+      previous?.map((conv) => (conv.id === id && conv.is_unread ? { ...conv, is_unread: false } : conv))
+    );
+    markConversationReadMutation.mutate(id);
+  };
 
   const createProjectMutation = useMutation({
     mutationFn: api.createProject,
@@ -580,7 +600,7 @@ export function App() {
               projects={projects ?? []}
               isLoading={conversationsLoading}
               onSelect={(id) => {
-                setSelectedConversationId(id);
+                handleSelectConversation(id);
                 setMobileScreen("conversation-detail");
               }}
               onCreate={(projectId) => createConversationMutation.mutate(projectId)}
@@ -714,7 +734,7 @@ export function App() {
             projects={projects ?? []}
             isLoading={conversationsLoading}
             selectedConversationId={selectedConversationId}
-            onSelect={(id) => setSelectedConversationId(id)}
+            onSelect={handleSelectConversation}
             onCreate={(projectId) => createConversationMutation.mutate(projectId)}
             onDelete={(id) => deleteConversationMutation.mutate(id)}
           />

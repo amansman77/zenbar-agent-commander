@@ -119,7 +119,8 @@ describe("App", () => {
       project_name: "agent-commander",
       task_id: null,
       task_status: null,
-      updated_at: new Date(2026, 0, 1, 0, i).toISOString()
+      updated_at: new Date(2026, 0, 1, 0, i).toISOString(),
+      is_unread: false
     })).reverse(); // most-recently-updated first, matching the real endpoint's ordering
     fixtures.conversations = allFive;
     fixtures.conversationCounts = { "project-1": 5 };

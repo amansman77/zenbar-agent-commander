@@ -175,17 +175,28 @@ def serialize_conversation_message(msg: ConversationMessage) -> ConversationMess
 
 
 def serialize_conversation_summary(conv: Conversation) -> ConversationSummary:
-    last_message = conv.messages[-1].content if conv.messages else None
+    last_msg = conv.messages[-1] if conv.messages else None
     task_status = conv.task.status if conv.task else None
+    # Unread means "the newest thing in this conversation is something the
+    # agent said, and I haven't opened it since" -- a user's own message
+    # never counts (they obviously already saw what they just typed), and
+    # opening the conversation (mark_conversation_read) always clears it
+    # even if last_read_at wobbles by a few ms against created_at.
+    is_unread = bool(
+        last_msg is not None
+        and last_msg.role == "assistant"
+        and (conv.last_read_at is None or last_msg.created_at > conv.last_read_at)
+    )
     return ConversationSummary(
         id=conv.id,
         title=conv.title,
-        last_message=last_message,
+        last_message=last_msg.content if last_msg else None,
         project_id=conv.project_id,
         project_name=conv.project.name if conv.project else None,
         task_id=conv.task_id,
         task_status=task_status,  # type: ignore[arg-type]
         updated_at=conv.updated_at,
+        is_unread=is_unread,
     )
 
 

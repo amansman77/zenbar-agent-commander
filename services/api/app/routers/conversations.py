@@ -26,6 +26,7 @@ from ..repository import (
     get_project_prompt,
     get_task,
     list_conversations,
+    mark_conversation_read,
     serialize_conversation_detail,
     serialize_conversation_summary,
     set_conversation_task_id,
@@ -76,6 +77,15 @@ def get_conversation_detail(conversation_id: str, db: Session = Depends(get_db))
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return serialize_conversation_detail(conv)
+
+
+@router.post("/conversations/{conversation_id}/read", status_code=204)
+def post_conversation_read(conversation_id: str, db: Session = Depends(get_db)):
+    conv = get_conversation(db, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    mark_conversation_read(db, conversation_id)
+    return Response(status_code=204)
 
 
 @router.get("/conversations/{conversation_id}/pr-info", response_model=list[PrInfoResponse])

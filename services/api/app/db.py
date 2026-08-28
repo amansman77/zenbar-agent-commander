@@ -34,6 +34,8 @@ def ensure_schema() -> None:
             connection.execute(text("ALTER TABLE conversations ADD COLUMN project_id VARCHAR NULL REFERENCES projects(id)"))
         if "task_id" not in conv_columns and conv_columns:
             connection.execute(text("ALTER TABLE conversations ADD COLUMN task_id VARCHAR NULL REFERENCES tasks(id)"))
+        if "last_read_at" not in conv_columns and conv_columns:
+            connection.execute(text("ALTER TABLE conversations ADD COLUMN last_read_at TIMESTAMP NULL"))
         columns = {row[1] for row in connection.execute(text("PRAGMA table_info(tasks)"))}
         project_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(projects)"))}
         statuses = [row[0] for row in connection.execute(text("SELECT DISTINCT status FROM tasks"))]

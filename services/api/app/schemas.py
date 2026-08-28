@@ -387,6 +387,10 @@ class ConversationSummary(BaseModel):
     task_id: str | None
     task_status: TaskStatus | None
     updated_at: datetime
+    # True when the latest message is from the assistant and arrived after
+    # this conversation was last opened (see repository.mark_conversation_read
+    # and serialize_conversation_summary for the exact rule).
+    is_unread: bool
 
 
 class ConversationDetail(BaseModel):

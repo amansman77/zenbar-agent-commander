@@ -328,6 +328,9 @@ export interface ConversationSummary {
   task_id: string | null;
   task_status: TaskStatus | null;
   updated_at: string;
+  // True when the latest message is from the assistant and arrived after
+  // this conversation was last opened.
+  is_unread: boolean;
 }
 
 export interface ConversationDetail {

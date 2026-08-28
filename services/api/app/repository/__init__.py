@@ -70,6 +70,7 @@ from .conversations import (
     get_conversation,
     get_conversation_for_task,
     list_conversations,
+    mark_conversation_read,
     set_conversation_task_id,
 )
 from .serializers import (
@@ -141,6 +142,7 @@ __all__ = [
     "get_conversation",
     "get_conversation_for_task",
     "list_conversations",
+    "mark_conversation_read",
     "set_conversation_task_id",
     "serialize_conversation_detail",
     "serialize_conversation_message",

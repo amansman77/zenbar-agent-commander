@@ -93,6 +93,8 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   getConversation: (id: string) => request<ConversationDetail>(`/conversations/${id}`),
+  markConversationRead: (id: string) =>
+    request<void>(`/conversations/${id}/read`, { method: "POST" }),
   getConversationPrInfo: (id: string) => request<PrInfo[]>(`/conversations/${id}/pr-info`),
   // pr-info's own diff has raw_diff stripped (that list is polled every
   // 15s while a task is active; raw_diff is where nearly all of its

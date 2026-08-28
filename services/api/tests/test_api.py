@@ -2621,6 +2621,89 @@ def test_conversations_preview_count_limits_per_project_but_keeps_active_tasks()
         assert counts.json()[project["id"]] == 5
 
 
+def test_conversation_is_unread_true_only_when_newest_message_is_from_assistant():
+    # A conversation should only read as "unread" when the agent actually
+    # said something new -- the user's own message (e.g. what they just
+    # typed, still sitting as the newest message before the agent replies)
+    # must never flip it on, or every conversation would show as unread the
+    # instant you sent a message in it.
+    from app.repository import add_conversation_message
+    from app.schemas import AddConversationMessageRequest
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Unread Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        conversation = client.post(
+            "/conversations",
+            json={"project_id": project["id"], "title": "Unread conversation"},
+        ).json()
+
+        # No messages at all yet -- not unread.
+        listed = client.get("/conversations").json()
+        assert next(c for c in listed if c["id"] == conversation["id"])["is_unread"] is False
+
+        with SessionLocal() as db:
+            add_conversation_message(
+                db, conversation["id"], AddConversationMessageRequest(role="user", content="Do the thing")
+            )
+        # Newest message is the user's own -- still not unread.
+        listed = client.get("/conversations").json()
+        assert next(c for c in listed if c["id"] == conversation["id"])["is_unread"] is False
+
+        with SessionLocal() as db:
+            add_conversation_message(
+                db, conversation["id"], AddConversationMessageRequest(role="assistant", content="Done.")
+            )
+        # Newest message is the agent's -- unread.
+        listed = client.get("/conversations").json()
+        assert next(c for c in listed if c["id"] == conversation["id"])["is_unread"] is True
+
+
+def test_conversation_read_endpoint_clears_is_unread():
+    from app.repository import add_conversation_message
+    from app.schemas import AddConversationMessageRequest
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Mark Read Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        conversation = client.post(
+            "/conversations",
+            json={"project_id": project["id"], "title": "Mark read conversation"},
+        ).json()
+        with SessionLocal() as db:
+            add_conversation_message(
+                db, conversation["id"], AddConversationMessageRequest(role="assistant", content="Done.")
+            )
+        listed = client.get("/conversations").json()
+        assert next(c for c in listed if c["id"] == conversation["id"])["is_unread"] is True
+
+        mark_read = client.post(f"/conversations/{conversation['id']}/read")
+        assert mark_read.status_code == 204
+
+        listed = client.get("/conversations").json()
+        assert next(c for c in listed if c["id"] == conversation["id"])["is_unread"] is False
+
+        # A later assistant message flips it back on -- reading isn't a
+        # one-time flag, it's "as of last_read_at".
+        with SessionLocal() as db:
+            add_conversation_message(
+                db, conversation["id"], AddConversationMessageRequest(role="assistant", content="One more thing.")
+            )
+        listed = client.get("/conversations").json()
+        assert next(c for c in listed if c["id"] == conversation["id"])["is_unread"] is True
+
+
+def test_conversation_read_endpoint_404_for_unknown_conversation():
+    response = client.post("/conversations/does-not-exist/read")
+    assert response.status_code == 404
+
+
 def test_followup_message_can_switch_model_keeping_the_same_session():
     # Confirmed via the real Codex App Server's own protocol source
     # (codex-rs/app-server-protocol): turn/start's `model` field is
