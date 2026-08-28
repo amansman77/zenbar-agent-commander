@@ -36,6 +36,39 @@ def ensure_schema() -> None:
             connection.execute(text("ALTER TABLE conversations ADD COLUMN task_id VARCHAR NULL REFERENCES tasks(id)"))
         if "last_read_at" not in conv_columns and conv_columns:
             connection.execute(text("ALTER TABLE conversations ADD COLUMN last_read_at TIMESTAMP NULL"))
+            # One-time backfill, guarded by the same "column didn't exist
+            # yet" check so it only ever runs at the moment of this
+            # migration, not on every startup after -- without it, every
+            # conversation that existed before this feature shipped reads
+            # last_read_at as NULL (= "never opened"), so its whole history
+            # shows as unread the instant the column appears, even for
+            # conversations the user finished reading weeks ago.
+            #
+            # Backfills to each conversation's own LAST MESSAGE's created_at
+            # specifically -- not updated_at, which is written via SQL-side
+            # CURRENT_TIMESTAMP (whole-second precision) while
+            # ConversationMessage.created_at is Python-side utcnow()
+            # (microsecond precision). Backfilling from updated_at looked
+            # right but left is_unread stuck true for nearly every existing
+            # conversation: the message's own sub-second component made it
+            # compare as "after" the truncated updated_at value. Matching
+            # last_read_at to the message's own timestamp exactly sidesteps
+            # the mismatch instead of just narrowing it.
+            connection.execute(
+                text(
+                    """
+                    UPDATE conversations
+                    SET last_read_at = (
+                        SELECT MAX(created_at) FROM conversation_messages
+                        WHERE conversation_messages.conversation_id = conversations.id
+                    )
+                    WHERE EXISTS (
+                        SELECT 1 FROM conversation_messages
+                        WHERE conversation_messages.conversation_id = conversations.id
+                    )
+                    """
+                )
+            )
         columns = {row[1] for row in connection.execute(text("PRAGMA table_info(tasks)"))}
         project_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(projects)"))}
         statuses = [row[0] for row in connection.execute(text("SELECT DISTINCT status FROM tasks"))]
