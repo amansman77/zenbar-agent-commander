@@ -148,6 +148,14 @@ export function ConversationListScreen({
                 // is deliberately excluded: that means the agent already
                 // finished its turn, which is what the unread dot covers.
                 const isInProgress = conv.task_status != null && inferRunStatus(conv.task_status) === "running";
+                // The unread dot means "a finished reply is sitting here
+                // unseen" -- while a new turn is actively spinning, is_unread
+                // can still be true from an earlier reply that was never
+                // opened, but showing both together reads as "it just
+                // finished" when it hasn't. The spinner alone is the correct
+                // signal for that moment; the dot comes back once the new
+                // turn actually finishes and is_unread is re-evaluated.
+                const showUnread = conv.is_unread && !isInProgress;
                 return (
                 // position: relative wrapper + an absolutely-positioned
                 // delete button lets it sit inside the card's own top-right
@@ -162,7 +170,7 @@ export function ConversationListScreen({
                     className={[
                       "list-item",
                       conv.id === selectedConversationId ? "active" : "",
-                      conv.is_unread ? "conversation-unread" : "",
+                      showUnread ? "conversation-unread" : "",
                     ].filter(Boolean).join(" ")}
                     style={{ width: "100%" }}
                     onClick={() => onSelect(conv.id)}
@@ -170,7 +178,7 @@ export function ConversationListScreen({
                     <div className="list-row">
                       <span className="conversation-title-row">
                         {isInProgress && <span className="conversation-progress-spinner" aria-hidden="true" />}
-                        {conv.is_unread && <span className="conversation-unread-dot" aria-hidden="true" />}
+                        {showUnread && <span className="conversation-unread-dot" aria-hidden="true" />}
                         <strong className="truncate conversation-title">{conv.title}</strong>
                       </span>
                     </div>
