@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from ..models import Conversation, ConversationMessage, Task, utcnow
+from ..models import Conversation, ConversationMessage, ConversationPrReview, Task, utcnow
 from ..schemas import AddConversationMessageRequest, CreateConversationRequest
 
 
@@ -100,6 +100,27 @@ def mark_conversation_read(db: Session, conversation_id: str) -> None:
     # second as this write look newer than this read, leaving is_unread
     # stuck True right after marking read. Reproduced live by a test.
     db.execute(update(Conversation).where(Conversation.id == conversation_id).values(last_read_at=utcnow()))
+    db.commit()
+
+
+def list_reviewed_pr_urls(db: Session, conversation_id: str) -> set[str]:
+    return set(
+        db.scalars(select(ConversationPrReview.url).where(ConversationPrReview.conversation_id == conversation_id))
+    )
+
+
+def set_pr_reviewed(db: Session, conversation_id: str, url: str, reviewed: bool) -> None:
+    # A row's presence is the flag (see ConversationPrReview's docstring) --
+    # delete-then-maybe-insert instead of a boolean UPDATE keeps "reviewed"
+    # idempotent either direction without needing a unique constraint to
+    # guard against a double-click inserting two rows for the same URL.
+    db.execute(
+        delete(ConversationPrReview).where(
+            ConversationPrReview.conversation_id == conversation_id, ConversationPrReview.url == url
+        )
+    )
+    if reviewed:
+        db.add(ConversationPrReview(conversation_id=conversation_id, url=url))
     db.commit()
 
 

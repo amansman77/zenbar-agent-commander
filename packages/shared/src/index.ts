@@ -128,6 +128,15 @@ export interface PrInfo {
   // card's files grouped under that card instead of one flat list with no
   // indication of which PR/MR they came from.
   diff: TaskDiff | null;
+  // Whether the user explicitly marked this specific PR/MR reviewed --
+  // never inferred automatically, since actually reading the code is a
+  // judgment call only the user can make.
+  is_reviewed: boolean;
+}
+
+export interface SetPrReviewedRequest {
+  url: string;
+  reviewed: boolean;
 }
 
 export interface TaskSummary {

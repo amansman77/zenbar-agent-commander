@@ -193,6 +193,18 @@ class PrInfoResponse(BaseModel):
     # instead of one flat list with no indication of which PR/MR it came
     # from (the "which card do these files belong to?" gap this fixes).
     diff: TaskDiff | None = None
+    # Whether the user has explicitly marked this specific PR/MR reviewed
+    # (see ConversationPrReview) -- deliberately not inferred from anything
+    # automatic (opening the conversation, viewing the diff tab), since
+    # actually having read the code is a judgment call only the user can
+    # make, unlike a chat message where opening the conversation IS reading
+    # it.
+    is_reviewed: bool = False
+
+
+class SetPrReviewedRequest(BaseModel):
+    url: str
+    reviewed: bool
 
 
 class ProjectSummary(BaseModel):

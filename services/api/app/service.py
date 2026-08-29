@@ -50,6 +50,29 @@ from .streaming import broker
 from .workspace import prepare_workspace
 
 
+def _is_stale_session_error(exc: Exception) -> bool:
+    # Two different shapes mean the same thing -- "this session doesn't
+    # exist anymore, clear it and start fresh" -- but come from different
+    # layers. Every adapter's own local _require_session raises
+    # "Unknown <X> session" when OUR process has no record of the session
+    # at all (e.g. right after an API restart, before Codex's App Server
+    # reconnects). Codex specifically can *also* still have a locally-valid
+    # session record while the actual remote App Server process has quietly
+    # dropped that thread (evicted, or hiccuped without a full crash) --
+    # that surfaces as the App Server's own RPC error message, verbatim,
+    # which is "thread not found: <id>", not "Unknown ... session". Missing
+    # this second shape meant retry_task re-raised instead of self-healing
+    # (a real 409 a user hit), and _consume_events' background loop treated
+    # it as a transient stream hiccup and reconnected forever instead of
+    # ending the loop -- which is why a task already marked "failed" kept
+    # producing "still running" heartbeat events indefinitely. Reproduced
+    # live via the exception logging added to safe_runtime_error_detail.
+    exc_msg = str(exc)
+    if exc_msg.startswith("Unknown ") and exc_msg.endswith(" session"):
+        return True
+    return exc_msg.startswith("thread not found:")
+
+
 class TaskOrchestrator:
     ACTIVE_TASK_STATUSES = {"starting", "running", "waiting_user_input", "waiting_result_approval"}
 
@@ -201,10 +224,9 @@ class TaskOrchestrator:
         try:
             await adapter.approve_task(task.runtime_session_id)
         except RuntimeError as exc:
-            # See reconcile_task_runtime_session's own comment: every
-            # adapter raises "Unknown <X> session" in this shape, not just Codex's.
-            exc_msg = str(exc)
-            if not (exc_msg.startswith("Unknown ") and exc_msg.endswith(" session")):
+            # See _is_stale_session_error's own comment for the two shapes
+            # this recognizes.
+            if not _is_stale_session_error(exc):
                 raise
             append_event(
                 db,
@@ -233,10 +255,9 @@ class TaskOrchestrator:
         try:
             await adapter.respond_task(task.runtime_session_id, task.pending_request_id, payload.answers)
         except RuntimeError as exc:
-            # See reconcile_task_runtime_session's own comment: every
-            # adapter raises "Unknown <X> session" in this shape, not just Codex's.
-            exc_msg = str(exc)
-            if not (exc_msg.startswith("Unknown ") and exc_msg.endswith(" session")):
+            # See _is_stale_session_error's own comment for the two shapes
+            # this recognizes.
+            if not _is_stale_session_error(exc):
                 raise
             append_event(
                 db,
@@ -316,10 +337,9 @@ class TaskOrchestrator:
         try:
             session = await adapter.retry_task(task.runtime_session_id)
         except RuntimeError as exc:
-            # See reconcile_task_runtime_session's own comment: every
-            # adapter raises "Unknown <X> session" in this shape, not just Codex's.
-            exc_msg = str(exc)
-            if not (exc_msg.startswith("Unknown ") and exc_msg.endswith(" session")):
+            # See _is_stale_session_error's own comment for the two shapes
+            # this recognizes.
+            if not _is_stale_session_error(exc):
                 raise
             refreshed = self._require_task(db, task.id, "recovering from stale retry session")
             refreshed = clear_runtime_session(db, refreshed)
@@ -383,10 +403,9 @@ class TaskOrchestrator:
             try:
                 runtime_diff = await self._adapter_for(task).get_diff(task.runtime_session_id)
             except RuntimeError as exc:
-                # See reconcile_task_runtime_session's own comment: every
-                # adapter raises "Unknown <X> session" in this shape, not just Codex's.
-                exc_msg = str(exc)
-                if not (exc_msg.startswith("Unknown ") and exc_msg.endswith(" session")):
+                # See _is_stale_session_error's own comment for the two
+                # shapes this recognizes.
+                if not _is_stale_session_error(exc):
                     raise
 
         fallback_diff = await asyncio.to_thread(workspace_git.compute_workspace_diff, task)
@@ -409,19 +428,18 @@ class TaskOrchestrator:
             await self._adapter_for(task).get_diff(task.runtime_session_id)
             return task
         except RuntimeError as exc:
-            # Every adapter's _require_session raises "Unknown <X> session"
-            # (Codex App Server, Claude, Grok, Antigravity) -- matched by
-            # shape rather than enumerating each one by name. Claude/Grok/
-            # Antigravity keep session state only in-process (unlike Codex,
-            # which reconnects to the still-running App Server), so any
-            # active task using one of them hits this on every restart --
-            # and this function runs at startup (reconcile_active_tasks, in
-            # the FastAPI lifespan), so before this the app couldn't even
-            # start with such a task in the database: the unhandled
-            # RuntimeError propagated out of lifespan and crashed the whole
-            # process on boot, not just that one task's reconciliation.
-            exc_msg = str(exc)
-            if not (exc_msg.startswith("Unknown ") and exc_msg.endswith(" session")):
+            # See _is_stale_session_error's own comment for the two shapes
+            # this recognizes (Codex App Server, Claude, Grok, Antigravity).
+            # Claude/Grok/Antigravity keep session state only in-process
+            # (unlike Codex, which reconnects to the still-running App
+            # Server), so any active task using one of them hits this on
+            # every restart -- and this function runs at startup
+            # (reconcile_active_tasks, in the FastAPI lifespan), so before
+            # this the app couldn't even start with such a task in the
+            # database: the unhandled RuntimeError propagated out of
+            # lifespan and crashed the whole process on boot, not just that
+            # one task's reconciliation.
+            if not _is_stale_session_error(exc):
                 raise
         refreshed = self._require_task(db, task.id, "reconciling stale runtime session")
         refreshed = clear_runtime_session(db, refreshed)
@@ -601,9 +619,13 @@ class TaskOrchestrator:
             except Exception as exc:
                 attempts += 1
                 detail = str(exc)
-                # See reconcile_task_runtime_session's own comment: every
-                # adapter raises "Unknown <X> session" in this shape, not just Codex's.
-                if detail.startswith("Unknown ") and detail.endswith(" session"):
+                # See _is_stale_session_error's own comment for the two
+                # shapes this recognizes -- missing the second one
+                # ("thread not found: ...") here specifically meant a task
+                # already reported failed elsewhere kept this loop alive,
+                # reconnecting forever and producing "still running"
+                # heartbeat events indefinitely instead of actually ending.
+                if _is_stale_session_error(exc):
                     await self._handle_stale_runtime_session(task_id, attempts)
                     return
                 await self._handle_runtime_event(

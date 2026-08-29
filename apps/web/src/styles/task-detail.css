@@ -2,6 +2,7 @@
    mobile detail screen with its run-state control bar and metadata grid. */
 
 .pr-info-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   padding: 0.75rem 0.9rem;
@@ -13,6 +14,38 @@
 
 .pr-info-card:hover {
   border-color: var(--primary);
+}
+
+/* Pairs with the shared .icon-button base (see base.css) for shape --
+   same corner-toggle convention as the notification bell / conversation
+   delete button: unfilled ring at rest, filled with a checkmark once the
+   user has explicitly marked this specific PR/MR reviewed (see
+   PrInfo.is_reviewed's own comment for why this is never automatic). */
+.pr-info-card-reviewed-toggle {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.65rem;
+  width: 24px;
+  height: 24px;
+  border: 1.5px solid var(--line);
+  background: var(--panel);
+  color: var(--text-soft);
+}
+
+.pr-info-card-reviewed-toggle:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.pr-info-card-reviewed-toggle.checked {
+  background: #256b37;
+  border-color: #256b37;
+  color: #fff;
+}
+
+.pr-info-card-reviewed-toggle.checked:hover:not(:disabled) {
+  background: #1c5129;
+  border-color: #1c5129;
 }
 
 /* Only the title/summary area opens the PR/MR (target="_blank") -- the
@@ -30,6 +63,10 @@
 .pr-info-card-header {
   display: flex;
   align-items: center;
+  /* Room for the corner reviewed-toggle so it never sits over the status
+     pill's own text -- mirrors .conversation-title's padding-right next to
+     the conversation list's delete button, same reasoning. */
+  padding-right: 1.9rem;
 }
 
 .pr-info-card-title {

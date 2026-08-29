@@ -201,6 +201,21 @@ class Conversation(Base):
     )
 
 
+class ConversationPrReview(Base):
+    # A row's presence means "the user marked this PR/MR reviewed" -- there's
+    # no boolean column, since un-reviewing just deletes the row (see
+    # repository.set_pr_reviewed). Keyed by (conversation_id, url) rather
+    # than just url: a task can mention several PR/MRs (e.g. the sibling-repo
+    # pattern this project uses), and each gets its own mark independent of
+    # the others.
+    __tablename__ = "conversation_pr_reviews"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    url: Mapped[str] = mapped_column(String(1024))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class ConversationMessage(Base):
     __tablename__ = "conversation_messages"
 

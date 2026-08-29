@@ -4,13 +4,26 @@ runtime-error sanitizing, and runtime stream (re)attachment.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from ..runtime_registry import orchestrator
 
+logger = logging.getLogger(__name__)
+
 
 def safe_runtime_error_detail(prefix: str, exc: Exception) -> str:
+    # Every one of retry/commit/push/approve's exception handlers funnels
+    # through here, and the real exception was previously discarded the
+    # instant it didn't match one of the allowed fragments below -- a retry
+    # failing for any reason other than those five strings showed up to the
+    # client (and in this server's own log) as nothing but the generic
+    # prefix, with zero trace of what actually went wrong. Hit repeatedly
+    # this same day trying to diagnose a run of "Retry failed" 409s with no
+    # way to see why.
+    logger.exception(prefix)
     detail = str(exc).strip()
     allowed_fragments = (
         "Retry the task to continue.",

@@ -25,6 +25,7 @@ import type {
   PushTaskRequest,
   ReorderProjectPromptsRequest,
   RespondTaskRequest,
+  SetPrReviewedRequest,
   TaskDetail,
   TaskDiff,
   TaskEvent,
@@ -102,6 +103,8 @@ export const api = {
   // only once that card is actually expanded.
   getConversationPrDiff: (id: string, url: string) =>
     request<TaskDiff>(`/conversations/${id}/pr-diff?url=${encodeURIComponent(url)}`),
+  setPrReviewed: (id: string, payload: SetPrReviewedRequest) =>
+    request<void>(`/conversations/${id}/pr-reviews`, { method: "PUT", body: JSON.stringify(payload) }),
   deleteConversation: (id: string) =>
     request<void>(`/conversations/${id}`, { method: "DELETE" }),
   addConversationMessage: (id: string, payload: AddConversationMessageRequest) =>

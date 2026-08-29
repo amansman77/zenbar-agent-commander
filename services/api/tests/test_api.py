@@ -1318,6 +1318,25 @@ def test_retry_defaults_model_for_legacy_task_and_records_event():
         assert fallback_event["payload_json"]["model"] == "default"
 
 
+def test_is_stale_session_error_recognizes_both_shapes():
+    # Reproduced live: a task failed with "Codex App Server reports this
+    # session as 'notLoaded'", and its subsequent retry raised
+    # "thread not found: <id>" -- the App Server's own real RPC error,
+    # distinct from the in-process "Unknown <X> session" every adapter's
+    # local _require_session raises. Missing this shape meant retry_task
+    # re-raised instead of self-healing (a real 409 in production), and
+    # _consume_events treated it as a transient hiccup and reconnected
+    # forever instead of ending the loop.
+    from app.service import _is_stale_session_error
+
+    assert _is_stale_session_error(RuntimeError("Unknown Codex App Server session")) is True
+    assert _is_stale_session_error(RuntimeError("Unknown Claude session")) is True
+    assert _is_stale_session_error(RuntimeError("thread not found: 01a04d8d-54dd-7cd2-ab72-68b03183b8cf")) is True
+    assert _is_stale_session_error(RuntimeError("Unknown Codex App Server error")) is False
+    assert _is_stale_session_error(RuntimeError("thread not loaded")) is False
+    assert _is_stale_session_error(RuntimeError("Connection refused")) is False
+
+
 def test_retry_restarts_task_when_runtime_session_is_stale():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
@@ -2491,6 +2510,85 @@ def test_conversation_pr_info_attaches_each_prs_own_diff():
             params={"url": "https://github.com/acme/widgets/pull/999"},
         )
         assert not_mentioned.status_code == 404
+
+
+def test_pr_reviewed_toggle_is_per_url_and_survives_relisting():
+    # Marking one PR/MR reviewed must not affect a sibling one in the same
+    # conversation (the "형제 레포지토리" pattern this project actually
+    # hits -- a task mentioning two separate repos' PR/MRs).
+    from app.repository import add_conversation_message
+    from app.schemas import AddConversationMessageRequest, TaskDiff
+    from app.pr_info import PrInfo
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Review Toggle Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        conversation = client.post(
+            "/conversations",
+            json={"project_id": project["id"], "title": "Review toggle conversation"},
+        ).json()
+
+        first_url = "https://github.com/acme/widgets/pull/11"
+        second_url = "https://github.com/acme/widgets/pull/22"
+        with SessionLocal() as db:
+            add_conversation_message(
+                db, conversation["id"], AddConversationMessageRequest(role="assistant", content=f"Opened PR: {first_url}")
+            )
+            add_conversation_message(
+                db, conversation["id"], AddConversationMessageRequest(role="assistant", content=f"Opened PR: {second_url}")
+            )
+
+        async def fake_fetch_pr_or_mr_info(url: str):
+            number = 11 if url == first_url else 22
+            return PrInfo(
+                platform="github", number=number, title=f"PR #{number}", description=None, state="open",
+                url=url, source_branch="feature", target_branch="main", author="octocat", merged_at=None,
+            )
+
+        async def fake_fetch_pr_or_mr_diff(url: str):
+            return TaskDiff(files_changed=[], summary="", raw_diff=None)
+
+        from app.routers import conversations as main_module
+
+        original_info = main_module.fetch_pr_or_mr_info
+        original_diff = main_module.fetch_pr_or_mr_diff
+        main_module.fetch_pr_or_mr_info = fake_fetch_pr_or_mr_info
+        main_module.fetch_pr_or_mr_diff = fake_fetch_pr_or_mr_diff
+        try:
+            # Neither reviewed yet.
+            listed = client.get(f"/conversations/{conversation['id']}/pr-info").json()
+            assert {item["url"]: item["is_reviewed"] for item in listed} == {first_url: False, second_url: False}
+
+            mark = client.put(
+                f"/conversations/{conversation['id']}/pr-reviews", json={"url": first_url, "reviewed": True}
+            )
+            assert mark.status_code == 204
+
+            listed = client.get(f"/conversations/{conversation['id']}/pr-info").json()
+            assert {item["url"]: item["is_reviewed"] for item in listed} == {first_url: True, second_url: False}
+
+            # Un-reviewing is idempotent and doesn't error even if called twice.
+            for _ in range(2):
+                unmark = client.put(
+                    f"/conversations/{conversation['id']}/pr-reviews", json={"url": first_url, "reviewed": False}
+                )
+                assert unmark.status_code == 204
+            listed = client.get(f"/conversations/{conversation['id']}/pr-info").json()
+            assert {item["url"]: item["is_reviewed"] for item in listed} == {first_url: False, second_url: False}
+        finally:
+            main_module.fetch_pr_or_mr_info = original_info
+            main_module.fetch_pr_or_mr_diff = original_diff
+
+
+def test_pr_reviewed_404_for_unknown_conversation():
+    response = client.put(
+        "/conversations/does-not-exist/pr-reviews",
+        json={"url": "https://github.com/acme/widgets/pull/1", "reviewed": True},
+    )
+    assert response.status_code == 404
 
 
 def test_get_task_events_excludes_technical_types_and_reports_hidden_count():

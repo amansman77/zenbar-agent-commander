@@ -7,6 +7,7 @@ import type {
   AddConversationMessageRequest,
   ConversationDetail,
   ConversationMessageItem,
+  PrInfo,
   ProjectPipeline,
   ProjectPrompt,
   RuntimeEngineOption,
@@ -118,6 +119,22 @@ export function ConversationDetailScreen({
     enabled: Boolean(taskId),
     staleTime: 30_000,
     refetchInterval: isTaskActive ? 15_000 : false,
+  });
+
+  // Whether a specific PR/MR has actually been read is a judgment call only
+  // the user can make (see PrInfo.is_reviewed's own comment) -- toggled
+  // explicitly, unlike the conversation-level unread dot which clears just
+  // by opening the conversation. Updated optimistically since the next
+  // 15s poll (or none at all, once the task's no longer active) would
+  // otherwise leave the toggle looking like it didn't register.
+  const setPrReviewedMutation = useMutation({
+    mutationFn: (input: { url: string; reviewed: boolean }) =>
+      api.setPrReviewed(conversationId, { url: input.url, reviewed: input.reviewed }),
+    onMutate: async (input) => {
+      queryClient.setQueryData<PrInfo[]>(["conv-pr-info", conversationId], (previous) =>
+        previous?.map((info) => (info.url === input.url ? { ...info, is_reviewed: input.reviewed } : info))
+      );
+    },
   });
 
   const { data: enginesData } = useQuery({
@@ -403,6 +420,7 @@ export function ConversationDetailScreen({
         diffExpanded={diffExpanded}
         setDiffExpanded={setDiffExpanded}
         prInfos={prInfos}
+        onTogglePrReviewed={(url, reviewed) => setPrReviewedMutation.mutate({ url, reviewed })}
         isTaskActive={isTaskActive}
         isWaitingApproval={isWaitingApproval}
         isTaskFailed={isTaskFailed}

@@ -26,10 +26,12 @@ from ..repository import (
     get_project_prompt,
     get_task,
     list_conversations,
+    list_reviewed_pr_urls,
     mark_conversation_read,
     serialize_conversation_detail,
     serialize_conversation_summary,
     set_conversation_task_id,
+    set_pr_reviewed,
     set_task_status,
 )
 from ..runtime_registry import model_catalog_for, orchestrator
@@ -40,6 +42,7 @@ from ..schemas import (
     CreateConversationRequest,
     CreateTaskRequest,
     PrInfoResponse,
+    SetPrReviewedRequest,
     TaskDiff,
 )
 from ..workspace import cleanup_workspace
@@ -97,6 +100,7 @@ async def get_conversation_pr_info(conversation_id: str, db: Session = Depends(g
     urls = find_all_pr_or_mr_urls(texts)
     if not urls:
         return []
+    reviewed_urls = list_reviewed_pr_urls(db, conversation_id)
     # Most-recently-mentioned first (find_all_pr_or_mr_urls' own order) --
     # fetched in parallel since a longer conversation can have several. Each
     # PR/MR's own diff is fetched alongside its info (both TTL-cached by
@@ -128,10 +132,20 @@ async def get_conversation_pr_info(conversation_id: str, db: Session = Depends(g
             # demand, only once a specific card is expanded (see
             # get_conversation_pr_diff below).
             diff=diff.model_copy(update={"raw_diff": None}) if diff else None,
+            is_reviewed=info.url in reviewed_urls,
         )
         for info, diff in zip(infos, diffs)
         if info is not None
     ]
+
+
+@router.put("/conversations/{conversation_id}/pr-reviews", status_code=204)
+def put_pr_reviewed(conversation_id: str, payload: SetPrReviewedRequest, db: Session = Depends(get_db)):
+    conv = get_conversation(db, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    set_pr_reviewed(db, conversation_id, payload.url, payload.reviewed)
+    return Response(status_code=204)
 
 
 @router.get("/conversations/{conversation_id}/pr-diff", response_model=TaskDiff)

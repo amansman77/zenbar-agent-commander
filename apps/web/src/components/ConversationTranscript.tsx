@@ -32,6 +32,7 @@ export type ConversationTranscriptProps = {
   diffExpanded: Record<string, boolean>;
   setDiffExpanded: Dispatch<SetStateAction<Record<string, boolean>>>;
   prInfos: PrInfo[] | undefined;
+  onTogglePrReviewed: (url: string, reviewed: boolean) => void;
 
   isTaskActive: boolean;
   isWaitingApproval: boolean;
@@ -54,6 +55,7 @@ export function ConversationTranscript({
   diffExpanded,
   setDiffExpanded,
   prInfos,
+  onTogglePrReviewed,
   isTaskActive,
   isWaitingApproval,
   isTaskFailed,
@@ -74,6 +76,27 @@ export function ConversationTranscript({
     {activeTab === "diff" &&
       prInfos?.map((prInfo) => (
         <div className="pr-info-card" key={prInfo.url}>
+          {/* Sibling to the link, not nested inside it -- same reasoning as
+              the diff toggle just below: a button inside an <a> either
+              fires both on every tap or (depending on the browser) swallows
+              the link entirely. */}
+          <button
+            type="button"
+            className={
+              prInfo.is_reviewed
+                ? "icon-button pr-info-card-reviewed-toggle checked"
+                : "icon-button pr-info-card-reviewed-toggle"
+            }
+            onClick={() => onTogglePrReviewed(prInfo.url, !prInfo.is_reviewed)}
+            title={prInfo.is_reviewed ? "확인함" : "확인 안 함"}
+            aria-label={prInfo.is_reviewed ? "확인함" : "확인 안 함"}
+          >
+            {prInfo.is_reviewed && (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            )}
+          </button>
           <a href={prInfo.url} target="_blank" rel="noreferrer" className="pr-info-card-link">
             <div className="pr-info-card-header">
               <span
