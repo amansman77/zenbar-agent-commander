@@ -393,7 +393,20 @@ class TaskOrchestrator:
             runtime_session_id=session.session_id,
             effective_model=session.effective_model or refreshed.model,
         )
-        if not adapter.stream_in_background:
+        # Unlike start_task/retry_task (which this mirrors), this call was
+        # missing the stream_in_background branch entirely -- a follow-up
+        # message on a completed/failed/stopped task always mints a brand
+        # new session_id, so without spawning a fresh background consumer
+        # here, the new turn ran completely unmonitored for a background-
+        # streaming adapter (Codex App Server, Claude, Grok, Antigravity):
+        # no heartbeats, no completion/failure detection, nothing -- until
+        # some unrelated request happened to poll the task and trigger
+        # reconcile_and_ensure_task_runtime_stream. Caught live 2026-08-30:
+        # two follow-up turns sat "running" with zero events for ~45
+        # minutes because nothing was subscribed to their new session.
+        if adapter.stream_in_background:
+            self._start_background_consumer(task.id, session.session_id)
+        else:
             await self._consume_events(task.id, session.session_id)
         return refreshed
 
