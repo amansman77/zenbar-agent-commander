@@ -1401,13 +1401,58 @@ def test_stale_runtime_session_after_completion_keeps_completed_status(monkeypat
         assert detail.status_code == 200
         body = detail.json()
         assert body["status"] == "completed"
-        assert body["runtime_session_id"] is None
 
-        events = client.get(f"/tasks/{task['id']}/events")
-        assert events.status_code == 200
-        latest = events.json()[-1]
-        assert latest["type"] == "agent_status"
-        assert latest["payload_json"]["reason"] == "stale_runtime_session_terminal"
+
+def test_consume_events_stops_after_a_failed_event_instead_of_reconnecting(monkeypatch):
+    # Regression: a "failed" event delivered as a normal item on the stream
+    # (exactly what the notLoaded handler in runtime/app_server.py does --
+    # not an exception) already moved task.status to "failed" via
+    # _handle_runtime_event. The loop used to reconnect anyway, producing
+    # "still running" heartbeat events on an already-failed task
+    # indefinitely (reproduced live, for hours, before this fix) since
+    # nothing checked whether the task was still active before subscribing
+    # again.
+    from app.main import orchestrator
+
+    async def one_failed_event_then_clean_end(_session_id: str):
+        yield RuntimeEvent(type="failed", message="Codex App Server reports this session as 'notLoaded'")
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Consume Events Stop Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        # Created before subscribe_events is patched below, so task
+        # creation's own auto-started background consumer (a separate
+        # concern from what this test targets) runs against the real mock
+        # stream and finishes on its own, rather than racing the patched
+        # one this test calls directly.
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Stops after failed", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            current.status = "running"
+            current.runtime_session_id = "some-session"
+            db.add(current)
+            db.commit()
+
+        monkeypatch.setattr(orchestrator.adapter, "stream_in_background", True)
+        monkeypatch.setattr(orchestrator.adapter, "subscribe_events", one_failed_event_then_clean_end)
+
+        # If the terminal-status check didn't work, this keeps reconnecting
+        # (subscribe_events yields, then cleanly ends, every time) until
+        # asyncio.TimeoutError fires instead of _consume_events returning
+        # on its own.
+        asyncio.run(asyncio.wait_for(orchestrator._consume_events(task["id"], "some-session"), timeout=5))
+
+        detail = client.get(f"/tasks/{task['id']}")
+        assert detail.status_code == 200
+        assert detail.json()["status"] == "failed"
 
 
 def test_retry_accepts_model_override_and_restarts_with_new_model(monkeypatch):

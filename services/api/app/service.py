@@ -601,12 +601,33 @@ class TaskOrchestrator:
                 await self._handle_runtime_event(task_id, event)
             return
 
+        async def _task_still_active() -> bool:
+            with SessionLocal() as db:
+                current = get_task(db, task_id)
+            return current is not None and current.status in self.ACTIVE_TASK_STATUSES
+
         attempts = 0
         while True:
             try:
                 async for event in adapter.subscribe_events(session_id):
                     await self._handle_runtime_event(task_id, event)
-                # Re-subscribe if runtime stream ended unexpectedly.
+                # A "failed"/"completed"/"stopped" event delivered as a
+                # normal item on this same stream (e.g. the notLoaded
+                # handler in runtime/app_server.py) already moved
+                # task.status to a terminal one via _handle_runtime_event
+                # above -- reconnecting after that produced "still running"
+                # heartbeats on a task already reported failed, for as long
+                # as nobody happened to check (hours, reproduced live).
+                # Checked *after* the attempt (not before, unlike the
+                # exception branch's stale-session check below) so a loop
+                # entered against an already-terminal task -- e.g. cleaning
+                # up a leftover session_id after completion -- still gets
+                # its one subscribe attempt instead of exiting before ever
+                # trying.
+                if not await _task_still_active():
+                    return
+                # Re-subscribe if runtime stream ended unexpectedly while
+                # the task is still genuinely active.
                 attempts += 1
                 await self._handle_runtime_event(
                     task_id,
@@ -627,6 +648,8 @@ class TaskOrchestrator:
                 # heartbeat events indefinitely instead of actually ending.
                 if _is_stale_session_error(exc):
                     await self._handle_stale_runtime_session(task_id, attempts)
+                    return
+                if not await _task_still_active():
                     return
                 await self._handle_runtime_event(
                     task_id,
