@@ -211,7 +211,12 @@ export function ConversationTranscript({
               {isTaskFailed ? "⚠️ 작업이 실패했습니다." : "⏹ 작업이 중지되었습니다."}
               {failureReason ? ` ${failureReason}` : ""}
             </span>
-            {isTaskFailed && (
+            {/* can_retry (backend) allows both failed and stopped -- this
+                only checked isTaskFailed, so a stopped task showed the
+                "중지되었습니다" banner with no way back at all. Reported
+                live: stopping a task, then having no retry button to
+                resume it. */}
+            {(isTaskFailed || isTaskStopped) && (
               <button
                 onClick={() => retryTaskMutation.mutate()}
                 disabled={retryTaskMutation.isPending}
