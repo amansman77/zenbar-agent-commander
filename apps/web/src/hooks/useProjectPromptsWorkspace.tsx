@@ -11,6 +11,7 @@ import { ProjectPipelineBuilder } from "../components/prompts/ProjectPipelineBui
 import { ProjectPipelineList } from "../components/prompts/ProjectPipelineList";
 import { ProjectPromptForm } from "../components/prompts/ProjectPromptForm";
 import { ProjectPromptList } from "../components/prompts/ProjectPromptList";
+import { useGlobalPrompts } from "./useGlobalPrompts";
 import { useProjectPipelines } from "./useProjectPipelines";
 import { useProjectPrompts } from "./useProjectPrompts";
 
@@ -22,8 +23,9 @@ import { useProjectPrompts } from "./useProjectPrompts";
 export function useProjectPromptsWorkspace(project: ProjectSummary | null) {
   const queryClient = useQueryClient();
   const pm = useProjectPrompts(project);
+  const gp = useGlobalPrompts();
   const pl = useProjectPipelines(project);
-  const [tab, setTab] = useState<"prompts" | "pipelines">("prompts");
+  const [tab, setTab] = useState<"prompts" | "global" | "pipelines">("prompts");
   const [importOpen, setImportOpen] = useState(false);
 
   // Returned unwrapped: `.inline-actions` is inline-flex, so sibling
@@ -35,6 +37,13 @@ export function useProjectPromptsWorkspace(project: ProjectSummary | null) {
       <button type="button" className={tab === "prompts" ? undefined : "secondary"} onClick={() => setTab("prompts")}>
         프롬프트
       </button>
+      {/* Global prompts aren't scoped to any project (see GlobalPrompt's
+          own docstring) -- reused across every project instead of
+          copy-pasted into each one's own list, which is what the existing
+          가져오기 import dialog only ever did. */}
+      <button type="button" className={tab === "global" ? undefined : "secondary"} onClick={() => setTab("global")}>
+        전역 프롬프트
+      </button>
       <button type="button" className={tab === "pipelines" ? undefined : "secondary"} onClick={() => setTab("pipelines")}>
         파이프라인
       </button>
@@ -42,18 +51,52 @@ export function useProjectPromptsWorkspace(project: ProjectSummary | null) {
   );
 
   const addButton = (labels: { prompt: string; pipeline: string }) =>
-    tab === "prompts" ? (
-      <button type="button" onClick={pm.openCreateForm} disabled={!project}>
+    tab === "pipelines" ? (
+      <button type="button" onClick={pl.openBuilder} disabled={!project}>
+        {labels.pipeline}
+      </button>
+    ) : tab === "global" ? (
+      <button type="button" onClick={gp.openCreateForm}>
         {labels.prompt}
       </button>
     ) : (
-      <button type="button" onClick={pl.openBuilder} disabled={!project}>
-        {labels.pipeline}
+      <button type="button" onClick={pm.openCreateForm} disabled={!project}>
+        {labels.prompt}
       </button>
     );
 
   const list =
-    tab === "prompts" ? (
+    tab === "pipelines" ? (
+      <ProjectPipelineList
+        pipelines={pl.pipelinesQuery.data}
+        prompts={pm.promptsQuery.data}
+        isLoading={pl.pipelinesQuery.isLoading}
+        hasProject={Boolean(project)}
+        deletePending={pl.deleteMutation.isPending}
+        onEdit={pl.openEditor}
+        onDelete={(pipeline) => {
+          if (confirm(`"${pipeline.name}" 파이프라인을 삭제할까요?`)) {
+            pl.deleteMutation.mutate(pipeline.id);
+          }
+        }}
+      />
+    ) : tab === "global" ? (
+      <ProjectPromptList
+        prompts={gp.promptsQuery.data}
+        isLoading={gp.promptsQuery.isLoading}
+        hasProject
+        deletePending={gp.deleteMutation.isPending}
+        reorderPending={gp.reorderMutation.isPending}
+        onEdit={gp.openEditForm}
+        onDelete={(prompt) => {
+          if (confirm(`"${prompt.title}" 전역 프롬프트를 삭제할까요?`)) {
+            gp.deleteMutation.mutate(prompt.id);
+          }
+        }}
+        onMoveUp={(prompt) => gp.movePrompt(prompt.id, "up")}
+        onMoveDown={(prompt) => gp.movePrompt(prompt.id, "down")}
+      />
+    ) : (
       <ProjectPromptList
         prompts={pm.promptsQuery.data}
         isLoading={pm.promptsQuery.isLoading}
@@ -69,32 +112,19 @@ export function useProjectPromptsWorkspace(project: ProjectSummary | null) {
         onMoveUp={(prompt) => pm.movePrompt(prompt.id, "up")}
         onMoveDown={(prompt) => pm.movePrompt(prompt.id, "down")}
       />
-    ) : (
-      <ProjectPipelineList
-        pipelines={pl.pipelinesQuery.data}
-        prompts={pm.promptsQuery.data}
-        isLoading={pl.pipelinesQuery.isLoading}
-        hasProject={Boolean(project)}
-        deletePending={pl.deleteMutation.isPending}
-        onEdit={pl.openEditor}
-        onDelete={(pipeline) => {
-          if (confirm(`"${pipeline.name}" 파이프라인을 삭제할까요?`)) {
-            pl.deleteMutation.mutate(pipeline.id);
-          }
-        }}
-      />
     );
 
+  const activePromptEditor = tab === "global" ? gp : pm;
   const promptForm = (
     <ProjectPromptForm
-      title={pm.title}
-      setTitle={pm.setTitle}
-      content={pm.content}
-      setContent={pm.setContent}
-      onSubmit={pm.submitForm}
-      onCancel={pm.closeForm}
-      canSubmit={pm.canSubmit}
-      isSaving={pm.isSaving}
+      title={activePromptEditor.title}
+      setTitle={activePromptEditor.setTitle}
+      content={activePromptEditor.content}
+      setContent={activePromptEditor.setContent}
+      onSubmit={activePromptEditor.submitForm}
+      onCancel={activePromptEditor.closeForm}
+      canSubmit={activePromptEditor.canSubmit}
+      isSaving={activePromptEditor.isSaving}
     />
   );
 
@@ -133,6 +163,7 @@ export function useProjectPromptsWorkspace(project: ProjectSummary | null) {
 
   return {
     pm,
+    gp,
     pl,
     tab,
     tabButtons,
@@ -143,11 +174,18 @@ export function useProjectPromptsWorkspace(project: ProjectSummary | null) {
     importDialog,
     list,
     promptForm,
+    // Which editor's open/editing state actually backs the shared
+    // promptForm above -- pm's or gp's, whichever tab is active. Exposed
+    // so the modal wrapping promptForm opens/closes off the right one
+    // instead of always pm's (which would silently ignore edits made from
+    // the 전역 프롬프트 tab).
+    activePromptEditor,
     pipelineBuilder,
-    promptFormTitle: pm.editingPrompt ? "Edit prompt" : "New prompt",
+    promptFormTitle: activePromptEditor.editingPrompt ? "Edit prompt" : "New prompt",
     pipelineFormTitle: pl.editingPipeline ? "파이프라인 편집" : "새 파이프라인",
     closeAll: () => {
       pm.closeForm();
+      gp.closeForm();
       pl.closeBuilder();
       setImportOpen(false);
     },

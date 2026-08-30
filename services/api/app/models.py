@@ -51,6 +51,26 @@ class ProjectPrompt(Base):
     project: Mapped[Project] = relationship(back_populates="prompts")
 
 
+class GlobalPrompt(Base):
+    # A saved prompt not scoped to any project -- for something reused
+    # across every project (a "refactor this" template, a house style
+    # guide) that would otherwise need copy-pasting into each project's own
+    # ProjectPrompt list (the existing "가져오기" import dialog only ever
+    # copies, it doesn't share one source). Deliberately a separate table
+    # rather than making ProjectPrompt.project_id nullable: that would need
+    # a full table rebuild under SQLite (ALTER COLUMN can't drop a NOT NULL
+    # constraint), where a new table is a plain CREATE TABLE that
+    # Base.metadata.create_all handles for free, no migration required.
+    __tablename__ = "global_prompts"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    title: Mapped[str] = mapped_column(String(255))
+    content: Mapped[str] = mapped_column(Text)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class ProjectPipeline(Base):
     __tablename__ = "project_pipelines"
 

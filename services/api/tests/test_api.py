@@ -1786,6 +1786,68 @@ def test_project_prompts_reorder_404_for_unknown_project():
     ).status_code == 404
 
 
+def test_global_prompts_crud_flow():
+    # Not scoped to any project -- see models.GlobalPrompt's docstring for
+    # why. Cleans up everything it creates since /prompts is a single
+    # shared list with no per-test isolation key.
+    created = client.post("/prompts", json={"title": "Refactor", "content": "Refactor this for clarity."})
+    assert created.status_code == 201
+    prompt = created.json()
+    assert prompt["title"] == "Refactor"
+    assert "project_id" not in prompt
+
+    try:
+        listed = client.get("/prompts").json()
+        assert any(item["id"] == prompt["id"] for item in listed)
+
+        updated = client.patch(f"/prompts/{prompt['id']}", json={"content": "Refactor this for clarity and brevity."})
+        assert updated.status_code == 200
+        assert updated.json()["content"] == "Refactor this for clarity and brevity."
+
+        assert client.patch("/prompts/does-not-exist", json={"title": "X"}).status_code == 404
+        assert client.delete("/prompts/does-not-exist").status_code == 404
+    finally:
+        assert client.delete(f"/prompts/{prompt['id']}").status_code == 204
+
+    assert not any(item["id"] == prompt["id"] for item in client.get("/prompts").json())
+
+
+def test_global_prompts_reorder():
+    a = client.post("/prompts", json={"title": "GA", "content": "a"}).json()
+    b = client.post("/prompts", json={"title": "GB", "content": "b"}).json()
+    c = client.post("/prompts", json={"title": "GC", "content": "c"}).json()
+    try:
+        existing = {item["id"] for item in client.get("/prompts").json()}
+        # Reorder must be an exact permutation of *every* global prompt
+        # currently in the DB, not just this test's three -- mirror that by
+        # putting these three first, keeping any others (from other tests)
+        # after them in their current relative order.
+        others = [item["id"] for item in client.get("/prompts").json() if item["id"] not in {a["id"], b["id"], c["id"]}]
+        reordered = client.put("/prompts/order", json={"prompt_ids": [c["id"], a["id"], b["id"], *others]})
+        assert reordered.status_code == 200
+        ids_in_order = [item["id"] for item in reordered.json()]
+        assert ids_in_order.index(c["id"]) < ids_in_order.index(a["id"]) < ids_in_order.index(b["id"])
+        assert set(ids_in_order) == existing
+    finally:
+        for item_id in (a["id"], b["id"], c["id"]):
+            client.delete(f"/prompts/{item_id}")
+
+
+def test_global_prompts_reorder_rejects_partial_or_mismatched_lists():
+    a = client.post("/prompts", json={"title": "GX", "content": "x"}).json()
+    b = client.post("/prompts", json={"title": "GY", "content": "y"}).json()
+    try:
+        # Missing one of the currently-existing global prompts.
+        assert client.put("/prompts/order", json={"prompt_ids": [a["id"]]}).status_code == 400
+        # An id that isn't a real prompt at all.
+        assert client.put(
+            "/prompts/order", json={"prompt_ids": [a["id"], b["id"], "not-a-real-id"]}
+        ).status_code == 400
+    finally:
+        client.delete(f"/prompts/{a['id']}")
+        client.delete(f"/prompts/{b['id']}")
+
+
 def test_project_pipelines_crud_flow():
     project = _create_project_for_prompts()
     prompt_a = client.post(

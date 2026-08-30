@@ -24,6 +24,7 @@ export const fixtures: {
   conversations: Row[];
   conversationCounts: Record<string, number>;
   projectPrompts: Record<string, Row[]>;
+  globalPrompts: Row[];
 } = {
   projects: [],
   tasks: [],
@@ -32,7 +33,8 @@ export const fixtures: {
   taskDiff: { files_changed: [], summary: "", raw_diff: null },
   conversations: [],
   conversationCounts: {},
-  projectPrompts: {}
+  projectPrompts: {},
+  globalPrompts: []
 };
 
 export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -206,6 +208,25 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
   if (promptsMatch) {
     return new Response(JSON.stringify(fixtures.projectPrompts[promptsMatch[1]] ?? []), { status: 200 });
   }
+  // Global (not project-scoped) prompts -- checked after promptsMatch above,
+  // whose project-scoped regex already returned for that shape, so anything
+  // still ending in "/prompts" here is the unscoped /prompts endpoint.
+  if (url.endsWith("/prompts") && init?.method === "POST") {
+    const payload = JSON.parse(String(init.body));
+    const created = {
+      id: `global-prompt-${fixtures.globalPrompts.length + 1}`,
+      title: payload.title,
+      content: payload.content,
+      position: fixtures.globalPrompts.length + 1,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    fixtures.globalPrompts = [...fixtures.globalPrompts, created];
+    return new Response(JSON.stringify(created), { status: 201 });
+  }
+  if (url.endsWith("/prompts")) {
+    return new Response(JSON.stringify(fixtures.globalPrompts), { status: 200 });
+  }
   return new Response(JSON.stringify([]), { status: 200 });
 });
 
@@ -230,6 +251,7 @@ export function resetAppTest() {
   fixtures.conversations = [];
   fixtures.conversationCounts = {};
   fixtures.projectPrompts = {};
+  fixtures.globalPrompts = [];
   window.localStorage.clear();
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,

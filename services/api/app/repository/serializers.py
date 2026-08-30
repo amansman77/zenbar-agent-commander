@@ -13,6 +13,7 @@ import json
 from ..models import (
     Conversation,
     ConversationMessage,
+    GlobalPrompt,
     Project,
     ProjectPipeline,
     ProjectPrompt,
@@ -25,6 +26,7 @@ from ..schemas import (
     ConversationDetail,
     ConversationMessageItem,
     ConversationSummary,
+    GlobalPromptItem,
     PendingInteractionType,
     ProjectPipelineItem,
     ProjectPromptItem,
@@ -46,6 +48,10 @@ def serialize_project(project: Project) -> ProjectSummary:
 
 def serialize_project_prompt(prompt: ProjectPrompt) -> ProjectPromptItem:
     return ProjectPromptItem.model_validate(prompt, from_attributes=True)
+
+
+def serialize_global_prompt(prompt: GlobalPrompt) -> GlobalPromptItem:
+    return GlobalPromptItem.model_validate(prompt, from_attributes=True)
 
 
 def serialize_project_pipeline(pipeline: ProjectPipeline) -> ProjectPipelineItem:

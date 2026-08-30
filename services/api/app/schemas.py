@@ -83,6 +83,29 @@ class ReorderProjectPromptsRequest(BaseModel):
     prompt_ids: list[str]
 
 
+class GlobalPromptItem(BaseModel):
+    id: str
+    title: str
+    content: str
+    position: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class CreateGlobalPromptRequest(BaseModel):
+    title: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+
+
+class UpdateGlobalPromptRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1)
+    content: str | None = Field(default=None, min_length=1)
+
+
+class ReorderGlobalPromptsRequest(BaseModel):
+    prompt_ids: list[str]
+
+
 class ProjectPipelineItem(BaseModel):
     id: str
     project_id: str

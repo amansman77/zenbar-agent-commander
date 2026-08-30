@@ -24,7 +24,9 @@ export function ProjectPromptsScreen({
               Back
             </button>
             <h2 className="truncate" style={{ minWidth: 0 }}>
-              {project ? `${project.name} ${w.tab === "prompts" ? "프롬프트" : "파이프라인"}` : "Prompts"}
+              {project
+                ? `${project.name} ${w.tab === "prompts" ? "프롬프트" : w.tab === "global" ? "전역 프롬프트" : "파이프라인"}`
+                : "Prompts"}
             </h2>
           </div>
         </div>
@@ -42,7 +44,7 @@ export function ProjectPromptsScreen({
       </div>
       <div className="panel-scroll">{w.list}</div>
 
-      <Modal title={w.promptFormTitle} open={w.pm.formOpen} onClose={w.pm.closeForm}>
+      <Modal title={w.promptFormTitle} open={w.activePromptEditor.formOpen} onClose={w.activePromptEditor.closeForm}>
         {w.promptForm}
       </Modal>
 
@@ -71,14 +73,14 @@ export function ProjectPromptsModal({
   // A modal can't usefully nest another modal, so unlike the mobile screen
   // the editors (and the import dialog) replace the list inline here and
   // the modal's own title doubles as the editor's title.
-  const modalTitle = w.pm.formOpen
+  const modalTitle = w.activePromptEditor.formOpen
     ? w.promptFormTitle
     : w.pl.builderOpen
       ? w.pipelineFormTitle
       : w.importOpen
         ? "다른 프로젝트에서 가져오기"
         : project
-          ? `${project.name} ${w.tab === "prompts" ? "Prompts" : "Pipelines"}`
+          ? `${project.name} ${w.tab === "prompts" ? "Prompts" : w.tab === "global" ? "전역 프롬프트" : "Pipelines"}`
           : "Prompts";
 
   return (
@@ -90,7 +92,7 @@ export function ProjectPromptsModal({
         onClose();
       }}
     >
-      {w.pm.formOpen ? (
+      {w.activePromptEditor.formOpen ? (
         w.promptForm
       ) : w.pl.builderOpen ? (
         w.pipelineBuilder

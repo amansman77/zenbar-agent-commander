@@ -8,6 +8,7 @@ singletons live in `app/runtime_registry.py`.
 Route map:
     routers/projects.py         /projects, /projects/discover, /projects/{id}/tasks
     routers/project_prompts.py  /projects/{id}/prompts, /projects/{id}/pipelines
+    routers/global_prompts.py   /prompts (not scoped to a project)
     routers/conversations.py    /conversations...
     routers/tasks.py            /tasks..., /sessions/{id}/turns
     routers/runtime_info.py     /runtime/engines|models|profiles|skills|usage
@@ -22,7 +23,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .db import Base, ensure_schema, engine
-from .routers import conversations, fs, project_prompts, projects, runtime_info, tasks
+from .routers import conversations, fs, global_prompts, project_prompts, projects, runtime_info, tasks
 from .runtime_registry import managed_app_server, orchestrator
 from .security import allow_credentials_for, cors_origins, verify_api_access
 
@@ -60,6 +61,7 @@ app.add_middleware(
 
 app.include_router(projects.router)
 app.include_router(project_prompts.router)
+app.include_router(global_prompts.router)
 app.include_router(conversations.router)
 app.include_router(tasks.router)
 app.include_router(runtime_info.router)

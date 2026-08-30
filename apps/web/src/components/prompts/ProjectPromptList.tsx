@@ -1,10 +1,14 @@
-// List of a project's saved prompts, with select/edit/delete.
+// List of saved prompts, with select/edit/delete. Reused for both a
+// project's own prompts and the global (not project-scoped) library --
+// generic over any item shaped like one, so it doesn't care which.
 
-import type {
-  ProjectPrompt
-} from "@zenbar/shared";
+export type PromptListItem = {
+  id: string;
+  title: string;
+  content: string;
+};
 
-export function ProjectPromptList({
+export function ProjectPromptList<T extends PromptListItem>({
   prompts,
   isLoading,
   hasProject,
@@ -15,15 +19,17 @@ export function ProjectPromptList({
   onMoveUp,
   onMoveDown,
 }: {
-  prompts: ProjectPrompt[] | undefined;
+  prompts: T[] | undefined;
   isLoading: boolean;
+  // Global prompts don't need a project selected at all -- callers for
+  // that list just always pass true here.
   hasProject: boolean;
   deletePending: boolean;
   reorderPending: boolean;
-  onEdit: (prompt: ProjectPrompt) => void;
-  onDelete: (prompt: ProjectPrompt) => void;
-  onMoveUp: (prompt: ProjectPrompt) => void;
-  onMoveDown: (prompt: ProjectPrompt) => void;
+  onEdit: (prompt: T) => void;
+  onDelete: (prompt: T) => void;
+  onMoveUp: (prompt: T) => void;
+  onMoveDown: (prompt: T) => void;
 }) {
   if (!hasProject) {
     return <p className="empty-state">프로젝트를 먼저 선택하세요.</p>;

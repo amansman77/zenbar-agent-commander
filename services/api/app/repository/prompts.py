@@ -12,10 +12,12 @@ import json
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import ProjectPipeline, ProjectPrompt
+from ..models import GlobalPrompt, ProjectPipeline, ProjectPrompt
 from ..schemas import (
+    CreateGlobalPromptRequest,
     CreateProjectPipelineRequest,
     CreateProjectPromptRequest,
+    UpdateGlobalPromptRequest,
     UpdateProjectPipelineRequest,
     UpdateProjectPromptRequest,
 )
@@ -78,6 +80,54 @@ def reorder_project_prompts(db: Session, project_id: str, prompt_ids: list[str])
             db.add(prompt)
     db.commit()
     return list_project_prompts(db, project_id)
+
+
+def list_global_prompts(db: Session) -> list[GlobalPrompt]:
+    stmt = select(GlobalPrompt).order_by(GlobalPrompt.position, GlobalPrompt.created_at)
+    return list(db.scalars(stmt))
+
+
+def get_global_prompt(db: Session, prompt_id: str) -> GlobalPrompt | None:
+    return db.get(GlobalPrompt, prompt_id)
+
+
+def create_global_prompt(db: Session, payload: CreateGlobalPromptRequest) -> GlobalPrompt:
+    next_position = db.scalar(select(func.max(GlobalPrompt.position)))
+    prompt = GlobalPrompt(title=payload.title, content=payload.content, position=(next_position or 0) + 1)
+    db.add(prompt)
+    db.commit()
+    db.refresh(prompt)
+    return prompt
+
+
+def update_global_prompt(db: Session, prompt: GlobalPrompt, payload: UpdateGlobalPromptRequest) -> GlobalPrompt:
+    if payload.title is not None:
+        prompt.title = payload.title
+    if payload.content is not None:
+        prompt.content = payload.content
+    db.add(prompt)
+    db.commit()
+    db.refresh(prompt)
+    return prompt
+
+
+def delete_global_prompt(db: Session, prompt_id: str) -> None:
+    prompt = db.get(GlobalPrompt, prompt_id)
+    if prompt:
+        db.delete(prompt)
+        db.commit()
+
+
+def reorder_global_prompts(db: Session, prompt_ids: list[str]) -> list[GlobalPrompt]:
+    # Router validates prompt_ids is exactly the current global prompt set
+    # before calling this -- same contract as reorder_project_prompts.
+    for index, prompt_id in enumerate(prompt_ids):
+        prompt = db.get(GlobalPrompt, prompt_id)
+        if prompt is not None:
+            prompt.position = index
+            db.add(prompt)
+    db.commit()
+    return list_global_prompts(db)
 
 
 def list_project_pipelines(db: Session, project_id: str) -> list[ProjectPipeline]:

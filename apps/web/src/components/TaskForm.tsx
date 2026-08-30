@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import type {
   CreateTaskRequest,
   ExecutionMode,
+  GlobalPrompt,
   ProjectPrompt,
   ProjectSummary,
   ReasoningEffort,
@@ -77,7 +78,28 @@ export function TaskForm({
     enabled: Boolean(project),
     staleTime: 60_000,
   });
-  const savedPrompts: ProjectPrompt[] = savedPromptsQuery.data ?? [];
+  const globalPromptsQuery = useQuery({
+    queryKey: ["global-prompts"],
+    queryFn: api.listGlobalPrompts,
+    staleTime: 60_000,
+  });
+  // Global prompts (e.g. a reusable "refactor this" template) first, then
+  // this project's own -- reused-everywhere prompts are the ones worth
+  // seeing before scrolling past a long project-specific list. Every
+  // prompt in this dropdown is looked up by id from one of these two
+  // lists, and the two never collide (separate tables, both UUIDs), so a
+  // plain concatenation is enough.
+  const savedPrompts: (ProjectPrompt | GlobalPrompt)[] = [
+    ...(globalPromptsQuery.data ?? []),
+    ...(savedPromptsQuery.data ?? []),
+  ];
+  // Membership check by id rather than a ProjectPrompt/GlobalPrompt type
+  // guard: GlobalPrompt's fields are a structural subset of ProjectPrompt's
+  // (everything but project_id), so a `prompt is GlobalPrompt` predicate
+  // narrows the *other* branch to `never` (TypeScript's Exclude sees
+  // ProjectPrompt as assignable to GlobalPrompt and drops it too) --
+  // pointless anyway since both shapes already have the .title this is for.
+  const globalPromptIds = new Set((globalPromptsQuery.data ?? []).map((item) => item.id));
 
   // effectiveEngine also changes on *mount* (null while /runtime/engines is
   // in flight, then the real default) -- not a user-driven engine switch,
@@ -254,7 +276,7 @@ export function TaskForm({
                     <option value="">불러오기...</option>
                     {savedPrompts.map((item) => (
                       <option key={item.id} value={item.id}>
-                        {item.title}
+                        {globalPromptIds.has(item.id) ? `🌐 ${item.title}` : item.title}
                       </option>
                     ))}
                   </select>
@@ -558,7 +580,7 @@ export function TaskForm({
             <option value="">불러오기...</option>
             {savedPrompts.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.title}
+                {globalPromptIds.has(item.id) ? `🌐 ${item.title}` : item.title}
               </option>
             ))}
           </select>

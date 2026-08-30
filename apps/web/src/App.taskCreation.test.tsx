@@ -289,4 +289,60 @@ describe("App", () => {
     });
     expect(await screen.findByText("Triage a bug")).toBeInTheDocument();
   });
+
+  it("offers global prompts alongside a project's own in the saved-prompt picker", async () => {
+    // Global prompts (not scoped to any project) are meant to save
+    // copy-pasting the same reusable prompt (e.g. "refactor this") into
+    // every project's own list -- they should show up in every project's
+    // task-creation dropdown without the user doing anything per-project.
+    fixtures.projects = [
+      {
+        id: "project-1",
+        name: "agent-commander",
+        repo_path: "/Users/hosung/Workspace/zenbar/agent-commander",
+        default_branch: "main",
+        created_at: new Date().toISOString()
+      }
+    ];
+    fixtures.projectPrompts = {
+      "project-1": [
+        {
+          id: "prompt-own-1",
+          project_id: "project-1",
+          title: "Project-specific",
+          content: "Only relevant to this project.",
+          position: 1,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }
+      ]
+    };
+    fixtures.globalPrompts = [
+      {
+        id: "global-1",
+        title: "Refactor",
+        content: "Refactor this for clarity and remove duplication.",
+        position: 1,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }
+    ];
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: /agent-commander/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "새 태스크" }));
+
+    const picker = await screen.findByLabelText("저장된 프롬프트");
+    const optionLabels = within(picker)
+      .getAllByRole("option")
+      .map((option) => option.textContent);
+    expect(optionLabels).toContain("🌐 Refactor");
+    expect(optionLabels).toContain("Project-specific");
+
+    fireEvent.change(picker, { target: { value: "global-1" } });
+    expect(screen.getByPlaceholderText("Analyze the repository and fix canonical tag generation.")).toHaveValue(
+      "Refactor this for clarity and remove duplication."
+    );
+  });
 });

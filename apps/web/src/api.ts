@@ -5,6 +5,7 @@ import type {
   ConversationDetail,
   ConversationSummary,
   CreateConversationRequest,
+  CreateGlobalPromptRequest,
   CreateProjectPipelineRequest,
   CreateProjectPromptRequest,
   CreateProjectRequest,
@@ -12,6 +13,7 @@ import type {
   DiscoverProjectResponse,
   FsBrowseResponse,
   FollowupTurnRequest,
+  GlobalPrompt,
   ListRuntimeEnginesResponse,
   ListRuntimeModelsResponse,
   ListRuntimeProfilesResponse,
@@ -23,6 +25,7 @@ import type {
   ProjectPrompt,
   ProjectSummary,
   PushTaskRequest,
+  ReorderGlobalPromptsRequest,
   ReorderProjectPromptsRequest,
   RespondTaskRequest,
   SetPrReviewedRequest,
@@ -31,6 +34,7 @@ import type {
   TaskEvent,
   TaskGitActionResult,
   TaskSummary,
+  UpdateGlobalPromptRequest,
   UpdateProjectPipelineRequest,
   UpdateProjectPromptRequest
 } from "@zenbar/shared";
@@ -149,6 +153,26 @@ export const api = {
     }),
   reorderProjectPrompts: (projectId: string, payload: ReorderProjectPromptsRequest) =>
     request<ProjectPrompt[]>(`/projects/${projectId}/prompts/order`, {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    }),
+  listGlobalPrompts: () => request<GlobalPrompt[]>("/prompts"),
+  createGlobalPrompt: (payload: CreateGlobalPromptRequest) =>
+    request<GlobalPrompt>("/prompts", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  updateGlobalPrompt: (promptId: string, payload: UpdateGlobalPromptRequest) =>
+    request<GlobalPrompt>(`/prompts/${promptId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  deleteGlobalPrompt: (promptId: string) =>
+    request<void>(`/prompts/${promptId}`, {
+      method: "DELETE"
+    }),
+  reorderGlobalPrompts: (payload: ReorderGlobalPromptsRequest) =>
+    request<GlobalPrompt[]>("/prompts/order", {
       method: "PUT",
       body: JSON.stringify(payload)
     }),

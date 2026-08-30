@@ -7,6 +7,7 @@ import type {
   AddConversationMessageRequest,
   ConversationDetail,
   ConversationMessageItem,
+  GlobalPrompt,
   PrInfo,
   ProjectPipeline,
   ProjectPrompt,
@@ -88,7 +89,15 @@ export function ConversationDetailScreen({
     enabled: Boolean(projectId),
     staleTime: 60_000,
   });
-  const savedPrompts: ProjectPrompt[] = promptsData ?? [];
+  const { data: globalPromptsData } = useQuery({
+    queryKey: ["global-prompts"],
+    queryFn: api.listGlobalPrompts,
+    staleTime: 60_000,
+  });
+  // Same merge as TaskForm's own saved-prompt picker (see its comment) --
+  // global prompts first, then this conversation's project's own.
+  const savedPrompts: (ProjectPrompt | GlobalPrompt)[] = [...(globalPromptsData ?? []), ...(promptsData ?? [])];
+  const globalPromptIds = new Set((globalPromptsData ?? []).map((item) => item.id));
 
   const { data: pipelinesData } = useQuery({
     queryKey: ["project-pipelines", projectId],
@@ -623,7 +632,9 @@ export function ConversationDetailScreen({
                       }}
                       className="compose-dropdown-item"
                     >
-                      <strong style={{ display: "block" }}>{item.title}</strong>
+                      <strong style={{ display: "block" }}>
+                        {globalPromptIds.has(item.id) ? `🌐 ${item.title}` : item.title}
+                      </strong>
                       <span
                         className="item-secondary truncate"
                         style={{ display: "block", fontSize: "0.75rem" }}

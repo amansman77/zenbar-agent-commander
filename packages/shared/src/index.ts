@@ -259,6 +259,32 @@ export interface ReorderProjectPromptsRequest {
   prompt_ids: string[];
 }
 
+// Not scoped to any project -- see the backend's GlobalPrompt model
+// docstring for why this is a separate shape rather than ProjectPrompt with
+// a nullable project_id.
+export interface GlobalPrompt {
+  id: string;
+  title: string;
+  content: string;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateGlobalPromptRequest {
+  title: string;
+  content: string;
+}
+
+export interface UpdateGlobalPromptRequest {
+  title?: string;
+  content?: string;
+}
+
+export interface ReorderGlobalPromptsRequest {
+  prompt_ids: string[];
+}
+
 export interface ProjectPipeline {
   id: string;
   project_id: string;
