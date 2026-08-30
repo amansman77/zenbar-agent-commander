@@ -1175,6 +1175,58 @@ def test_ensure_runtime_stream_noops_without_running_loop(monkeypatch):
     assert calls == []
 
 
+def test_followup_task_starts_background_consumer_for_streaming_adapters(monkeypatch):
+    """followup_task mints a brand-new session_id on every call, so -- like
+    start_task and retry_task, which it otherwise mirrors -- it must spawn a
+    fresh background consumer for adapters that stream out-of-band instead of
+    inline. This branch was missing entirely until 2026-08-30: a follow-up
+    message on a completed/failed/stopped task ran its new turn with nothing
+    subscribed to it, so it just sat "running" until an unrelated request
+    happened to poll the task and trigger reconcile_and_ensure_task_runtime_stream.
+    Caught live: two follow-ups sat silent for ~45 minutes before anyone
+    noticed the sessions had actually gone stale.
+    """
+    from app.main import orchestrator
+    from app.schemas import RuntimeSession
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Followup Stream", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Followup", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            current.status = "completed"
+            db.add(current)
+            db.commit()
+
+        calls: list[tuple[str, str]] = []
+
+        def fake_start_background_consumer(task_id: str, session_id: str, loop=None) -> None:
+            calls.append((task_id, session_id))
+
+        async def fake_followup_task(session_id, content, selected_skill=None, model=None):
+            return RuntimeSession(session_id="new-session-id", effective_model="default")
+
+        monkeypatch.setattr(orchestrator.adapter, "stream_in_background", True)
+        monkeypatch.setattr(orchestrator.adapter, "followup_task", fake_followup_task)
+        monkeypatch.setattr(orchestrator, "_start_background_consumer", fake_start_background_consumer)
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            asyncio.run(orchestrator.followup_task(db, current, "Keep going"))
+
+        assert calls == [(task["id"], "new-session-id")]
+
+
 def test_project_soft_delete_hides_project_and_blocks_project_task_endpoints():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
