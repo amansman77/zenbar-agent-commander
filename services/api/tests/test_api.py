@@ -1507,6 +1507,71 @@ def test_consume_events_stops_after_a_failed_event_instead_of_reconnecting(monke
         assert detail.json()["status"] == "failed"
 
 
+def test_consume_events_auto_recovers_from_stuck_heartbeat_only_session(monkeypatch):
+    # codex-rs has no idle-timeout/reaper of its own for a backgrounded
+    # shell/PTY process (unified_exec) that nobody polls again -- confirmed
+    # by reading process_manager.rs: only explicit terminate_process()/
+    # terminate_all_processes(), no automatic one. When that happens the
+    # session keeps reporting itself alive forever while producing nothing
+    # but idle_heartbeat events. Reproduced live 2026-08-30/31: two tasks
+    # sat "running" for 30-90 minutes on exactly this before anyone
+    # noticed. _consume_events should detect a run of heartbeat-only events
+    # past the configured idle threshold and self-heal (stop + retry with a
+    # fresh session) instead of looping forever.
+    from app.main import orchestrator
+
+    async def heartbeats_forever(_session_id: str):
+        while True:
+            await asyncio.sleep(0.01)
+            yield RuntimeEvent(
+                type="agent_status",
+                message="Runtime is still running (no new output yet).",
+                payload={"reason": "idle_heartbeat"},
+            )
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Stuck Heartbeat Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Stuck heartbeat", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            current.status = "running"
+            current.runtime_session_id = "stuck-session"
+            db.add(current)
+            db.commit()
+
+        monkeypatch.setattr(orchestrator.adapter, "stream_in_background", True)
+        monkeypatch.setattr(orchestrator.adapter, "subscribe_events", heartbeats_forever)
+        monkeypatch.setattr(orchestrator, "_stuck_session_idle_seconds", 0.05)
+
+        retried: list[str] = []
+
+        async def fake_retry_task(db, task):
+            from app.repository import set_task_status
+
+            retried.append(task.id)
+            return set_task_status(db, task, "starting", runtime_session_id="fresh-session")
+
+        monkeypatch.setattr(orchestrator, "retry_task", fake_retry_task)
+
+        asyncio.run(asyncio.wait_for(orchestrator._consume_events(task["id"], "stuck-session"), timeout=5))
+
+        assert retried == [task["id"]]
+        events = client.get(f"/tasks/{task['id']}/events").json()
+        assert any(
+            event["payload_json"] and event["payload_json"].get("reason") == "auto_recovered_stuck_session"
+            for event in events
+        )
+
+
 def test_retry_accepts_model_override_and_restarts_with_new_model(monkeypatch):
     from app.main import model_catalog, orchestrator
 
