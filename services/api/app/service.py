@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import time
 from collections.abc import AsyncIterator
 
 from sqlalchemy import select
@@ -49,6 +51,8 @@ from .schemas import (
 from .streaming import broker
 from .workspace import prepare_workspace
 
+logger = logging.getLogger(__name__)
+
 
 def _is_stale_session_error(exc: Exception) -> bool:
     # Two different shapes mean the same thing -- "this session doesn't
@@ -86,6 +90,18 @@ class TaskOrchestrator:
         self.adapter = adapters[default_engine]
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._stream_tasks: dict[str, asyncio.Task[None]] = {}
+        # codex-rs has no watchdog of its own for a backgrounded shell/PTY
+        # process (unified_exec) that nobody ever polls again -- confirmed by
+        # reading process_manager.rs, 2026-08-31: it only exposes explicit
+        # terminate_process()/terminate_all_processes(), no idle reaper. When
+        # that happens the session keeps reporting itself alive forever while
+        # producing nothing but idle_heartbeat events. Mitigated here instead
+        # of in the fork, since it's a narrower, testable, control-plane-side
+        # fix rather than surgery on an unfamiliar process manager that also
+        # has to keep working for legitimate long-lived background processes.
+        self._stuck_session_idle_seconds = float(
+            os.getenv("ZENBAR_STUCK_SESSION_IDLE_SECONDS", str(15 * 60))
+        )
 
     def _adapter_for(self, task: Task | None) -> RuntimeAdapter:
         engine = (task.engine if task is not None else None) or self.default_engine
@@ -620,9 +636,36 @@ class TaskOrchestrator:
             return current is not None and current.status in self.ACTIVE_TASK_STATUSES
 
         attempts = 0
+        # See the comment on self._stuck_session_idle_seconds: codex-rs
+        # itself never reaps a backgrounded process nobody polls again, so a
+        # session can report itself "alive" forever while producing nothing
+        # but idle_heartbeat events. A task that's genuinely working -- even
+        # on a slow shell command -- keeps producing other event types
+        # (command_executed/outputDelta chunks, plan updates, ...) in
+        # between heartbeats, which is what makes "only heartbeats for this
+        # long" a reliable stuck signal rather than a false positive on a
+        # slow-but-live command. Tracked across reconnects (not reset inside
+        # the try block below), since a reconnect alone doesn't mean the
+        # underlying session became any less stuck.
+        last_real_event_at = time.monotonic()
         while True:
             try:
                 async for event in adapter.subscribe_events(session_id):
+                    is_idle_heartbeat = (
+                        event.type == "agent_status" and (event.payload or {}).get("reason") == "idle_heartbeat"
+                    )
+                    if is_idle_heartbeat:
+                        idle_for = time.monotonic() - last_real_event_at
+                        if idle_for >= self._stuck_session_idle_seconds:
+                            if await self._auto_recover_stuck_session(task_id, idle_for):
+                                return
+                            # Recovery didn't apply (task no longer active,
+                            # or lost its session in the meantime) -- avoid
+                            # re-checking on every single heartbeat until it
+                            # does.
+                            last_real_event_at = time.monotonic()
+                    else:
+                        last_real_event_at = time.monotonic()
                     await self._handle_runtime_event(task_id, event)
                 # A "failed"/"completed"/"stopped" event delivered as a
                 # normal item on this same stream (e.g. the notLoaded
@@ -673,6 +716,87 @@ class TaskOrchestrator:
                     ),
                 )
             await asyncio.sleep(min(0.5 * attempts, 5.0))
+
+    async def _auto_recover_stuck_session(self, task_id: str, idle_seconds: float) -> bool:
+        """Self-heals a task whose session has gone quiet for too long with
+        zero real output -- see self._stuck_session_idle_seconds' comment for
+        why this lives here rather than as a fix in codex-rs. Stops the
+        wedged session and retries with a fresh one, the same recovery this
+        mirrors from being done by hand (2026-08-30: two tasks sat "running"
+        for 30-90 minutes on a hung backgrounded process before anyone
+        noticed). Returns True if a fresh consumer now owns task_id's stream
+        (the caller must stop consuming the old one either way), False if
+        recovery didn't apply (task already left the active states, or lost
+        its session) -- the caller keeps consuming the current stream then.
+        """
+        with SessionLocal() as db:
+            task = get_task(db, task_id)
+            if task is None or task.status not in self.ACTIVE_TASK_STATUSES or not task.runtime_session_id:
+                return False
+            append_event(
+                db,
+                task,
+                RuntimeEvent(
+                    type="agent_status",
+                    message=(
+                        f"No real output for over {int(idle_seconds // 60)} minute(s) -- "
+                        "assuming the runtime session is stuck (likely a backgrounded process "
+                        "the App Server spawned that nobody is polling anymore). "
+                        "Stopping and retrying automatically."
+                    ),
+                    payload={"reason": "auto_recovered_stuck_session", "idle_seconds": int(idle_seconds)},
+                ),
+            )
+        # This coroutine is itself the background consumer currently
+        # registered under _stream_tasks[task_id]. retry_task (below) will
+        # try to register a fresh one under that same key via
+        # ensure_runtime_stream/_start_background_consumer, whose "already
+        # have one" guard would otherwise see this not-yet-returned task and
+        # skip spawning the new one -- so it has to be cleared first.
+        self._stream_tasks.pop(task_id, None)
+
+        async def _recover() -> None:
+            with SessionLocal() as db:
+                task = get_task(db, task_id)
+                if task is None:
+                    return
+                try:
+                    await self.stop_task(db, task)
+                except Exception:
+                    # Matches a known gap: the App Server's interrupt RPC can
+                    # itself fail ("no active turn to interrupt") when the
+                    # turn is this wedged. Proceed regardless, same as the
+                    # manual recovery this mirrors.
+                    pass
+                task = get_task(db, task_id)
+                if task is None:
+                    return
+                # stop_task doesn't clear runtime_session_id itself (that
+                # normally only happens once the App Server pushes its own
+                # stopped/failed notification through the event stream) --
+                # but that stream is exactly what we just stopped consuming,
+                # and the stuck thread may never actually deliver one. Force
+                # it explicitly so retry_task below takes the guaranteed-
+                # clean _restart_with_fresh_session path (a brand new
+                # thread/turn) instead of reusing the same possibly-still-
+                # wedged thread_id via adapter.retry_task's plain turn/start.
+                if task.runtime_session_id:
+                    task = clear_runtime_session(db, task)
+                await self.retry_task(db, task)
+
+        try:
+            # This is an unsupervised background action -- nobody's around to
+            # notice if the very RPCs meant to recover a wedged session hang
+            # too. Live evidence from the incident this mirrors says
+            # turn/interrupt responds promptly even when the turn itself is
+            # stuck, but that's not a guarantee, so bound it rather than risk
+            # trading "stuck producing heartbeats" for "stuck silently with
+            # no heartbeats at all".
+            await asyncio.wait_for(_recover(), timeout=60.0)
+            return True
+        except Exception:
+            logger.exception("Auto-recovery from stuck runtime session failed for task %s", task_id)
+            return False
 
     async def _handle_stale_runtime_session(self, task_id: str, attempts: int) -> None:
         with SessionLocal() as db:
