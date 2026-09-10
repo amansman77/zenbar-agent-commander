@@ -51,30 +51,13 @@ from .schemas import (
 from .streaming import broker
 from .workspace import prepare_workspace
 
+from .pipeline_runner import advance_pipeline_if_needed
+from .stale_session import is_stale_session_error
+
 logger = logging.getLogger(__name__)
 
-
-def _is_stale_session_error(exc: Exception) -> bool:
-    # Two different shapes mean the same thing -- "this session doesn't
-    # exist anymore, clear it and start fresh" -- but come from different
-    # layers. Every adapter's own local _require_session raises
-    # "Unknown <X> session" when OUR process has no record of the session
-    # at all (e.g. right after an API restart, before Codex's App Server
-    # reconnects). Codex specifically can *also* still have a locally-valid
-    # session record while the actual remote App Server process has quietly
-    # dropped that thread (evicted, or hiccuped without a full crash) --
-    # that surfaces as the App Server's own RPC error message, verbatim,
-    # which is "thread not found: <id>", not "Unknown ... session". Missing
-    # this second shape meant retry_task re-raised instead of self-healing
-    # (a real 409 a user hit), and _consume_events' background loop treated
-    # it as a transient stream hiccup and reconnected forever instead of
-    # ending the loop -- which is why a task already marked "failed" kept
-    # producing "still running" heartbeat events indefinitely. Reproduced
-    # live via the exception logging added to safe_runtime_error_detail.
-    exc_msg = str(exc)
-    if exc_msg.startswith("Unknown ") and exc_msg.endswith(" session"):
-        return True
-    return exc_msg.startswith("thread not found:")
+# Back-compat alias
+_is_stale_session_error = is_stale_session_error
 
 
 class TaskOrchestrator:
@@ -425,6 +408,33 @@ class TaskOrchestrator:
         else:
             await self._consume_events(task.id, session.session_id)
         return refreshed
+
+    async def followup_or_restart_task(
+        self,
+        db: Session,
+        task: Task,
+        project: Project,
+        content: str,
+        selected_skill: str | None = None,
+        model: str | None = None,
+    ) -> Task:
+        """Follows up on a completed/stopped/failed task, restarting the session if expired.
+
+        If the underlying runtime session is stale (e.g. after an API restart or
+        App Server eviction), automatically clears the dead session and starts
+        a fresh session in the existing workspace with the conversation history.
+        """
+        try:
+            return await self.followup_task(
+                db, task, content, selected_skill=selected_skill, model=model
+            )
+        except Exception as exc:
+            if not is_stale_session_error(exc):
+                raise
+            # Session expired — restart the engine in the same task workspace
+            db.expire_all()
+            refreshed = self._require_task(db, task.id, "restarting expired session for follow-up")
+            return await self.start_task(db, refreshed, project, selected_skill=selected_skill)
 
     async def refresh_diff(self, db: Session, task: Task) -> Task:
         runtime_diff: TaskDiff | None = None
@@ -853,83 +863,7 @@ class TaskOrchestrator:
         await broker.publish(task_id, payload)
 
     async def _advance_pipeline_if_needed(self, db: Session, task: Task) -> Task:
-        """Prompt pipelines run fully automatically (no per-step human
-        approval, per the chosen design): once a pipeline task's current
-        step is done, advance to the next one immediately as a follow-up
-        turn in the same session. A step failing (status becomes "failed")
-        is simply not handled here, so the pipeline naturally stops -- there
-        is no "resume" path, matching "실패하면 파이프라인 중단".
-
-        A step being "done" means either waiting_result_approval (the
-        runtime paused mid-turn to ask permission for a specific file edit
-        or command -- see item/fileChange/requestApproval in runtime/app_server.py) or
-        already completed outright. Both are real, common outcomes: the App
-        Server only requests a mid-turn approval when its own approval
-        policy decides one particular action needs it, which most turns
-        never trigger -- confirmed live against a real Codex pipeline task
-        that ran a full turn and reported turn/completed without a single
-        approval request anywhere in its ~450 events. The pipeline used to
-        only advance on waiting_result_approval, so real tasks that never
-        happened to hit that state (the common case) silently stalled after
-        step 1, without ever explicitly failing.
-        """
-        if not task.pipeline_id or task.status not in {"waiting_result_approval", "completed"}:
-            return task
-        steps = json.loads(task.pipeline_steps_json or "[]")
-        current_index = task.pipeline_step_index if task.pipeline_step_index is not None else 0
-        next_index = current_index + 1
-
-        if task.status == "waiting_result_approval":
-            try:
-                task = await self.approve_task(db, task)
-            except Exception as exc:
-                append_event(
-                    db,
-                    task,
-                    RuntimeEvent(
-                        type="failed",
-                        message=f"Pipeline '{task.pipeline_name}' stopped: could not auto-approve step {current_index + 1}/{len(steps)}.",
-                        payload={"reason": "pipeline_auto_approve_failed", "error": str(exc)[:500]},
-                    ),
-                )
-                return self._require_task(db, task.id, "pipeline auto-approve failure")
-            # approve_task's own event cascade can itself route back through
-            # this very method for a nested "completed" event before this
-            # call resumes (confirmed live: MockRuntimeAdapter.approve_task
-            # appends its own "completed" event, and a real Codex approval
-            # grant can just as well let the turn finish outright) -- if
-            # that nested call already advanced past this step, sending the
-            # next step's prompt again here would duplicate it.
-            task = self._require_task(db, task.id, "pipeline re-check after approval")
-            already_advanced = (task.pipeline_step_index if task.pipeline_step_index is not None else 0) != current_index
-            if already_advanced:
-                return task
-        # else: already "completed" -- the turn simply finished without the
-        # runtime ever pausing for a per-action approval, so there is
-        # nothing to grant; go straight to advancing.
-
-        if next_index >= len(steps):
-            # Last step is done (approved or already completed) -- pipeline
-            # finished successfully.
-            return task
-
-        next_step = steps[next_index]
-        try:
-            task = set_task_pipeline_step(db, task, next_index)
-            add_conversation_message_for_task(db, task.id, "user", next_step["content"])
-            task = await self.followup_task(db, task, next_step["content"])
-        except Exception as exc:
-            append_event(
-                db,
-                task,
-                RuntimeEvent(
-                    type="failed",
-                    message=f"Pipeline '{task.pipeline_name}' stopped: could not start step {next_index + 1}/{len(steps)}.",
-                    payload={"reason": "pipeline_followup_failed", "error": str(exc)[:500]},
-                ),
-            )
-            return self._require_task(db, task.id, "pipeline followup failure")
-        return task
+        return await advance_pipeline_if_needed(self, db, task)
 
 
 async def stream_task_events(task_id: str) -> AsyncIterator[str]:

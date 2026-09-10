@@ -6,6 +6,8 @@ whether a requested transition is legal.
 
 from __future__ import annotations
 
+import json
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -195,3 +197,20 @@ def can_stop(status: str) -> bool:
 
 def can_retry(status: str) -> bool:
     return status in {"failed", "stopped", "completed"}
+
+
+def attach_pipeline(
+    db: Session,
+    task: Task,
+    pipeline_id: str,
+    pipeline_name: str,
+    steps: list[dict[str, str]],
+) -> Task:
+    task.pipeline_id = pipeline_id
+    task.pipeline_name = pipeline_name
+    task.pipeline_steps_json = json.dumps(steps)
+    task.pipeline_step_index = 0
+    db.add(task)
+    db.commit()
+    return get_task(db, task.id)
+

@@ -171,3 +171,27 @@ def delete_project_pipeline(db: Session, pipeline_id: str) -> None:
     if pipeline:
         db.delete(pipeline)
         db.commit()
+
+
+def resolve_pipeline_steps(db: Session, project_id: str, pipeline_id: str) -> tuple[ProjectPipeline, list[dict[str, str]]]:
+    """Resolves and validates a pipeline's prompt sequence for a project.
+
+    Returns the pipeline record and an ordered list of step dicts:
+    [{"prompt_id": ..., "title": ..., "content": ...}, ...].
+    Raises ValueError if the pipeline is not found, has no prompts, or
+    references a missing/foreign prompt.
+    """
+    pipeline = get_project_pipeline(db, pipeline_id)
+    if pipeline is None or pipeline.project_id != project_id:
+        raise ValueError("Pipeline not found")
+    prompt_ids = json.loads(pipeline.prompt_ids_json or "[]")
+    if not prompt_ids:
+        raise ValueError("Pipeline has no prompts")
+    steps: list[dict[str, str]] = []
+    for prompt_id in prompt_ids:
+        prompt = get_project_prompt(db, prompt_id)
+        if prompt is None or prompt.project_id != project_id:
+            raise ValueError(f"Pipeline references a missing prompt '{prompt_id}'")
+        steps.append({"prompt_id": prompt.id, "title": prompt.title, "content": prompt.content})
+    return pipeline, steps
+

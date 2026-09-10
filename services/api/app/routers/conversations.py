@@ -6,7 +6,6 @@ Also serves the PR/MR cards derived from links mentioned in a conversation.
 from __future__ import annotations
 
 import asyncio
-import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
@@ -15,6 +14,7 @@ from ..db import get_db
 from ..pr_info import fetch_pr_or_mr_diff, fetch_pr_or_mr_info, find_all_pr_or_mr_urls
 from ..repository import (
     add_conversation_message,
+    attach_pipeline,
     count_conversations_by_project,
     create_conversation,
     create_task,
@@ -22,12 +22,11 @@ from ..repository import (
     delete_task,
     get_conversation,
     get_project,
-    get_project_pipeline,
-    get_project_prompt,
     get_task,
     list_conversations,
     list_reviewed_pr_urls,
     mark_conversation_read,
+    resolve_pipeline_steps,
     serialize_conversation_detail,
     serialize_conversation_summary,
     set_conversation_task_id,
@@ -197,23 +196,17 @@ async def post_conversation_message(
     # pipeline_steps_json (see TaskOrchestrator._advance_pipeline_if_needed),
     # never re-derived from this request.
     pipeline = None
-    pipeline_steps: list[dict] | None = None
+    pipeline_steps: list[dict[str, str]] | None = None
     if payload.role == "user" and payload.pipeline_id and conv.task_id is None:
         project_for_pipeline = get_project(db, conv.project_id) if conv.project_id else None
         if project_for_pipeline is None:
             raise HTTPException(status_code=400, detail="Conversation has no associated project")
-        pipeline = get_project_pipeline(db, payload.pipeline_id)
-        if pipeline is None or pipeline.project_id != project_for_pipeline.id:
-            raise HTTPException(status_code=404, detail="Pipeline not found")
-        prompt_ids = json.loads(pipeline.prompt_ids_json or "[]")
-        if not prompt_ids:
-            raise HTTPException(status_code=400, detail="Pipeline has no prompts")
-        pipeline_steps = []
-        for prompt_id in prompt_ids:
-            prompt = get_project_prompt(db, prompt_id)
-            if prompt is None or prompt.project_id != project_for_pipeline.id:
-                raise HTTPException(status_code=400, detail=f"Pipeline references a missing prompt '{prompt_id}'")
-            pipeline_steps.append({"prompt_id": prompt.id, "title": prompt.title, "content": prompt.content})
+        try:
+            pipeline, pipeline_steps = resolve_pipeline_steps(db, project_for_pipeline.id, payload.pipeline_id)
+        except ValueError as exc:
+            if "not found" in str(exc).lower():
+                raise HTTPException(status_code=404, detail="Pipeline not found") from exc
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         user_supplied = payload.content.strip()
         first_step_content = pipeline_steps[0]["content"]
         combined_content = f"{user_supplied}\n\n{first_step_content}" if user_supplied else first_step_content
@@ -227,10 +220,11 @@ async def post_conversation_message(
     if payload.role == "user":
         conv = get_conversation(db, conversation_id)
         selected_skill = payload.selected_skill or None
+        project = get_project(db, conv.project_id) if conv.project_id else None
+        if project is None:
+            raise HTTPException(status_code=400, detail="Conversation has no associated project")
+
         if conv.task_id is None:
-            project = get_project(db, conv.project_id) if conv.project_id else None
-            if project is None:
-                raise HTTPException(status_code=400, detail="Conversation has no associated project")
             allowed_models, _ = await model_catalog_for(payload.engine).list_models()
             default_model = allowed_models[0] if allowed_models else "default"
             task_request = CreateTaskRequest(
@@ -246,13 +240,7 @@ async def post_conversation_message(
             )
             task = create_task(db, task_request, project_name=project.name)
             if pipeline_steps is not None and pipeline is not None:
-                task.pipeline_id = pipeline.id
-                task.pipeline_name = pipeline.name
-                task.pipeline_steps_json = json.dumps(pipeline_steps)
-                task.pipeline_step_index = 0
-                db.add(task)
-                db.commit()
-            task = get_task(db, task.id)
+                task = attach_pipeline(db, task, pipeline.id, pipeline.name, pipeline_steps)
             set_conversation_task_id(db, conversation_id, task.id)
             db.expire_all()
             try:
@@ -265,41 +253,12 @@ async def post_conversation_message(
             task = get_task(db, conv.task_id)
             if task is not None and task.status in {"completed", "stopped", "failed"}:
                 try:
-                    await orchestrator.followup_task(
-                        db, task, payload.content, selected_skill=selected_skill, model=payload.model
+                    await orchestrator.followup_or_restart_task(
+                        db, task, project, payload.content, selected_skill=selected_skill, model=payload.model
                     )
                 except Exception as exc:
-                    exc_msg = str(exc)
-                    # Every adapter's _require_session raises "Unknown <X>
-                    # session" (Codex App Server, Claude, Grok, Antigravity)
-                    # -- matched by shape rather than enumerating each one
-                    # by name, since this exact gap already bit the non-
-                    # Codex engines once: a restarted API process wipes
-                    # their in-memory session dicts (unlike Codex, which
-                    # reconnects to the still-running App Server), and only
-                    # the Codex-specific wording was recognized here, so a
-                    # follow-up to any Claude/Grok/Antigravity task from
-                    # before the restart hard-failed with a 409 instead of
-                    # auto-restarting like Codex already did.
-                    session_expired = (
-                        (exc_msg.startswith("Unknown ") and exc_msg.endswith(" session"))
-                        or "Task has no runtime session" in exc_msg
-                    )
-                    if not session_expired:
-                        detail = safe_runtime_error_detail("Follow-up failed", exc)
-                        raise HTTPException(status_code=409, detail=detail) from exc
-                    # Session expired — restart the engine in the same task workspace
-                    project = get_project(db, conv.project_id) if conv.project_id else None
-                    if project is None:
-                        raise HTTPException(status_code=400, detail="Conversation has no associated project") from exc
-                    task = get_task(db, conv.task_id)
-                    db.expire_all()
-                    try:
-                        await orchestrator.start_task(db, task, project, selected_skill=selected_skill)
-                    except Exception as start_exc:
-                        set_task_status(db, task, "failed")
-                        detail = safe_runtime_error_detail("Failed to restart engine session", start_exc)
-                        raise HTTPException(status_code=502, detail=detail) from start_exc
+                    detail = safe_runtime_error_detail("Follow-up failed", exc)
+                    raise HTTPException(status_code=409, detail=detail) from exc
 
     # orchestrator.start_task/followup_task (above) do most of their event
     # processing on separate SessionLocal() instances (see
