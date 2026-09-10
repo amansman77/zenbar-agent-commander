@@ -43,11 +43,11 @@ Every module has a docstring; read it before reading the code.
 | ----- | ----- |
 | HTTP | `main.py` (app wiring only), `routers/*.py`, `security.py` |
 | Singletons | `runtime_registry.py` — engine adapters, `TaskOrchestrator`, model catalogs |
-| Orchestration | `service.py` — `TaskOrchestrator`, the task lifecycle |
+| Orchestration | `service.py` — `TaskOrchestrator`, the task lifecycle; `pipeline_runner.py` — prompt pipeline progression |
 | Persistence | `models.py` (ORM), `repository/` (all DB access + serializers), `db.py` |
 | Runtime | `runtime/` (adapter interface + Codex WebSocket adapter + mock + factory), `claude_adapter.py`, `grok_adapter.py`, `antigravity_adapter.py`, `cli_adapter_git.py` |
 | Workspace | `workspace.py` (creates/removes the worktree), `workspace_git.py` (commit/push/diff inside it), `codex_project_trust.py` |
-| Support | `schemas.py`, `streaming.py`, `ttl_cache.py`, `model_catalog.py`, `pr_info.py`, `github_pr.py`, `repo_discovery.py`, `codex_profiles.py`, `app_server_manager.py` |
+| Support | `schemas.py`, `streaming.py`, `ttl_cache.py`, `stale_session.py`, `model_catalog.py`, `pr_info.py`, `github_pr.py`, `repo_discovery.py`, `codex_profiles.py`, `app_server_manager.py` |
 
 **Where endpoints live.** `main.py` only builds the app (lifespan, CORS, the
 global auth dependency, `include_router`). Endpoints are grouped by resource:
@@ -83,10 +83,8 @@ they import back from here.
 
 **Layering rule:** routers do HTTP concerns only. Anything touching a runtime or
 a task's state goes through `TaskOrchestrator`; anything touching the database
-goes through the `repository` package. New code in a router should not use the ORM
-session directly — `routers/conversations.py` still does for pipeline setup and
-for session bookkeeping around orchestrator calls, which is a known exception,
-not a pattern to copy.
+goes through the `repository` package. Routers do not use the ORM session
+directly or manipulate tasks without orchestrator mediation.
 
 **How a task runs.** A user message on a conversation
 (`routers/conversations.py`) creates a task, then
@@ -108,13 +106,13 @@ execute-mode task, approving it is also what merges the PR the agent opened
 ## Frontend — `apps/web/src/`
 
 ```
-App.tsx        root: selection state, mutations, mobile vs desktop shell
+App.tsx        root: selection state and desktop vs mobile shell layout
 api.ts         every HTTP call to the API
 screens/       full surfaces (conversation list, conversation detail, prompts)
 components/    reusable UI (diff view, timeline, forms, modals, badges)
 components/prompts/  saved-prompt and pipeline editing
-hooks/         data + browser hooks (SSE stream, breakpoint, notifications, prompts)
-lib/           pure logic, no React (event classification, diff parsing, formatting)
+hooks/         data + browser hooks (useCommanderData, useCommanderMutations, useMobileNavigation, SSE stream, breakpoint, notifications, prompts)
+lib/           pure logic, no React (event classification, diff parsing, formatting, clipboard)
 styles/        CSS partials, imported in order by styles.css
 ```
 
@@ -145,13 +143,14 @@ fetch mock standing in for the API, the `fixtures` object a test seeds, and
 `renderApp()`. A new integration test goes in the suite for its surface and
 seeds `fixtures`; it should not build its own fetch mock.
 
-`hooks/useCommanderData.ts` is where App's server data comes from — every query
-behind the current project/task selection, plus the values derived from them,
-returned as plain values rather than query objects.
+`hooks/useCommanderData.ts` is where App's server queries live, and
+`hooks/useCommanderMutations.ts` is where its server mutations and cache
+invalidations live. `hooks/useMobileNavigation.ts` manages mobile screen
+history and persistence.
 
-`App.tsx` still owns the selection state and the mutations, so a component it
-renders takes what it needs as props — `components/TaskDetailPanel.tsx` is the
-clearest case, and its props type is that dependency surface written down.
+`App.tsx` owns the selection state and shell layout, and components it renders
+take what they need as props — `components/TaskDetailPanel.tsx` is the clearest
+case, and its props type is that dependency surface written down.
 Pushing that state into the components that use it is worthwhile, but it changes
 when state resets, so it is not a mechanical change.
 
