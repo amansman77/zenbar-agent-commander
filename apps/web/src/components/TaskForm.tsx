@@ -2,20 +2,15 @@
 // mode, skills and workspace type. The largest single input surface in the app.
 
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import type {
   CreateTaskRequest,
   ExecutionMode,
-  GlobalPrompt,
-  ProjectPrompt,
   ProjectSummary,
   ReasoningEffort,
-  RuntimeEngineOption,
-  RuntimeModelOption,
-  RuntimeProfileOption
 } from "@zenbar/shared";
-import { api } from "../api";
 import { LAST_TASK_MODEL_KEY } from "../lib/constants";
+import { useRuntimeEngines, useRuntimeModels, useRuntimeProfiles } from "../hooks/useRuntimeOptions";
+import { useSavedPrompts } from "../hooks/useSavedPrompts";
 
 export function TaskForm({
   project,
@@ -35,32 +30,12 @@ export function TaskForm({
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [engine, setEngine] = useState("");
 
-  const enginesQuery = useQuery({
-    queryKey: ["runtime-engines"],
-    queryFn: () => api.listRuntimeEngines(),
-    staleTime: 5 * 60 * 1000,
-  });
-  const engines: RuntimeEngineOption[] = enginesQuery.data?.engines ?? [];
-  const defaultEngine = enginesQuery.data?.default_engine ?? null;
+  const { engines, defaultEngine } = useRuntimeEngines();
   const effectiveEngine = engine || defaultEngine;
   const engineSupportsProfiles = effectiveEngine == null || effectiveEngine === "codex";
 
-  const modelsQuery = useQuery({
-    queryKey: ["runtime-models", effectiveEngine],
-    queryFn: () => api.listRuntimeModels(effectiveEngine),
-    staleTime: 0,
-  });
-  const models: RuntimeModelOption[] = modelsQuery.data?.models ?? [];
-  const modelsLoading = modelsQuery.isLoading;
-  const modelsError = modelsQuery.error instanceof Error ? modelsQuery.error.message : null;
-
-  const profilesQuery = useQuery({
-    queryKey: ["runtime-profiles"],
-    queryFn: () => api.listRuntimeProfiles(),
-    enabled: engineSupportsProfiles,
-    staleTime: 5 * 60 * 1000,
-  });
-  const profiles: RuntimeProfileOption[] = engineSupportsProfiles ? profilesQuery.data?.profiles ?? [] : [];
+  const { models, isLoading: modelsLoading, error: modelsError } = useRuntimeModels(effectiveEngine);
+  const { profiles } = useRuntimeProfiles(engineSupportsProfiles);
 
   const [model, setModel] = useState("");
   const [profile, setProfile] = useState("");
@@ -72,34 +47,7 @@ export function TaskForm({
   const titleRef = useRef<HTMLInputElement | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const savedPromptsQuery = useQuery({
-    queryKey: ["project-prompts", project?.id ?? null],
-    queryFn: () => api.listProjectPrompts(project!.id),
-    enabled: Boolean(project),
-    staleTime: 60_000,
-  });
-  const globalPromptsQuery = useQuery({
-    queryKey: ["global-prompts"],
-    queryFn: api.listGlobalPrompts,
-    staleTime: 60_000,
-  });
-  // Global prompts (e.g. a reusable "refactor this" template) first, then
-  // this project's own -- reused-everywhere prompts are the ones worth
-  // seeing before scrolling past a long project-specific list. Every
-  // prompt in this dropdown is looked up by id from one of these two
-  // lists, and the two never collide (separate tables, both UUIDs), so a
-  // plain concatenation is enough.
-  const savedPrompts: (ProjectPrompt | GlobalPrompt)[] = [
-    ...(globalPromptsQuery.data ?? []),
-    ...(savedPromptsQuery.data ?? []),
-  ];
-  // Membership check by id rather than a ProjectPrompt/GlobalPrompt type
-  // guard: GlobalPrompt's fields are a structural subset of ProjectPrompt's
-  // (everything but project_id), so a `prompt is GlobalPrompt` predicate
-  // narrows the *other* branch to `never` (TypeScript's Exclude sees
-  // ProjectPrompt as assignable to GlobalPrompt and drops it too) --
-  // pointless anyway since both shapes already have the .title this is for.
-  const globalPromptIds = new Set((globalPromptsQuery.data ?? []).map((item) => item.id));
+  const { savedPrompts, globalPromptIds } = useSavedPrompts(project?.id ?? null);
 
   // effectiveEngine also changes on *mount* (null while /runtime/engines is
   // in flight, then the real default) -- not a user-driven engine switch,

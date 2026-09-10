@@ -7,10 +7,8 @@ import type {
   AddConversationMessageRequest,
   ConversationDetail,
   ConversationMessageItem,
-  GlobalPrompt,
   PrInfo,
   ProjectPipeline,
-  ProjectPrompt,
   RuntimeEngineOption,
   RuntimeProfileOption,
   RuntimeSkill
@@ -21,6 +19,8 @@ import { ConversationTranscript } from "../components/ConversationTranscript";
 import type { MessageGroup } from "../components/ConversationTranscript";
 import { useCloseOnOutsideClick } from "../hooks/useCloseOnOutsideClick";
 import { useIsMobileBreakpoint } from "../hooks/useIsMobileBreakpoint";
+import { useRuntimeEngines, useRuntimeModels, useRuntimeProfiles } from "../hooks/useRuntimeOptions";
+import { useSavedPrompts } from "../hooks/useSavedPrompts";
 import { USAGE_SUPPORTED_ENGINES, actor } from "../lib/constants";
 import { ACTIVE_TASK_STATUSES } from "../lib/notifications";
 import { extractFailureReason } from "../lib/taskEvents";
@@ -83,21 +83,7 @@ export function ConversationDetailScreen({
   const skills: RuntimeSkill[] = skillsData?.skills ?? [];
 
   const projectId = conversation?.project_id ?? null;
-  const { data: promptsData } = useQuery({
-    queryKey: ["project-prompts", projectId],
-    queryFn: () => api.listProjectPrompts(projectId!),
-    enabled: Boolean(projectId),
-    staleTime: 60_000,
-  });
-  const { data: globalPromptsData } = useQuery({
-    queryKey: ["global-prompts"],
-    queryFn: api.listGlobalPrompts,
-    staleTime: 60_000,
-  });
-  // Same merge as TaskForm's own saved-prompt picker (see its comment) --
-  // global prompts first, then this conversation's project's own.
-  const savedPrompts: (ProjectPrompt | GlobalPrompt)[] = [...(globalPromptsData ?? []), ...(promptsData ?? [])];
-  const globalPromptIds = new Set((globalPromptsData ?? []).map((item) => item.id));
+  const { savedPrompts, globalPromptIds } = useSavedPrompts(projectId);
 
   const { data: pipelinesData } = useQuery({
     queryKey: ["project-pipelines", projectId],
@@ -146,13 +132,7 @@ export function ConversationDetailScreen({
     },
   });
 
-  const { data: enginesData } = useQuery({
-    queryKey: ["runtime-engines"],
-    queryFn: () => api.listRuntimeEngines(),
-    staleTime: 5 * 60 * 1000,
-  });
-  const availableEngines: RuntimeEngineOption[] = enginesData?.engines ?? [];
-  const defaultEngine = enginesData?.default_engine ?? null;
+  const { engines: availableEngines, defaultEngine } = useRuntimeEngines();
   const [selectedEngine, setSelectedEngine] = useState<string | null>(null);
   const effectiveEngine = selectedEngine ?? defaultEngine;
   // Once a task exists, its own engine is authoritative over whatever's
@@ -182,23 +162,13 @@ export function ConversationDetailScreen({
   });
   const usageInfo = usageEngineSupported ? usageData?.usage ?? null : null;
 
-  const { data: modelsData, isLoading: modelsLoading } = useQuery({
-    queryKey: ["runtime-models", activeEngine],
-    queryFn: () => api.listRuntimeModels(activeEngine),
-    staleTime: 0,
-  });
-  const availableModels: string[] = (modelsData?.models ?? [])
+  const { models: rawModels, isLoading: modelsLoading } = useRuntimeModels(activeEngine);
+  const availableModels: string[] = rawModels
     .map((m) => (typeof m === "string" ? m : m.id))
     .filter((id) => id !== "default");
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
 
-  const { data: profilesData } = useQuery({
-    queryKey: ["runtime-profiles"],
-    queryFn: () => api.listRuntimeProfiles(),
-    enabled: engineSupportsProfiles,
-    staleTime: 5 * 60 * 1000,
-  });
-  const availableProfiles: RuntimeProfileOption[] = engineSupportsProfiles ? profilesData?.profiles ?? [] : [];
+  const { profiles: availableProfiles } = useRuntimeProfiles(engineSupportsProfiles);
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
   // Once a task exists, its own profile (not whatever's left over in the
   // pre-task picker) is what actually governs whether the model is locked
