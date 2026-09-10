@@ -2459,7 +2459,7 @@ def test_approve_records_merge_outcome_event_and_still_succeeds_without_a_pull_r
 
 
 def test_approve_merges_pull_request_when_one_exists(monkeypatch):
-    from app.routers import tasks as main_module
+    from app import service as service_module
     from app.github_pr import MergeResult
 
     calls: list[tuple[str, str]] = []
@@ -2468,7 +2468,7 @@ def test_approve_merges_pull_request_when_one_exists(monkeypatch):
         calls.append((workspace_path, branch))
         return MergeResult(True, "Merged pull request #42", 42, "https://github.com/o/r/pull/42")
 
-    monkeypatch.setattr(main_module, "merge_pull_request_for_branch", fake_merge)
+    monkeypatch.setattr(service_module, "merge_pull_request_for_branch", fake_merge)
 
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
@@ -2500,7 +2500,7 @@ def test_approve_merges_pull_request_when_one_exists(monkeypatch):
 
 
 def test_approve_does_not_attempt_merge_for_plan_mode_tasks(monkeypatch):
-    from app.routers import tasks as main_module
+    from app import service as service_module
 
     calls: list[str] = []
 
@@ -2508,7 +2508,7 @@ def test_approve_does_not_attempt_merge_for_plan_mode_tasks(monkeypatch):
         calls.append(branch)
         raise AssertionError("plan-mode tasks must not attempt a merge")
 
-    monkeypatch.setattr(main_module, "merge_pull_request_for_branch", fake_merge)
+    monkeypatch.setattr(service_module, "merge_pull_request_for_branch", fake_merge)
 
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
@@ -3233,3 +3233,23 @@ def test_followup_message_recovers_for_any_engines_expired_session_wording():
         finally:
             service_module.TaskOrchestrator.followup_task = original_followup
         assert response.status_code == 409
+
+
+def test_delete_task_cleans_up_workspace_and_removes_record():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Delete Me", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "To delete", "prompt": "delete me", "model": "default"},
+        ).json()
+
+        assert client.get(f"/tasks/{task['id']}").status_code == 200
+        res = client.delete(f"/tasks/{task['id']}")
+        assert res.status_code == 204
+        assert client.get(f"/tasks/{task['id']}").status_code == 404
+        assert client.delete(f"/tasks/{task['id']}").status_code == 404
+

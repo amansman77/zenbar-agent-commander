@@ -18,6 +18,7 @@ from collections.abc import AsyncIterator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .github_pr import MergeResult, merge_pull_request_for_branch
 from .db import SessionLocal
 from .models import Project, Task
 from .repository import (
@@ -26,6 +27,7 @@ from .repository import (
     clear_runtime_session,
     create_run,
     create_turn,
+    delete_task as db_delete_task,
     get_latest_run,
     get_task,
     replace_diff,
@@ -49,7 +51,7 @@ from .schemas import (
     TaskPushRequest,
 )
 from .streaming import broker
-from .workspace import prepare_workspace
+from .workspace import cleanup_workspace, prepare_workspace
 
 from .pipeline_runner import advance_pipeline_if_needed
 from .stale_session import is_stale_session_error
@@ -216,7 +218,7 @@ class TaskOrchestrator:
             await self._consume_events(task.id, session.session_id)
         return refreshed
 
-    async def approve_task(self, db: Session, task: Task) -> Task:
+    async def approve_task(self, db: Session, task: Task, merge_pr: bool = False) -> Task:
         if not task.runtime_session_id:
             raise RuntimeError("Task has no runtime session")
         adapter = self._adapter_for(task)
@@ -243,7 +245,53 @@ class TaskOrchestrator:
             await self._consume_events(task.id, task.runtime_session_id)
         db.expire_all()
         refreshed = self._require_task(db, task.id, "refreshing approval state")
+        if merge_pr:
+            await self.merge_task_pull_request(db, refreshed)
+            db.expire_all()
+            refreshed = self._require_task(db, task.id, "refreshing approval state after merge")
         return refreshed
+
+    async def merge_task_pull_request(self, db: Session, task: Task) -> None:
+        """Approving a task also merges the pull request its agent opened.
+
+        Tasks are told to open a PR and explicitly not to merge it themselves
+        (see _prompt_with_workspace in runtime/base.py), so this is what
+        actually gets approved work onto the default branch. Records the
+        outcome as a task event either way and never raises: the approval
+        itself already succeeded by this point, and a merge that can't happen
+        (no PR, conflicts, plan-mode task, missing credential) must not
+        retroactively fail it -- the event log is where the user sees why.
+        """
+        if task.execution_mode == "plan" or not task.workspace_path:
+            return
+        try:
+            result = await merge_pull_request_for_branch(task.workspace_path, task.workspace_ref)
+        except Exception as exc:  # defensive: helper is already non-raising
+            result = MergeResult(False, f"Unexpected error while merging: {exc}")
+        append_event(
+            db,
+            task,
+            RuntimeEvent(
+                type="agent_status",
+                message=result.message,
+                payload={
+                    "source": "pull_request_merge",
+                    "ok": result.ok,
+                    "pr_number": result.pr_number,
+                    "pr_url": result.pr_url,
+                },
+            ),
+        )
+
+    def delete_task(self, db: Session, task: Task) -> None:
+        """Cancel background streaming, deregister/clean up worktree, and remove task record."""
+        stream_task = self._stream_tasks.pop(task.id, None)
+        if stream_task is not None and not stream_task.done():
+            stream_task.cancel()
+        repo_path = task.project.repo_path if task.project else None
+        cleanup_workspace(task.workspace_path, task.workspace_type, repo_path)
+        db_delete_task(db, task.id)
+
 
     async def respond_task(self, db: Session, task: Task, payload: RespondTaskRequest) -> Task:
         if not task.runtime_session_id:
