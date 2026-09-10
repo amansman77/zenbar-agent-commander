@@ -101,7 +101,7 @@ asked the *user* a question mid-run and the answer goes back to the runtime,
 while `waiting_result_approval` means the agent finished and a human has to
 accept the result. Only the latter is approvable (`can_approve`), and for an
 execute-mode task, approving it is also what merges the PR the agent opened
-(`routers/tasks.py::merge_task_pull_request`, best-effort by design).
+(`TaskOrchestrator.approve_task` with `merge_pr=True`, best-effort by design).
 
 ## Frontend — `apps/web/src/`
 
@@ -111,8 +111,8 @@ api.ts         every HTTP call to the API
 screens/       full surfaces (conversation list, conversation detail, prompts)
 components/    reusable UI (diff view, timeline, forms, modals, badges)
 components/prompts/  saved-prompt and pipeline editing
-hooks/         data + browser hooks (useCommanderData, useCommanderMutations, useMobileNavigation, SSE stream, breakpoint, notifications, prompts)
-lib/           pure logic, no React (event classification, diff parsing, formatting, clipboard)
+hooks/         data + browser hooks (useCommanderData, useCommanderMutations, useMobileNavigation, useRuntimeOptions, useSavedPrompts, SSE stream, breakpoint, notifications, prompts)
+lib/           pure logic, no React (event classification, diff parsing, formatting, clipboard, savedPrompts)
 styles/        CSS partials, imported in order by styles.css
 ```
 
