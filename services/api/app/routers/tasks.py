@@ -9,17 +9,14 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..github_pr import MergeResult, merge_pull_request_for_branch
 from ..pr_info import fetch_pr_or_mr_diff, find_latest_pr_or_mr_url
 from ..repository import (
     add_approval,
-    append_event,
     can_approve,
     can_retry,
     can_stop,
     count_events,
     create_task,
-    delete_task,
     get_conversation_for_task,
     get_project,
     get_task,
@@ -36,7 +33,6 @@ from ..schemas import (
     CreateTaskRequest,
     FollowupTurnRequest,
     RespondTaskRequest,
-    RuntimeEvent,
     TaskApprovalRequest,
     TaskCommitRequest,
     TaskDetail,
@@ -46,7 +42,6 @@ from ..schemas import (
     TaskPushRequest,
 )
 from ..service import stream_task_events
-from ..workspace import cleanup_workspace
 from .common import (
     assert_actionable,
     assert_transition,
@@ -81,9 +76,7 @@ def delete_task_endpoint(task_id: str, db: Session = Depends(get_db)):
     task = get_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    repo_path = task.project.repo_path if task.project else None
-    cleanup_workspace(task.workspace_path, task.workspace_type, repo_path)
-    delete_task(db, task_id)
+    orchestrator.delete_task(db, task)
     return Response(status_code=204)
 
 
@@ -163,47 +156,15 @@ async def approve_task(task_id: str, payload: TaskApprovalRequest, db: Session =
     assert_transition(can_approve(task.status), f"Task cannot be approved from status '{task.status}'")
     add_approval(db, task, "approve", payload.actor)
     try:
-        await orchestrator.approve_task(db, task)
+        task = await orchestrator.approve_task(db, task, merge_pr=True)
     except Exception as exc:
         detail = safe_runtime_error_detail("Approval failed", exc)
         raise HTTPException(status_code=409, detail=detail) from exc
-    task = require_task(get_task(db, task_id))
-    await merge_task_pull_request(db, task)
-    task = require_task(get_task(db, task_id))
     return serialize_task_detail(task)
 
 
-async def merge_task_pull_request(db: Session, task) -> None:
-    """Approving a task also merges the pull request its agent opened.
-
-    Tasks are told to open a PR and explicitly not to merge it themselves
-    (see _prompt_with_workspace in runtime/base.py), so this is what
-    actually gets approved work onto the default branch. Records the
-    outcome as a task event either way and never raises: the approval
-    itself already succeeded by this point, and a merge that can't happen
-    (no PR, conflicts, plan-mode task, missing credential) must not
-    retroactively fail it -- the event log is where the user sees why.
-    """
-    if task.execution_mode == "plan" or not task.workspace_path:
-        return
-    try:
-        result = await merge_pull_request_for_branch(task.workspace_path, task.workspace_ref)
-    except Exception as exc:  # defensive: helper is already non-raising
-        result = MergeResult(False, f"Unexpected error while merging: {exc}")
-    append_event(
-        db,
-        task,
-        RuntimeEvent(
-            type="agent_status",
-            message=result.message,
-            payload={
-                "source": "pull_request_merge",
-                "ok": result.ok,
-                "pr_number": result.pr_number,
-                "pr_url": result.pr_url,
-            },
-        ),
-    )
+# Back-compat alias: domain merge logic now lives on TaskOrchestrator
+merge_task_pull_request = orchestrator.merge_task_pull_request
 
 
 @router.post("/tasks/{task_id}/respond", response_model=TaskDetail)
