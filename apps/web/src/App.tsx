@@ -3,14 +3,10 @@
 // the desktop chat/workspace shell. Screens and components live alongside it in
 // screens/, components/, hooks/ and lib/.
 
-import { useEffect, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import type {
-  ConversationSummary,
   ExecutionMode,
-  ProjectSummary
 } from "@zenbar/shared";
-import { api } from "./api";
 import { StatusBadge } from "./components/Badges";
 import { TaskDetailPanel } from "./components/TaskDetailPanel";
 import { Modal } from "./components/Modal";
@@ -19,9 +15,12 @@ import { ProjectList } from "./components/ProjectList";
 import { RunActionSheet } from "./components/RunActionSheet";
 import { TaskForm } from "./components/TaskForm";
 import { useCommanderData } from "./hooks/useCommanderData";
+import { useCommanderMutations } from "./hooks/useCommanderMutations";
 import { useIsMobileBreakpoint } from "./hooks/useIsMobileBreakpoint";
+import { useMobileNavigation } from "./hooks/useMobileNavigation";
 import { useTaskCompletionNotifications } from "./hooks/useTaskCompletionNotifications";
-import { LAST_TASK_MODEL_KEY, actor } from "./lib/constants";
+import { copyToClipboard } from "./lib/clipboard";
+import { LAST_TASK_MODEL_KEY } from "./lib/constants";
 import {
   TASK_NOTIFICATIONS_ENABLED_KEY,
   isNotificationPermissionGranted,
@@ -30,14 +29,13 @@ import {
 } from "./lib/notifications";
 import { defaultAnswers } from "./lib/taskQuestions";
 import type { RunExecutionAction } from "./lib/taskStatus";
-import { LAST_VIEW_KEY, loadLastView } from "./lib/viewState";
-import type { DesktopView, MobileScreen } from "./lib/viewState";
+import { loadLastView } from "./lib/viewState";
+import type { DesktopView } from "./lib/viewState";
 import { ConversationDetailScreen } from "./screens/ConversationDetailScreen";
 import { ConversationListScreen } from "./screens/ConversationListScreen";
 import { ProjectPromptsModal, ProjectPromptsScreen } from "./screens/ProjectPromptsScreen";
 
 export function App() {
-  const queryClient = useQueryClient();
   const [lastView] = useState(loadLastView); // read once on mount, never re-read
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(lastView?.selectedProjectId ?? null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(lastView?.selectedTaskId ?? null);
@@ -45,7 +43,6 @@ export function App() {
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [promptsModalOpen, setPromptsModalOpen] = useState(false);
-  const [mobileScreen, setMobileScreen] = useState<MobileScreen>(lastView?.mobileScreen ?? "conversations");
   // Desktop mirrors mobile's default: conversations are the primary surface.
   const [desktopView, setDesktopView] = useState<DesktopView>(lastView?.desktopView ?? "chat");
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(lastView?.selectedConversationId ?? null);
@@ -62,6 +59,15 @@ export function App() {
   const [gitActionMessage, setGitActionMessage] = useState<string | null>(null);
   const [followupDraft, setFollowupDraft] = useState("");
   const isMobile = useIsMobileBreakpoint();
+
+  const { mobileScreen, setMobileScreen } = useMobileNavigation({
+    isMobile,
+    initialScreen: lastView?.mobileScreen ?? "conversations",
+    desktopView,
+    selectedConversationId,
+    selectedProjectId,
+    selectedTaskId,
+  });
 
   const {
     projects,
@@ -130,166 +136,37 @@ export function App() {
     }
   };
 
-  const createConversationMutation = useMutation({
-    mutationFn: (projectId: string) => api.createConversation({ project_id: projectId }),
-    onSuccess: (conv) => {
-      queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      setSelectedConversationId(conv.id);
-      setMobileScreen("conversation-detail");
-    },
+  const {
+    createConversationMutation,
+    deleteConversationMutation,
+    markConversationReadMutation,
+    handleSelectConversation,
+    createProjectMutation,
+    createTaskMutation,
+    deleteProjectMutation,
+    deleteTaskMutation,
+    taskActionMutation,
+    respondMutation,
+    followupMutation,
+    workspaceCommitMutation,
+    workspacePushMutation,
+    handleDeleteProject,
+  } = useCommanderMutations({
+    selectedProjectId,
+    selectedTaskId,
+    selectedConversationId,
+    selectedProject,
+    setSelectedProjectId,
+    setSelectedTaskId,
+    setSelectedConversationId,
+    setMobileScreen,
+    setProjectModalOpen,
+    setTaskModalOpen,
+    setResponseDraft,
+    setFollowupDraft,
+    setMobileDetailTab,
+    setGitActionMessage,
   });
-
-  const deleteConversationMutation = useMutation({
-    mutationFn: api.deleteConversation,
-    onSuccess: (_, deletedId) => {
-      queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      if (selectedConversationId === deletedId) {
-        setSelectedConversationId(null);
-        setMobileScreen("conversations");
-      }
-    },
-  });
-
-  // Fire-and-forget: the unread dot clearing a beat late is harmless, but
-  // making the user wait on a network round trip before a conversation even
-  // opens is not. The optimistic setQueriesData below (prefix-matched, so it
-  // covers both the preview list and the "show all" full list without
-  // hardcoding either query's exact key) is what actually clears the dot
-  // instantly -- the mutation is just there to persist it server-side for
-  // next time / other devices.
-  const markConversationReadMutation = useMutation({
-    mutationFn: (id: string) => api.markConversationRead(id),
-  });
-
-  const handleSelectConversation = (id: string) => {
-    setSelectedConversationId(id);
-    queryClient.setQueriesData<ConversationSummary[]>({ queryKey: ["conversations"] }, (previous) =>
-      previous?.map((conv) => (conv.id === id && conv.is_unread ? { ...conv, is_unread: false } : conv))
-    );
-    markConversationReadMutation.mutate(id);
-  };
-
-  const createProjectMutation = useMutation({
-    mutationFn: api.createProject,
-    onSuccess: (project) => {
-      queryClient.setQueryData(["projects"], (previous: ProjectSummary[] | undefined) => {
-        const next = previous ?? [];
-        if (next.some((item) => item.id === project.id)) {
-          return next;
-        }
-        return [project, ...next];
-      });
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
-      setSelectedProjectId(project.id);
-      setProjectModalOpen(false);
-    }
-  });
-
-  const createTaskMutation = useMutation({
-    mutationFn: api.createTask,
-    onSuccess: (task) => {
-      queryClient.invalidateQueries({ queryKey: ["tasks", task.project_id] });
-      setSelectedTaskId(task.id);
-      setTaskModalOpen(false);
-    }
-  });
-
-  const deleteProjectMutation = useMutation({
-    mutationFn: api.deleteProject,
-    onSuccess: (_, projectId) => {
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
-      queryClient.removeQueries({ queryKey: ["tasks", projectId] });
-      if (selectedProjectId === projectId) {
-        setSelectedProjectId(null);
-        setSelectedTaskId(null);
-      }
-    }
-  });
-
-  const deleteTaskMutation = useMutation({
-    mutationFn: api.deleteTask,
-    onSuccess: (_, taskId) => {
-      queryClient.invalidateQueries({ queryKey: ["tasks", selectedProjectId] });
-      queryClient.removeQueries({ queryKey: ["task", taskId] });
-      queryClient.removeQueries({ queryKey: ["task-events", taskId] });
-      queryClient.removeQueries({ queryKey: ["task-diff", taskId] });
-      if (selectedTaskId === taskId) {
-        setSelectedTaskId(null);
-      }
-    }
-  });
-
-  const taskActionMutation = useMutation({
-    mutationFn: async (input: { action: "approveTask" | "stopTask" | "retryTask"; taskId: string; model?: string }) => {
-      if (input.action === "approveTask") {
-        return api.approveTask(input.taskId, { actor });
-      }
-      if (input.action === "stopTask") {
-        return api.stopTask(input.taskId, { actor });
-      }
-      return api.retryTask(input.taskId, { actor, model: input.model });
-    },
-    onSuccess: (task) => {
-      queryClient.setQueryData(["task", task.id], task);
-      queryClient.invalidateQueries({ queryKey: ["tasks", task.project_id] });
-      queryClient.invalidateQueries({ queryKey: ["task-events", task.id] });
-      queryClient.invalidateQueries({ queryKey: ["task-diff", task.id] });
-    }
-  });
-
-  const respondMutation = useMutation({
-    mutationFn: async (input: { taskId: string; answers: Record<string, string[]> }) =>
-      api.respondTask(input.taskId, { actor, answers: input.answers }),
-    onSuccess: (task) => {
-      queryClient.setQueryData(["task", task.id], task);
-      queryClient.invalidateQueries({ queryKey: ["tasks", task.project_id] });
-      queryClient.invalidateQueries({ queryKey: ["task-events", task.id] });
-      setResponseDraft({});
-    }
-  });
-
-  const followupMutation = useMutation({
-    mutationFn: async (input: { sessionId: string; content: string }) =>
-      api.createFollowupTurn(input.sessionId, { content: input.content }),
-    onSuccess: (updatedTask) => {
-      queryClient.setQueryData(["task", updatedTask.id], updatedTask);
-      queryClient.invalidateQueries({ queryKey: ["tasks", updatedTask.project_id] });
-      queryClient.invalidateQueries({ queryKey: ["task-events", updatedTask.id] });
-      queryClient.invalidateQueries({ queryKey: ["task-diff", updatedTask.id] });
-      setFollowupDraft("");
-      setMobileDetailTab("log");
-    }
-  });
-
-  const workspaceCommitMutation = useMutation({
-    mutationFn: (input: { taskId: string; message: string }) =>
-      api.commitTaskWorkspace(input.taskId, { actor, message: input.message }),
-    onSuccess: (result, input) => {
-      setGitActionMessage(`Commit succeeded on ${result.branch ?? "branch"}`);
-      queryClient.invalidateQueries({ queryKey: ["task-events", input.taskId] });
-      queryClient.invalidateQueries({ queryKey: ["task-diff", input.taskId] });
-    }
-  });
-
-  const workspacePushMutation = useMutation({
-    mutationFn: (input: { taskId: string }) =>
-      api.pushTaskWorkspace(input.taskId, { actor, remote: "origin", set_upstream: true }),
-    onSuccess: (result, input) => {
-      setGitActionMessage(`Push succeeded: ${result.remote ?? "origin"}/${result.branch ?? ""}`);
-      queryClient.invalidateQueries({ queryKey: ["task-events", input.taskId] });
-    }
-  });
-
-
-  const handleDeleteProject = () => {
-    if (!selectedProject) {
-      return;
-    }
-    if (!window.confirm("Delete this project?")) {
-      return;
-    }
-    deleteProjectMutation.mutate(selectedProject.id);
-  };
 
   useEffect(() => {
     if (!task || task.status !== "waiting_user_input") {
@@ -330,87 +207,10 @@ export function App() {
   }, [task, runActionModelOptions]);
 
   useEffect(() => {
-    if (!isMobile) {
-      setMobileScreen("conversations");
-    }
-  }, [isMobile]);
-
-  // Remember the current screen so a reloaded tab (e.g. iOS Safari
-  // discarding a backgrounded tab) can reopen where the user left off
-  // instead of always landing back on the root screen.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(
-        LAST_VIEW_KEY,
-        JSON.stringify({ mobileScreen, desktopView, selectedConversationId, selectedProjectId, selectedTaskId })
-      );
-    } catch {
-      // Quota exceeded or private-mode storage — losing "resume where you left off" isn't worth surfacing an error for.
-    }
-  }, [mobileScreen, desktopView, selectedConversationId, selectedProjectId, selectedTaskId]);
-
-  const isHandlingPopState = useRef(false);
-
-  // Push a history entry each time the mobile screen changes
-  useEffect(() => {
-    if (!isMobile) return;
-    if (isHandlingPopState.current) {
-      isHandlingPopState.current = false;
-      return;
-    }
-    window.history.pushState({ mobileScreen }, "");
-  }, [mobileScreen, isMobile]);
-
-  // Handle browser back button on mobile
-  useEffect(() => {
-    if (!isMobile) return;
-    const BACK_MAP: Partial<Record<MobileScreen, MobileScreen>> = {
-      "conversation-detail": "conversations",
-      "projects": "conversations",
-      "project-prompts": "projects",
-      "tasks": "projects",
-      "detail": "tasks",
-    };
-    const handlePopState = (e: PopStateEvent) => {
-      const prevScreen = (e.state as { mobileScreen?: MobileScreen } | null)?.mobileScreen;
-      const target = prevScreen ?? BACK_MAP[mobileScreen] ?? "conversations";
-      isHandlingPopState.current = true;
-      setMobileScreen(target);
-    };
-    window.addEventListener("popstate", handlePopState);
-    return () => window.removeEventListener("popstate", handlePopState);
-  }, [isMobile, mobileScreen]);
-
-  useEffect(() => {
     setMobileDetailTab("log");
     setMobilePromptExpanded(false);
     setExpandedDiffFiles({});
   }, [task?.id]);
-
-  const copyToClipboard = async (content: string): Promise<boolean> => {
-    try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(content);
-        return true;
-      }
-      if (typeof document !== "undefined") {
-        const textarea = document.createElement("textarea");
-        textarea.value = content;
-        textarea.setAttribute("readonly", "true");
-        textarea.style.position = "absolute";
-        textarea.style.left = "-9999px";
-        document.body.append(textarea);
-        textarea.select();
-        document.execCommand("copy");
-        textarea.remove();
-        return true;
-      }
-      return false;
-    } catch {
-      return false;
-    }
-  };
 
   const copyPlanOutput = async () => {
     const content = planMarkdown || "Latest implementation plan from Codex runtime.";
