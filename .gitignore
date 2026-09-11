@@ -17,6 +17,10 @@ tmp
 .env
 .env.local
 .env.*.local
+# Any other .env variant too -- `.env` above only matches that exact name, so a
+# real secret-bearing file like .env.claude (a Discord bot token) was sitting
+# untracked but committable.
+.env.*
 !.env.example
 apps/web/.env
 apps/web/.env.local
