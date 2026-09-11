@@ -100,14 +100,25 @@ def _prompt_with_workspace(request: RuntimeStartRequest) -> str:
     # GitLab MR instead, using ad-hoc token-based push auth whose token then
     # ended up logged in plaintext in the task's event history. The user now
     # asks for commit/push/PR explicitly in the prompt itself when wanted.
+    #
+    # A trailing "Human approval is required before the task result is accepted
+    # as final." used to follow `operation` here. Removed for the same class of
+    # reason: agents read it as something the *user* had asked for and echoed it
+    # back ("결과는 요청하신 대로 사용자 승인 전까지 최종 확정하지 않겠습니다"),
+    # which made even a plain question answer as if it were a change awaiting
+    # sign-off. Approval is a Zenbar-side gate -- `can_approve` plus the UI
+    # decide it -- so the agent never needed to know about it.
+    #
+    # Everything Zenbar adds is now a header *before* the user's text, and the
+    # user's own prompt is last. While anything trailed it, the agent treated
+    # that tail as part of the request.
     return (
         f"Task title: {request.title}\n"
         f"Task workspace: {request.workspace_ref}\n"
         f"Task working directory: {request.working_directory}\n"
-        f"Default branch: {request.default_branch}\n\n"
-        f"{request.prompt}{skill_line}\n\n"
-        f"{operation} "
-        "Human approval is required before the task result is accepted as final."
+        f"Default branch: {request.default_branch}\n"
+        f"{operation}\n\n"
+        f"{request.prompt}{skill_line}"
     )
 
 
