@@ -144,6 +144,64 @@ Early prototype.
 
 ## Development
 
+Run the dashboard in Docker, connected to the existing host API and agent runtime:
+
+```bash
+pnpm dev:api:external  # if the host API is not already running on port 18000
+pnpm docker:dashboard
+```
+
+Open `http://localhost:8080`. The container serves the built UI and proxies API
+requests (including SSE) to `host.docker.internal:18000`. The API and agent runtime
+remain on the host so existing database, project paths, and task worktrees keep
+working. The API must listen on `0.0.0.0` for the container to reach it. Its access
+policy must permit the proxy: configure `ZENBAR_API_TOKEN` (preferred) or explicitly
+allow unauthenticated remote access. The launcher reads the same `.env.local`
+files as the host API and supplies the token to the proxy without embedding it in
+the browser bundle. Docker publishes the dashboard on loopback only.
+
+Override `ZENBAR_DOCKER_PORT` or `ZENBAR_API_UPSTREAM` to use another port or API.
+Run `docker stop zenbar-dashboard` to stop it; rerun `pnpm docker:dashboard` to
+rebuild and replace it. Docker Engine is sufficient; Compose is not required.
+
+To also run the API in Docker:
+
+First finish active tasks, stop the host API, and run the Codex App Server
+independently on port 18765. The API launcher refuses to migrate while the host API
+port is still in use, preventing two control planes from sharing live tasks.
+
+```bash
+pnpm docker:database
+pnpm docker:api
+pnpm docker:dashboard
+```
+
+The dashboard automatically connects to `zenbar-api:8000` on the `zenbar` Docker
+network. The API is also available on `http://localhost:18001` with its existing
+token. SQLite runs inside the API process and stores its database and journals in
+the persistent Docker volume `zenbar-data` at `/data/zenbar.db`; it needs no separate
+database server container. `docker:database` uses SQLite's online backup API to
+import a consistent snapshot of the host database, verifies the copy, and refuses
+to overwrite an existing volume. The original host database is preserved. A
+snapshot taken before host work finishes is only a staging copy: initialize a
+fresh volume after stopping the host API for final migration, using
+`ZENBAR_DOCKER_DATABASE_VOLUME` with the same value for both commands. Container
+replacement preserves the volume; deleting the volume deletes its data.
+
+The API mounts `~/Workspace`, task
+workspaces, and Codex configuration/profile files. Absolute project and worktree
+paths are preserved for the host Codex runtime. The runtime must already be
+running on host port 18765; this container does not manage or stop it. If the host
+API owns that runtime, keep it running until its active tasks finish and the
+runtime is managed independently, before migrating. Other CLI engines need their Linux executables
+and credentials installed in the API image. Host macOS native folder selection is
+unavailable; use the web folder browser or specify the project path.
+
+Overrides: `ZENBAR_DOCKER_API_PORT`, `ZENBAR_DOCKER_PROJECTS_ROOT`,
+`ZENBAR_DOCKER_DATABASE_FILE` (snapshot source), `ZENBAR_DOCKER_DATABASE_VOLUME`,
+and `ZENBAR_DOCKER_RUNTIME_URL`. The launcher runs as
+the host user's UID/GID. Stop it with `docker stop zenbar-api`.
+
 Start both servers from the repo root:
 
 ```bash

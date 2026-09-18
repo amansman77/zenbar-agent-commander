@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "packageManager": "pnpm@10.7.0",
   "scripts": {
+    "docker:dashboard": "sh scripts/docker-dashboard.sh",
+    "docker:api": "sh scripts/docker-api.sh",
+    "docker:database": "sh scripts/docker-database.sh",
     "build": "pnpm --filter @zenbar/shared build && pnpm --filter web build",
     "dev": "./scripts/dev-all.sh",
     "dev:api": "./scripts/dev-api.sh",

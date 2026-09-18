@@ -1,0 +1,14 @@
+**/node_modules
+**/dist
+**/.env*
+**/*.tsbuildinfo
+.git
+.venv
+.codex
+.agents
+services
+tmp
+**/screenshots
+**/.vite
+**/coverage
+.DS_Store
