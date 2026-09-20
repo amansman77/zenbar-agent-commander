@@ -32,6 +32,7 @@ from .repository import (
     get_task,
     replace_diff,
     list_events,
+    list_recent_conversation_messages,
     serialize_diff,
     serialize_event,
     serialize_task_detail,
@@ -39,6 +40,7 @@ from .repository import (
     set_task_workspace,
     set_task_status,
 )
+from .resume_context import RECENT_MESSAGE_LIMIT, ResumeMessage, build_resume_prompt
 from . import workspace_git
 from .runtime import RuntimeAdapter
 from .schemas import (
@@ -141,10 +143,24 @@ class TaskOrchestrator:
 
         runner.add_done_callback(_cleanup)
 
-    async def start_task(self, db: Session, task: Task, project: Project, selected_skill: str | None = None) -> Task:
+    async def start_task(
+        self,
+        db: Session,
+        task: Task,
+        project: Project,
+        selected_skill: str | None = None,
+        prompt_override: str | None = None,
+    ) -> Task:
+        """Starts a runtime session for the task.
+
+        `prompt_override` replaces what is sent to the runtime without touching
+        `task.prompt`; it exists for the session-restart path, which must not
+        re-run the original request (see resume_context).
+        """
         adapter = self._adapter_for(task)
+        initial_prompt = prompt_override if prompt_override is not None else task.prompt
         parent_run = get_latest_run(db, task.id)
-        create_run(db, task, input_text=task.prompt, parent_run_id=parent_run.id if parent_run else None)
+        create_run(db, task, input_text=initial_prompt, parent_run_id=parent_run.id if parent_run else None)
         set_task_status(db, task, "starting")
         if task.execution_mode == "plan":
             append_event(db, task, RuntimeEvent(type="agent_status", message="Checking Codex runtime plan capability"))
@@ -190,7 +206,7 @@ class TaskOrchestrator:
         request = RuntimeStartRequest(
             task_id=refreshed.id,
             title=refreshed.title,
-            prompt=refreshed.prompt,
+            prompt=initial_prompt,
             engine=refreshed.engine,
             model=resolved_model,
             profile=refreshed.profile,
@@ -472,17 +488,17 @@ class TaskOrchestrator:
         App Server eviction), clears the dead session and starts a fresh one in
         the existing workspace.
 
-        Note what the restart actually does, because it is not what a follow-up
-        does: ``start_task`` re-sends the task's *original* prompt, and takes no
-        ``content``, so the message the user just typed is dropped and the
-        conversation so far is not replayed. Reported live -- a task whose
-        original prompt was "스테이지에 배포해줘" silently began deploying again
-        when the user asked about something else entirely, and the agent, having
-        received that prompt with no history, said it had "mistaken the task
-        metadata's deployment wording for a real user request". The
-        ``session_restarted`` event below exists so this is at least visible in
-        the timeline; making the restart carry the history and the new message
-        is the actual fix and is still outstanding.
+        The restart does *not* re-run the task's original prompt. It used to,
+        and that was actively dangerous: a task whose original prompt was
+        "스테이지에 배포해줘" silently began deploying again when the user asked
+        about something else entirely, because ``start_task`` re-sent that
+        prompt and dropped the message the user had actually typed. The agent,
+        handed it with no history, said it had "mistaken the task metadata's
+        deployment wording for a real user request".
+
+        Instead the replacement session starts from a prompt built by
+        ``resume_context``: the new message as the only instruction, with the
+        original request and the last few turns included as labelled history.
         """
         try:
             return await self.followup_task(
@@ -494,6 +510,12 @@ class TaskOrchestrator:
             # Session expired — restart the engine in the same task workspace
             db.expire_all()
             refreshed = self._require_task(db, task.id, "restarting expired session for follow-up")
+            recent = [
+                ResumeMessage(role=message.role, content=message.content)
+                for message in list_recent_conversation_messages(
+                    db, refreshed.id, RECENT_MESSAGE_LIMIT
+                )
+            ]
             append_event(
                 db,
                 refreshed,
@@ -501,12 +523,25 @@ class TaskOrchestrator:
                     type="session_restarted",
                     message=(
                         "이전 세션이 만료되어 새 세션으로 다시 시작합니다. "
-                        "이전 대화 내용은 이어지지 않으며, 최초 요청이 다시 실행됩니다."
+                        f"직전 대화 {len(recent)}건과 최초 요청을 요약해 이어갑니다."
                     ),
-                    payload={"previous_session_id": task.runtime_session_id},
+                    payload={
+                        "previous_session_id": task.runtime_session_id,
+                        "recent_messages": len(recent),
+                    },
                 ),
             )
-            return await self.start_task(db, refreshed, project, selected_skill=selected_skill)
+            return await self.start_task(
+                db,
+                refreshed,
+                project,
+                selected_skill=selected_skill,
+                prompt_override=build_resume_prompt(
+                    original_prompt=refreshed.prompt,
+                    recent_messages=recent,
+                    new_message=content,
+                ),
+            )
 
     async def refresh_diff(self, db: Session, task: Task) -> Task:
         runtime_diff: TaskDiff | None = None

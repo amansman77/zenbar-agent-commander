@@ -152,6 +152,27 @@ def add_conversation_message(
     return msg
 
 
+def list_recent_conversation_messages(db: Session, task_id: str, limit: int) -> list[ConversationMessage]:
+    """The task's last `limit` conversation messages, oldest-first.
+
+    Used to rebuild context when a dead runtime session is replaced: the new
+    session has no memory of the thread, so the transcript has to come from
+    here. created_at is the only ordering conversation_messages has, so id
+    breaks ties -- the timestamps are whole-second on SQLite and messages in
+    one turn can land inside the same second.
+    """
+    conv = db.scalars(select(Conversation).where(Conversation.task_id == task_id)).first()
+    if conv is None:
+        return []
+    rows = db.scalars(
+        select(ConversationMessage)
+        .where(ConversationMessage.conversation_id == conv.id)
+        .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
+        .limit(limit)
+    ).all()
+    return list(reversed(rows))
+
+
 def add_conversation_message_for_task(db: Session, task_id: str, role: str, content: str) -> ConversationMessage | None:
     # A pipeline's later steps are sent via TaskOrchestrator.followup_task
     # directly (not through the POST /conversations/{id}/messages endpoint,

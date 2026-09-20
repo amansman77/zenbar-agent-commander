@@ -33,7 +33,11 @@ def normalize_event_type(event_type: str) -> str:
         "completed",
         "failed",
         "stopped",
+        "session_restarted",
     }
+    # Anything unrecognised degrades to agent_status, which is also what the
+    # frontend filters out of the timeline -- so a type missing from this set
+    # is not just mislabelled, it is invisible.
     return event_type if event_type in supported else "agent_status"
 
 
