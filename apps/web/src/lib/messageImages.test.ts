@@ -34,6 +34,26 @@ describe("extractImageSegments", () => {
     ]);
   });
 
+  it("extracts the path from markdown image syntax, stripping a sandbox: scheme", () => {
+    // Verbatim from the task event that used to render as a broken path.
+    const segments = extractImageSegments(
+      "아래는 **E2E 테스트 최종 결과 화면**입니다.\n\n![관리자 E2E 최종 결과](sandbox:/tmp/admin-e2e-final-result.png)"
+    );
+    expect(segments.filter((s) => s.type === "image")).toEqual([
+      { type: "image", path: "/tmp/admin-e2e-final-result.png" },
+    ]);
+    // The "](" must not survive into the rendered text either.
+    expect(segments.every((s) => s.type !== "text" || !s.value.includes("]("))).toBe(true);
+  });
+
+  it("handles markdown image syntax without a scheme", () => {
+    const segments = extractImageSegments("![shot](docs/evidence/a.png) 입니다");
+    expect(segments).toEqual([
+      { type: "image", path: "docs/evidence/a.png" },
+      { type: "text", value: " 입니다" },
+    ]);
+  });
+
   it("returns the whole message as one text segment when there's no image", () => {
     const segments = extractImageSegments("작업을 완료했습니다. 파일: `README.md`");
     expect(segments).toEqual([{ type: "text", value: "작업을 완료했습니다. 파일: `README.md`" }]);
