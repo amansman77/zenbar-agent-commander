@@ -469,8 +469,20 @@ class TaskOrchestrator:
         """Follows up on a completed/stopped/failed task, restarting the session if expired.
 
         If the underlying runtime session is stale (e.g. after an API restart or
-        App Server eviction), automatically clears the dead session and starts
-        a fresh session in the existing workspace with the conversation history.
+        App Server eviction), clears the dead session and starts a fresh one in
+        the existing workspace.
+
+        Note what the restart actually does, because it is not what a follow-up
+        does: ``start_task`` re-sends the task's *original* prompt, and takes no
+        ``content``, so the message the user just typed is dropped and the
+        conversation so far is not replayed. Reported live -- a task whose
+        original prompt was "스테이지에 배포해줘" silently began deploying again
+        when the user asked about something else entirely, and the agent, having
+        received that prompt with no history, said it had "mistaken the task
+        metadata's deployment wording for a real user request". The
+        ``session_restarted`` event below exists so this is at least visible in
+        the timeline; making the restart carry the history and the new message
+        is the actual fix and is still outstanding.
         """
         try:
             return await self.followup_task(
@@ -482,6 +494,18 @@ class TaskOrchestrator:
             # Session expired — restart the engine in the same task workspace
             db.expire_all()
             refreshed = self._require_task(db, task.id, "restarting expired session for follow-up")
+            append_event(
+                db,
+                refreshed,
+                RuntimeEvent(
+                    type="session_restarted",
+                    message=(
+                        "이전 세션이 만료되어 새 세션으로 다시 시작합니다. "
+                        "이전 대화 내용은 이어지지 않으며, 최초 요청이 다시 실행됩니다."
+                    ),
+                    payload={"previous_session_id": task.runtime_session_id},
+                ),
+            )
             return await self.start_task(db, refreshed, project, selected_skill=selected_skill)
 
     async def refresh_diff(self, db: Session, task: Task) -> Task:

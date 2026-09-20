@@ -43,6 +43,11 @@ EventType = Literal[
     "completed",
     "failed",
     "stopped",
+    # A dead runtime session was replaced by a fresh one. Its own type rather
+    # than another agent_status because the UI has to surface it: a fresh
+    # session starts with no memory of the conversation so far, and until this
+    # was visible the context loss looked like the agent simply forgetting.
+    "session_restarted",
 ]
 
 

@@ -59,8 +59,11 @@ function ExecutionBlock({ events, mobile }: { events: TaskEvent[]; mobile: boole
 }
 
 function SystemEvent({ event }: { event: TaskEvent }) {
+  const restarted = event.type === "session_restarted";
   return (
-    <article className="timeline-item timeline-system-high">
+    <article
+      className={`timeline-item timeline-system-high${restarted ? " timeline-session-restarted" : ""}`}
+    >
       <div className="row-header">
         <h3>{formatSystemEventLabel(event)}</h3>
       </div>

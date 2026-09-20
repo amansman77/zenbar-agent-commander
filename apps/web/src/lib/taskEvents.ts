@@ -78,7 +78,11 @@ function getSystemImportance(event: TaskEvent): SystemImportance {
     event.type === "failed" ||
     event.type === "stopped" ||
     event.type === "result_approval_requested" ||
-    event.type === "user_input_requested"
+    event.type === "user_input_requested" ||
+    // The agent loses the conversation at this point and the original prompt
+    // is re-sent, so this must never be folded into the collapsed technical
+    // group: it is the explanation for everything odd that follows it.
+    event.type === "session_restarted"
   ) {
     return "high";
   }
@@ -189,6 +193,9 @@ export function formatSystemEventLabel(event: TaskEvent): string {
   }
   if (event.type === "user_input_requested") {
     return "Waiting input";
+  }
+  if (event.type === "session_restarted") {
+    return "새 세션 시작 (이전 대화 끊김)";
   }
   return event.message || event.type.replace(/_/g, " ");
 }
