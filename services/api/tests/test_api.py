@@ -209,6 +209,63 @@ def test_followup_turn_appends_new_run_without_mutating_previous_run():
         )
 
 
+def test_followup_on_a_dead_session_resumes_instead_of_rerunning_the_original_prompt(monkeypatch):
+    # The restart used to call start_task, which re-sends task.prompt and drops
+    # the message the user just typed. For a task whose prompt was a deploy
+    # instruction that meant a silent redeploy, so this pins the replacement
+    # behaviour: the new message is what runs, the original is only history.
+    # Note this goes through the conversation endpoint -- /sessions/{id}/turns
+    # calls followup_task directly and has no restart path at all.
+    from app.main import orchestrator
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Resume", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        conversation = client.post("/conversations", json={"project_id": project["id"]}).json()
+
+        first = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"role": "user", "content": "스테이지에 배포해줘"},
+        )
+        assert first.status_code == 201
+
+        conv = client.get(f"/conversations/{conversation['id']}").json()
+        task_id = conv["task_id"]
+        client.post(f"/tasks/{task_id}/approve", json={"actor": "pytest"})
+
+        started: dict[str, str] = {}
+        original_start = orchestrator.adapter.start_task
+
+        async def dead_session_followup(*args, **kwargs):
+            raise RuntimeError("Unknown codex session")
+
+        async def capture_start(request):
+            started["prompt"] = request.prompt
+            return await original_start(request)
+
+        monkeypatch.setattr(orchestrator.adapter, "followup_task", dead_session_followup)
+        monkeypatch.setattr(orchestrator.adapter, "start_task", capture_start)
+
+        response = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"role": "user", "content": "두 번째 시안으로 진행해줘"},
+        )
+        assert response.status_code == 201
+
+        sent = started["prompt"]
+        assert "두 번째 시안으로 진행해줘" in sent
+        # The original prompt survives as background only.
+        instruction = sent.split("[현재 요청]")[-1]
+        assert "배포해줘" not in instruction
+        assert "이전 요청을 다시 실행하지 마세요" in sent
+
+        events = client.get(f"/tasks/{task_id}/events").json()
+        assert any(item["type"] == "session_restarted" for item in events)
+
+
 def test_followup_turn_rejects_while_run_is_active():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
