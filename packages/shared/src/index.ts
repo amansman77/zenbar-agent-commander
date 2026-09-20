@@ -30,7 +30,11 @@ export type EventType =
   | "plan_delta"
   | "completed"
   | "failed"
-  | "stopped";
+  | "stopped"
+  // A dead runtime session was replaced by a fresh one, which starts with no
+  // memory of the conversation so far. Surfaced in the timeline because the
+  // resulting context loss otherwise reads as the agent forgetting.
+  | "session_restarted";
 
 export type PendingInteractionType = "user_input" | "result_approval";
 
