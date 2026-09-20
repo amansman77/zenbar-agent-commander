@@ -273,10 +273,32 @@ async def stream_task(task_id: str, db: Session = Depends(get_db)):
 # not as a URL or markdown image -- there's nothing else to fetch that path
 # from, since it only ever existed on this machine's disk (in the task's
 # worktree, or occasionally a scratch /tmp path the agent chose itself).
-# Deliberately narrow: only these image extensions are servable, regardless
-# of whether the requested path is workspace-relative or absolute -- this is
-# an image viewer, not a general file-read endpoint.
+# Deliberately narrow: only these extensions are servable -- this is a
+# preview endpoint for what an agent produced, not a general file read.
 _WORKSPACE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+# HTML previews (agents emit self-contained design prototypes) are served too,
+# but under two extra rules the images don't need, because HTML *executes*:
+# it must live inside the task's own workspace (see below), and it goes out
+# with the sandbox headers in _HTML_PREVIEW_HEADERS.
+_WORKSPACE_HTML_EXTENSIONS = {".html", ".htm"}
+
+# `sandbox allow-scripts` gives the response an opaque origin while still
+# running its scripts: the prototypes are useless without JS (they build their
+# own DOM), but agent-authored JS must not reach the dashboard's origin, where
+# it could read localStorage or call the API with the user's token. Everything
+# else is denied outright, so a preview cannot phone home either -- with
+# `default-src 'none'`, fetch/XHR/WebSocket are blocked, which is the part the
+# iframe sandbox attribute alone would not give us. The header matters beyond
+# the iframe: it is what still protects the user if the preview is opened
+# directly in a tab, where no sandbox attribute applies.
+_HTML_PREVIEW_HEADERS = {
+    "Content-Security-Policy": (
+        "sandbox allow-scripts; default-src 'none'; "
+        "style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+        "img-src data: blob:; font-src data:"
+    ),
+    "X-Content-Type-Options": "nosniff",
+}
 
 
 @router.get("/tasks/{task_id}/workspace-file")
@@ -288,8 +310,13 @@ def get_task_workspace_file(task_id: str, path: str, db: Session = Depends(get_d
 
     task = require_task(get_task(db, task_id))
     suffix = Path(path).suffix.lower()
-    if suffix not in _WORKSPACE_IMAGE_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="Only image files can be served from this endpoint")
+    is_html = suffix in _WORKSPACE_HTML_EXTENSIONS
+    if suffix not in _WORKSPACE_IMAGE_EXTENSIONS and not is_html:
+        raise HTTPException(
+            status_code=400, detail="Only image and HTML files can be served from this endpoint"
+        )
+
+    workspace_root = Path(task.workspace_path).resolve() if task.workspace_path else None
 
     requested = Path(path)
     if requested.is_absolute():
@@ -300,15 +327,28 @@ def get_task_workspace_file(task_id: str, path: str, db: Session = Depends(get_d
         # be relative to.
         resolved = requested.resolve()
     else:
-        if not task.workspace_path:
+        if workspace_root is None:
             raise HTTPException(status_code=404, detail="Task has no workspace")
-        workspace_root = Path(task.workspace_path).resolve()
         resolved = (workspace_root / requested).resolve()
         if not (resolved == workspace_root or workspace_root in resolved.parents):
             raise HTTPException(status_code=400, detail="Path escapes the task workspace")
+
+    # An absolute path is fine for an image (it is inert), but HTML is code:
+    # "render any .html on this disk" is a much larger blast radius than "view
+    # any .png", so previews are confined to the workspace the task produced
+    # them in, whichever form the path arrived as.
+    if is_html:
+        if workspace_root is None:
+            raise HTTPException(status_code=404, detail="Task has no workspace")
+        if not (resolved == workspace_root or workspace_root in resolved.parents):
+            raise HTTPException(
+                status_code=400, detail="HTML previews must live inside the task workspace"
+            )
 
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
     media_type = guess_type(str(resolved))[0] or "application/octet-stream"
+    if is_html:
+        return FileResponse(resolved, media_type="text/html", headers=_HTML_PREVIEW_HEADERS)
     return FileResponse(resolved, media_type=media_type)
