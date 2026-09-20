@@ -5,7 +5,7 @@ import type {
   ConversationMessageItem
 } from "@zenbar/shared";
 import { api } from "../api";
-import { extractImageSegments, isRemoteImageUrl } from "../lib/messageImages";
+import { extractMessageSegments, isRemoteImageUrl } from "../lib/messageImages";
 
 // A screenshot/evidence image an agent mentioned by path, rendered as an
 // actual thumbnail instead of the raw path text. taskId is only available
@@ -32,8 +32,51 @@ function MessageImage({ path, taskId }: { path: string; taskId: string | null })
   );
 }
 
+// A self-contained HTML prototype an agent produced, rendered inline.
+//
+// sandbox WITHOUT allow-same-origin is the whole security model here: these
+// prototypes only work with their scripts running (they build their own DOM),
+// but the HTML is agent-authored, so it must not execute on the dashboard's
+// origin, where it could read localStorage or call the API with the user's
+// token. allow-scripts alone gives it an opaque origin -- scripts run, the
+// dashboard stays unreachable. The endpoint sends a matching
+// `Content-Security-Policy: sandbox allow-scripts` so the same holds if the
+// preview is opened in its own tab, where this attribute would not apply.
+function MessageHtml({ path, taskId }: { path: string; taskId: string | null }) {
+  if (!taskId) {
+    return <code className="inline-code">{path}</code>;
+  }
+  const src = api.workspaceFileUrl(taskId, path);
+  const name = path.split("/").pop() || path;
+  return (
+    <span style={{ display: "block", margin: "6px 0" }}>
+      <iframe
+        src={src}
+        title={name}
+        sandbox="allow-scripts"
+        style={{
+          display: "block",
+          width: "100%",
+          height: "420px",
+          border: "1px solid var(--line)",
+          borderRadius: "8px",
+          background: "var(--surface, #fff)"
+        }}
+      />
+      <a
+        href={src}
+        target="_blank"
+        rel="noreferrer"
+        style={{ display: "inline-block", marginTop: "4px", fontSize: "0.8rem" }}
+      >
+        {name} 새 탭에서 열기
+      </a>
+    </span>
+  );
+}
+
 function MessageContent({ content, taskId }: { content: string; taskId: string | null }) {
-  const segments = extractImageSegments(content);
+  const segments = extractMessageSegments(content);
   if (segments.length === 1 && segments[0].type === "text") {
     return <>{content}</>;
   }
@@ -42,6 +85,8 @@ function MessageContent({ content, taskId }: { content: string; taskId: string |
       {segments.map((segment, index) =>
         segment.type === "image" ? (
           <MessageImage key={`img-${index}`} path={segment.path} taskId={taskId} />
+        ) : segment.type === "html" ? (
+          <MessageHtml key={`html-${index}`} path={segment.path} taskId={taskId} />
         ) : (
           <span key={`text-${index}`}>{segment.value}</span>
         )
