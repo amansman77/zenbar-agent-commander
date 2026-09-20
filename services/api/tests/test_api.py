@@ -341,6 +341,89 @@ def test_workspace_file_rejects_non_image_extensions():
         assert response.status_code == 400
 
 
+def test_workspace_file_serves_html_preview_with_sandbox_headers():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Preview", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Preview task", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        preview_dir = Path(task["workspace_path"]) / "test-results" / "design-previews"
+        preview_dir.mkdir(parents=True)
+        (preview_dir / "proposal.html").write_text("<div id='p'></div><script>1</script>")
+
+        response = client.get(
+            f"/tasks/{task['id']}/workspace-file",
+            params={"path": "test-results/design-previews/proposal.html"},
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/html")
+        # allow-scripts without allow-same-origin is the whole point: the
+        # prototypes need their JS, but it must not run on the dashboard's
+        # origin. default-src 'none' additionally stops them phoning home.
+        csp = response.headers["content-security-policy"]
+        assert "sandbox allow-scripts" in csp
+        assert "allow-same-origin" not in csp
+        assert "default-src 'none'" in csp
+        assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_workspace_file_rejects_html_outside_the_workspace():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Preview Escape", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Preview escape", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        outside = Path(tmpdir) / "elsewhere.html"
+        outside.write_text("<p>not mine</p>")
+
+        # An absolute path is allowed for an inert image, but HTML executes, so
+        # it stays confined to the workspace the task produced it in.
+        response = client.get(
+            f"/tasks/{task['id']}/workspace-file", params={"path": str(outside)}
+        )
+        assert response.status_code == 400
+
+
+def test_workspace_file_accepts_html_via_an_aliased_workspace_path():
+    # The API runs in Docker while agents run on the host, so the same
+    # workspace is reachable under two different absolute paths. A string
+    # prefix check rejected the agent's form even though it named the very
+    # same directory; a symlink reproduces that aliasing here.
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Preview Alias", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Preview alias", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        workspace = Path(task["workspace_path"])
+        (workspace / "proposal.html").write_text("<p>hi</p>")
+
+        alias = Path(tmpdir) / "workspace-alias"
+        alias.symlink_to(workspace)
+
+        response = client.get(
+            f"/tasks/{task['id']}/workspace-file", params={"path": str(alias / "proposal.html")}
+        )
+        assert response.status_code == 200
+
+
 def test_workspace_file_serves_absolute_path_outside_workspace():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)

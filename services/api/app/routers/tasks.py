@@ -301,6 +301,30 @@ _HTML_PREVIEW_HEADERS = {
 }
 
 
+def _is_inside(resolved, root) -> bool:
+    """Whether `resolved` is `root` or lives under it, across mount aliases.
+
+    A string prefix check alone is wrong once the API runs in Docker: the same
+    workspace directory is visible under two paths, the container's
+    (`/tmp/zenbar-task-workspaces/<task>`, which is what `workspace_path`
+    stores) and the host's (`/Users/.../tmp/task-workspaces/<task>`, which is
+    what an agent writes into its message, since the agent runs on the host).
+    Comparing strings rejected the host form even though it names the very same
+    directory, so identity is compared too -- `samefile` is dev+ino, which
+    matches across bind mounts.
+    """
+    if resolved == root or root in resolved.parents:
+        return True
+    for candidate in (resolved, *resolved.parents):
+        try:
+            if candidate.samefile(root):
+                return True
+        except OSError:
+            # Unreadable or missing ancestor: no claim either way, keep walking.
+            continue
+    return False
+
+
 @router.get("/tasks/{task_id}/workspace-file")
 def get_task_workspace_file(task_id: str, path: str, db: Session = Depends(get_db)):
     from mimetypes import guess_type
@@ -340,7 +364,7 @@ def get_task_workspace_file(task_id: str, path: str, db: Session = Depends(get_d
     if is_html:
         if workspace_root is None:
             raise HTTPException(status_code=404, detail="Task has no workspace")
-        if not (resolved == workspace_root or workspace_root in resolved.parents):
+        if not _is_inside(resolved, workspace_root):
             raise HTTPException(
                 status_code=400, detail="HTML previews must live inside the task workspace"
             )
