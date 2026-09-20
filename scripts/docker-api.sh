@@ -26,6 +26,7 @@ if [ ! -d "$PROJECTS_ROOT" ] || [ ! -d "$ZENBAR_WORKSPACE_ROOT" ]; then
     echo 'Projects root and task workspace directory must exist.' >&2
     exit 1
 fi
+WORKSPACE_MOUNT_SOURCE="$(CDPATH= cd -- "$ZENBAR_WORKSPACE_ROOT" && pwd -P)"
 
 if ! docker volume inspect "$DATABASE_VOLUME" >/dev/null 2>&1; then
     echo 'Initialize the SQLite volume with pnpm docker:database first.' >&2
@@ -58,9 +59,9 @@ fi
 # Persist the database and its SQLite journals together in a named volume.
 set -- --mount "type=volume,src=$DATABASE_VOLUME,dst=/data" \
     --mount "type=bind,src=$PROJECTS_ROOT,dst=$PROJECTS_ROOT" \
-    --mount "type=bind,src=$ZENBAR_WORKSPACE_ROOT,dst=$ZENBAR_WORKSPACE_ROOT"
+    --mount "type=bind,src=$WORKSPACE_MOUNT_SOURCE,dst=$ZENBAR_WORKSPACE_ROOT"
 if [ "$ZENBAR_WORKSPACE_ROOT" = /tmp/zenbar-task-workspaces ]; then
-    set -- "$@" --mount "type=bind,src=$ZENBAR_WORKSPACE_ROOT,dst=/private/tmp/zenbar-task-workspaces"
+    set -- "$@" --mount "type=bind,src=$WORKSPACE_MOUNT_SOURCE,dst=/private/tmp/zenbar-task-workspaces"
 fi
 if [ -f "$CODEX_HOME/config.toml" ]; then
     set -- "$@" --mount "type=bind,src=$CODEX_HOME/config.toml,dst=$CODEX_HOME/config.toml"
