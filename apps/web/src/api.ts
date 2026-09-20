@@ -42,6 +42,22 @@ import type {
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const API_TOKEN = (import.meta.env.VITE_API_TOKEN as string | undefined)?.trim();
 
+// Builds an absolute URL for the callers that need one as a string (an
+// EventSource target, an <img src>) rather than handing a path to fetch().
+//
+// The second argument is what makes this safe: `API_BASE` is relative in the
+// Docker build (`ENV VITE_API_BASE_URL=/api`, served behind the dashboard's
+// own nginx), and one-argument `new URL("/api/...")` throws `TypeError:
+// Invalid URL` on a relative input. That threw *during render* in
+// MessageImage -> workspaceFileUrl, which unmounts the React tree and left
+// the whole dashboard blank as soon as any message mentioned an image path.
+// It only surfaced after the move to Docker because the dev scripts set an
+// absolute VITE_API_BASE_URL. An absolute API_BASE ignores the base argument,
+// so both deployments go through the same path.
+function apiUrl(path: string): URL {
+  return new URL(`${API_BASE}${path}`, window.location.origin);
+}
+
 function authHeaders(): Record<string, string> {
   if (!API_TOKEN) {
     return {};
@@ -263,7 +279,7 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   streamUrl: (taskId: string) => {
-    const url = new URL(`${API_BASE}/tasks/${taskId}/stream`);
+    const url = apiUrl(`/tasks/${taskId}/stream`);
     if (API_TOKEN) {
       url.searchParams.set("token", API_TOKEN);
     }
@@ -272,7 +288,7 @@ export const api = {
   // <img src> can't send an Authorization header, so the token (same as
   // streamUrl above) rides along as a query param instead.
   workspaceFileUrl: (taskId: string, path: string) => {
-    const url = new URL(`${API_BASE}/tasks/${taskId}/workspace-file`);
+    const url = apiUrl(`/tasks/${taskId}/workspace-file`);
     url.searchParams.set("path", path);
     if (API_TOKEN) {
       url.searchParams.set("token", API_TOKEN);
