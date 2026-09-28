@@ -476,7 +476,19 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                 )
             )
             return
-        if method in {"item/fileChange/requestApproval", "item/commandExecution/requestApproval"}:
+        if method in {
+            "item/fileChange/requestApproval",
+            "item/commandExecution/requestApproval",
+            # An MCP server (a Codex connector such as Computer Use) asking
+            # permission to run one of its tools. Left unhandled, nobody ever
+            # answers it: the App Server's turn blocks forever, the task stays
+            # "running" with no UI to respond in, and the stuck-session
+            # watchdog restarts the turn every 15 minutes only for the same
+            # request to come straight back (90 restarts over 8 hours,
+            # 2026-09-28). It is an approval like the two above, so it goes
+            # through the same pending-request path.
+            "mcpServer/elicitation/request",
+        }:
             state.pending_requests[request_id] = PendingRequest(
                 request_id=request_id,
                 method=method,
@@ -496,7 +508,15 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                     )
                     for file_path in diff_payload.files_changed:
                         await state.queue.put(RuntimeEvent(type="file_changed", message=file_path, payload={"file": file_path}))
-            message = params.get("reason") or params.get("command") or f"Result approval requested: {method}"
+            # An elicitation carries its prompt in `message` ("Allow Computer
+            # Use to use \"Arc\"?"), which is the only readable description of
+            # what is being approved.
+            message = (
+                params.get("reason")
+                or params.get("command")
+                or params.get("message")
+                or f"Result approval requested: {method}"
+            )
             await state.queue.put(
                 RuntimeEvent(
                     type="result_approval_requested",
@@ -739,6 +759,12 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             return {"decision": "accept"}
         if pending.method == "item/fileChange/requestApproval":
             return {"decision": "accept"}
+        if pending.method == "mcpServer/elicitation/request":
+            # McpServerElicitationRequestResponse: an action, plus content
+            # only for an accepted form. The requests seen here are plain
+            # permission prompts (an empty `requestedSchema`), so there is
+            # nothing to fill in.
+            return {"action": "accept", "content": None}
         raise RuntimeError(f"Unsupported approval request: {pending.method}")
 
     def _find_pending_request(self, state: SessionState, request_id: int | str) -> PendingRequest | None:

@@ -3482,3 +3482,43 @@ def test_followup_that_cannot_restart_fails_the_task_instead_of_stranding_it():
             stranded = get_task(db, task_id)
             assert stranded is not None
             assert stranded.status == "failed"
+
+
+def test_stuck_session_watchdog_leaves_a_task_that_is_waiting_on_a_person():
+    """Waiting for an answer is not being stuck.
+
+    A turn blocked on an approval produces nothing but idle heartbeats, which
+    looks exactly like a wedged background process to the watchdog. Restarting
+    it throws the question away and asks it again: one real session was
+    restarted 90 times over 8 hours against the same unanswered prompt.
+    """
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Waiting On A Person", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Waiting", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            current.status = "waiting_result_approval"
+            current.runtime_session_id = "session-waiting"
+            current.pending_request_id = "7"
+            current.pending_interaction_type = "result_approval"
+            db.add(current)
+            db.commit()
+
+        from app.runtime_registry import orchestrator
+
+        recovered = asyncio.run(orchestrator._auto_recover_stuck_session(task["id"], 901.0))
+
+        assert recovered is False
+        with SessionLocal() as db:
+            after = get_task(db, task["id"])
+            assert after.status == "waiting_result_approval"
+            assert after.runtime_session_id == "session-waiting"
