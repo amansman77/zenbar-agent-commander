@@ -219,7 +219,18 @@ stays `running` and emits only heartbeats while every `exec_command` and
 `apply_patch` fails, with the reason visible in the App Server's log alone.
 `workspace.py::_assert_sandbox_safe_root` mirrors that rule so the task fails
 at start instead. Note that changing the root does not move existing tasks —
-they keep the absolute `workspace_path` they were created with.
+they keep the absolute `workspace_path` they were created with, so each one
+re-prepares its workspace the next time it starts.
+
+**Re-preparing a workspace must not destroy the task's work.** `start_task`
+calls `prepare_workspace` again whenever `task.workspace_path` no longer
+resolves, which every pre-existing task does after `ZENBAR_WORKSPACE_ROOT`
+changes. So `prepare_workspace` adopts a directory that is already the
+worktree for the task's branch instead of deleting it, and attaches to an
+existing branch (`worktree add <path> <ref>`) instead of `-b`, which fails with
+"a branch named ... already exists" and leaves the task unable to retry at all.
+It also prunes with `--expire=now`, because a deleted worktree's registration
+otherwise blocks reuse of its branch for `gc.worktreePruneExpire` (3 months).
 
 **A task can hold an active status with no runtime session.** `start_task`
 moves a task to `starting` before it opens one, so a failure in between (a
