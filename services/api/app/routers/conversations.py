@@ -257,6 +257,19 @@ async def post_conversation_message(
                         db, task, project, payload.content, selected_skill=selected_skill, model=payload.model
                     )
                 except Exception as exc:
+                    # followup_or_restart_task falls back to start_task when
+                    # the runtime session is gone, and start_task moves the
+                    # task to "starting" before it opens a new one. A failure
+                    # in between left the task stranded in an active status
+                    # with no session -- see TaskOrchestrator.stop_task for
+                    # why that used to be unrecoverable. POST /tasks and retry
+                    # already fail their task on a start failure; this path
+                    # has to as well, but only when it is the one that moved
+                    # the status, or a follow-up that never got that far would
+                    # relabel a completed task as failed.
+                    stranded = get_task(db, task.id)
+                    if stranded is not None and stranded.status == "starting" and not stranded.runtime_session_id:
+                        set_task_status(db, stranded, "failed")
                     detail = safe_runtime_error_detail("Follow-up failed", exc)
                     raise HTTPException(status_code=409, detail=detail) from exc
 

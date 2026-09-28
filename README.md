@@ -218,6 +218,14 @@ Overrides: `ZENBAR_DOCKER_API_PORT`, `ZENBAR_DOCKER_PROJECTS_ROOT`,
 and `ZENBAR_DOCKER_RUNTIME_URL`. The launcher runs as
 the host user's UID/GID. Stop it with `docker stop zenbar-api`.
 
+`ZENBAR_WORKSPACE_ROOT` must be a path with no symlink below the top level, on
+the host as well as in the container — Codex's sandbox resolves a top-level
+alias such as `/tmp -> /private/tmp` but rejects a writable root with a symlink
+under it. Pointing the root at a symlink (a `/tmp/zenbar-task-workspaces` that
+links into the repo, say) makes every one of the agent's file and command tools
+fail while the task itself still reports as running; the API now refuses such a
+root when it prepares a workspace.
+
 Start both servers from the repo root:
 
 ```bash

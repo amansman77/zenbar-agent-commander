@@ -1,6 +1,10 @@
+import os
+import shutil
 import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+import pytest
 
 from app.workspace import cleanup_workspace, prepare_workspace
 
@@ -102,3 +106,38 @@ def test_multiple_worktrees_for_same_repo_coexist(tmp_path, monkeypatch):
 
         cleanup_workspace(first.workspace_path, "worktree", str(repo))
         cleanup_workspace(second.workspace_path, "worktree", str(repo))
+
+
+def test_prepare_workspace_rejects_symlinked_root(tmp_path, monkeypatch):
+    # Codex's sandbox refuses a writable root with a symlink component, and it
+    # does so per tool call -- the task itself stays "running" and only emits
+    # heartbeats. Failing at prepare time is what makes the cause visible.
+    real_root = tmp_path / "real-workspaces"
+    real_root.mkdir()
+    linked_root = tmp_path / "linked-workspaces"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+    monkeypatch.setenv("ZENBAR_WORKSPACE_ROOT", str(linked_root))
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            prepare_workspace(str(repo), "main", "worktree", "task/symlinked-root")
+
+    message = str(excinfo.value)
+    assert str(linked_root) in message
+    assert "ZENBAR_WORKSPACE_ROOT" in message
+
+
+def test_prepare_workspace_allows_top_level_alias_root(tmp_path, monkeypatch):
+    # `/tmp -> /private/tmp` is the alias Codex still resolves, so a root whose
+    # only symlink is that top-level entry has to keep working.
+    root = Path("/tmp") / f"zenbar-test-workspaces-{os.getpid()}"
+    monkeypatch.setenv("ZENBAR_WORKSPACE_ROOT", str(root))
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        try:
+            prepared = prepare_workspace(str(repo), "main", "worktree", "task/alias-root")
+            assert Path(prepared.workspace_path).exists()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)

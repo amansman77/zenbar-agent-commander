@@ -184,7 +184,11 @@ async def respond_task(task_id: str, payload: RespondTaskRequest, db: Session = 
 @router.post("/tasks/{task_id}/stop", response_model=TaskDetail)
 async def stop_task(task_id: str, payload: TaskApprovalRequest, db: Session = Depends(get_db)):
     task = require_task(get_task(db, task_id))
-    assert_actionable(task)
+    # Deliberately no assert_actionable here: stopping a task that has no
+    # runtime session is exactly the case that needs to work. A task stranded
+    # in an active status with no session (see TaskOrchestrator.stop_task) has
+    # no other way out -- can_retry rejects "starting", so refusing the stop
+    # left the task permanently wedged.
     assert_transition(can_stop(task.status), f"Task cannot be stopped from status '{task.status}'")
     add_approval(db, task, "stop", payload.actor)
     try:
