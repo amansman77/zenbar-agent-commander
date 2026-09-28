@@ -91,6 +91,28 @@ def _assert_sandbox_safe_root(root: Path) -> None:
     )
 
 
+def _branch_exists(repo: Path, branch: str) -> bool:
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def _is_worktree_for_branch(workspace_path: Path, branch: str) -> bool:
+    if not (workspace_path / ".git").exists():
+        return False
+    result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=str(workspace_path),
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and result.stdout.strip() == branch
+
+
 def prepare_workspace(repo_path: str, default_branch: str, workspace_type: str, workspace_ref: str) -> PreparedWorkspace:
     repo = Path(repo_path).expanduser().resolve()
     if not (repo / ".git").exists():
@@ -121,9 +143,29 @@ def prepare_workspace(repo_path: str, default_branch: str, workspace_type: str, 
     base_ref = _resolve_remote_ref(default_branch)
 
     if workspace_type == "worktree":
+        if _is_worktree_for_branch(workspace_path, workspace_ref):
+            # Re-preparing a workspace that is still on disk used to delete it
+            # and start the branch over from base_ref, throwing away whatever
+            # the agent had not committed. A task reaches here whenever its
+            # stored workspace_path no longer resolves -- after ZENBAR_
+            # WORKSPACE_ROOT changes, say -- even though the worktree itself
+            # is right where the new root says it should be.
+            return PreparedWorkspace(str(workspace_path), workspace_ref, workspace_type)
         if workspace_path.exists():
             shutil.rmtree(workspace_path)
-        _run_git(["worktree", "add", "-b", workspace_ref, str(workspace_path), base_ref], str(repo))
+        # A directory that is gone leaves its worktree registration behind, and
+        # git refuses to reuse the branch while that registration stands.
+        # --expire=now overrides the gc.worktreePruneExpire grace period, which
+        # otherwise keeps a just-deleted worktree's registration for months.
+        _run_git(["worktree", "prune", "--expire=now"], str(repo))
+        if _branch_exists(repo, workspace_ref):
+            # The branch outliving its worktree is the normal state for any
+            # task being restarted, so attaching to it is what keeps the task's
+            # own history. `-b` would fail outright ("a branch named ...
+            # already exists") and leave the task unable to retry at all.
+            _run_git(["worktree", "add", str(workspace_path), workspace_ref], str(repo))
+        else:
+            _run_git(["worktree", "add", "-b", workspace_ref, str(workspace_path), base_ref], str(repo))
         return PreparedWorkspace(str(workspace_path), workspace_ref, workspace_type)
 
     if workspace_path.exists():

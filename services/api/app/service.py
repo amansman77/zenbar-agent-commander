@@ -363,7 +363,28 @@ class TaskOrchestrator:
             refreshed = self._require_task(db, task.id, "stopping a task with no session")
             return set_task_status(db, refreshed, "stopped")
         adapter = self._adapter_for(task)
-        await adapter.stop_task(task.runtime_session_id)
+        try:
+            # turn/interrupt usually answers promptly even on a wedged turn,
+            # but not always: a turn blocked on a server request nobody
+            # answered left this call hanging with no timeout, so the one
+            # action meant to free the task hung too. Stopping is the user's
+            # last resort -- record it even when the runtime will not say so.
+            await asyncio.wait_for(adapter.stop_task(task.runtime_session_id), timeout=15.0)
+        except Exception as exc:
+            # append_event on the caller's own session, not
+            # _handle_runtime_event: that opens a second SessionLocal, which
+            # blocks on the write lock this session already holds.
+            append_event(
+                db,
+                task,
+                RuntimeEvent(
+                    type="agent_status",
+                    message="Runtime did not acknowledge the stop; marking the task stopped anyway.",
+                    payload={"reason": "stop_not_acknowledged", "error": str(exc)[:500]},
+                ),
+            )
+            refreshed = self._require_task(db, task.id, "stopping an unresponsive task")
+            return set_task_status(db, refreshed, "stopped")
         if not adapter.stream_in_background:
             await self._consume_events(task.id, task.runtime_session_id)
         db.expire_all()
@@ -868,6 +889,14 @@ class TaskOrchestrator:
         with SessionLocal() as db:
             task = get_task(db, task_id)
             if task is None or task.status not in self.ACTIVE_TASK_STATUSES or not task.runtime_session_id:
+                return False
+            if task.status in {"waiting_user_input", "waiting_result_approval"}:
+                # Waiting on a person is not being stuck. Restarting the turn
+                # here only throws the question away and asks it again -- the
+                # session that prompted this guard had been restarted 90 times
+                # over 8 hours against the same unanswered approval. Keyed on
+                # the status rather than pending_request_id, which a task can
+                # still carry from an already-answered earlier turn.
                 return False
             append_event(
                 db,

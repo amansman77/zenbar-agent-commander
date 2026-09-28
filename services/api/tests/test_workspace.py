@@ -141,3 +141,48 @@ def test_prepare_workspace_allows_top_level_alias_root(tmp_path, monkeypatch):
             assert Path(prepared.workspace_path).exists()
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+
+def test_prepare_workspace_reattaches_to_an_existing_branch(tmp_path, monkeypatch):
+    # A restarted task re-prepares its workspace, and its branch is still
+    # there from the first run. `worktree add -b` fails on that ("a branch
+    # named ... already exists"), which used to leave the task unable to
+    # retry at all -- the branch had to be deleted by hand.
+    monkeypatch.setenv("ZENBAR_WORKSPACE_ROOT", str(tmp_path / "workspaces"))
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+
+        first = prepare_workspace(str(repo), "main", "worktree", "task/reattach")
+        workspace = Path(first.workspace_path)
+        (workspace / "agent-work.txt").write_text("committed on the branch\n")
+        _git(workspace, "add", "agent-work.txt")
+        _git(workspace, "commit", "-m", "agent work")
+        head = _git(workspace, "rev-parse", "HEAD")
+
+        # The worktree is gone but the branch (and its commit) is not.
+        shutil.rmtree(workspace)
+
+        again = prepare_workspace(str(repo), "main", "worktree", "task/reattach")
+
+        reattached = Path(again.workspace_path)
+        assert _git(reattached, "rev-parse", "HEAD") == head
+        assert (reattached / "agent-work.txt").exists()
+
+
+def test_prepare_workspace_keeps_an_existing_worktree_and_its_uncommitted_work(tmp_path, monkeypatch):
+    # Re-preparing a workspace that is still on disk used to rmtree it and
+    # restart the branch from base, discarding everything uncommitted. This
+    # happens for real whenever the stored workspace_path stops resolving --
+    # a changed ZENBAR_WORKSPACE_ROOT -- while the worktree itself is fine.
+    monkeypatch.setenv("ZENBAR_WORKSPACE_ROOT", str(tmp_path / "workspaces"))
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+
+        first = prepare_workspace(str(repo), "main", "worktree", "task/keep-work")
+        workspace = Path(first.workspace_path)
+        (workspace / "in-progress.txt").write_text("not committed yet\n")
+
+        again = prepare_workspace(str(repo), "main", "worktree", "task/keep-work")
+
+        assert again.workspace_path == first.workspace_path
+        assert (Path(again.workspace_path) / "in-progress.txt").read_text() == "not committed yet\n"

@@ -103,6 +103,24 @@ accept the result. Only the latter is approvable (`can_approve`), and for an
 execute-mode task, approving it is also what merges the PR the agent opened
 (`TaskOrchestrator.approve_task` with `merge_pr=True`, best-effort by design).
 
+**Every server request the App Server sends must get an answer.** A JSON-RPC
+*request* (as opposed to a notification) blocks the turn until it is replied
+to, so a method missing from `runtime/app_server.py::_handle_server_request`
+wedges the session outright — it logs "Unhandled server request" and nothing
+else ever happens. The handled set is the two `requestApproval` methods plus
+`mcpServer/elicitation/request`, which is how a Codex connector (Computer Use,
+for instance) asks permission to run one of its tools; note it is answered with
+`{"action": ...}` while the others take `{"decision": ...}`. Adding a connector
+can therefore introduce a new method that has to be handled here.
+
+**The stuck-session watchdog must not fire on a task waiting for a person.** A
+turn blocked on an approval emits nothing but idle heartbeats, which is exactly
+what `_auto_recover_stuck_session` treats as a wedged background process. It
+therefore skips tasks in the two waiting statuses; without that it restarts the
+turn, the same question comes straight back, and each restart leaves another
+heartbeat consumer behind (90 restarts and three overlapping heartbeat streams
+over 8 hours, 2026-09-28).
+
 ## Frontend — `apps/web/src/`
 
 ```
@@ -219,7 +237,18 @@ stays `running` and emits only heartbeats while every `exec_command` and
 `apply_patch` fails, with the reason visible in the App Server's log alone.
 `workspace.py::_assert_sandbox_safe_root` mirrors that rule so the task fails
 at start instead. Note that changing the root does not move existing tasks —
-they keep the absolute `workspace_path` they were created with.
+they keep the absolute `workspace_path` they were created with, so each one
+re-prepares its workspace the next time it starts.
+
+**Re-preparing a workspace must not destroy the task's work.** `start_task`
+calls `prepare_workspace` again whenever `task.workspace_path` no longer
+resolves, which every pre-existing task does after `ZENBAR_WORKSPACE_ROOT`
+changes. So `prepare_workspace` adopts a directory that is already the
+worktree for the task's branch instead of deleting it, and attaches to an
+existing branch (`worktree add <path> <ref>`) instead of `-b`, which fails with
+"a branch named ... already exists" and leaves the task unable to retry at all.
+It also prunes with `--expire=now`, because a deleted worktree's registration
+otherwise blocks reuse of its branch for `gc.worktreePruneExpire` (3 months).
 
 **A task can hold an active status with no runtime session.** `start_task`
 moves a task to `starting` before it opens one, so a failure in between (a
