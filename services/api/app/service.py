@@ -342,7 +342,26 @@ class TaskOrchestrator:
 
     async def stop_task(self, db: Session, task: Task) -> Task:
         if not task.runtime_session_id:
-            raise RuntimeError("Task has no runtime session")
+            # A task can hold an active status with no session at all:
+            # start_task moves it to "starting" before it opens one, so a
+            # failure in between (a workspace that cannot be prepared, say)
+            # strands it there. Refusing to stop used to make that permanent
+            # -- can_retry rejects "starting", and reconcile_active_tasks only
+            # looks at tasks that do have a session, so nothing could heal it
+            # and the task had to be fixed in the database by hand. Recording
+            # the stop the caller asked for is both honest and what makes the
+            # task retryable again.
+            append_event(
+                db,
+                task,
+                RuntimeEvent(
+                    type="agent_status",
+                    message="Stopped a task that had no runtime session.",
+                    payload={"reason": "stop_without_session"},
+                ),
+            )
+            refreshed = self._require_task(db, task.id, "stopping a task with no session")
+            return set_task_status(db, refreshed, "stopped")
         adapter = self._adapter_for(task)
         await adapter.stop_task(task.runtime_session_id)
         if not adapter.stream_in_background:

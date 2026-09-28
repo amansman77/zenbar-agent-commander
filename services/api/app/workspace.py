@@ -55,12 +55,49 @@ def _workspace_root() -> Path:
     return Path(os.getenv("TMPDIR", "/tmp")) / "zenbar-task-workspaces"
 
 
+def _nested_symlink_component(path: Path) -> Path | None:
+    """Mirrors Codex's own writable-root rule (sandboxing/src/seatbelt.rs).
+
+    Codex resolves top-level system aliases such as `/tmp -> /private/tmp` but
+    rejects a symlink anywhere below that, because a deeper component can be
+    swapped by an already-running sandboxed process -- following it would turn
+    a path check into a new authority grant.
+    """
+    for ancestor in [path, *path.parents]:
+        # A direct child of `/` is the top-level alias Codex still resolves.
+        if ancestor.parent == ancestor or ancestor.parent.parent == ancestor.parent:
+            continue
+        if ancestor.is_symlink():
+            return ancestor
+    return None
+
+
+def _assert_sandbox_safe_root(root: Path) -> None:
+    """Fails loudly on a workspace root Codex's sandbox would refuse.
+
+    Without this the misconfiguration is nearly invisible: the API, the task
+    and the containers all stay healthy, the task sits in `running`, and the
+    timeline shows only "Runtime is still running (no new output yet)"
+    heartbeats while every `exec_command` and `apply_patch` fails inside the
+    runtime. Only the App Server's own log names the reason. Refusing at task
+    start turns that silent stall into one readable error.
+    """
+    symlink = _nested_symlink_component(root)
+    if symlink is None:
+        return
+    raise RuntimeError(
+        f"Workspace root {root} contains symlink component {symlink}; Codex's sandbox "
+        "rejects symlinked writable roots. Point ZENBAR_WORKSPACE_ROOT at a real path."
+    )
+
+
 def prepare_workspace(repo_path: str, default_branch: str, workspace_type: str, workspace_ref: str) -> PreparedWorkspace:
     repo = Path(repo_path).expanduser().resolve()
     if not (repo / ".git").exists():
         raise RuntimeError(f"Repository path is not a git repository: {repo}")
 
     root = _workspace_root()
+    _assert_sandbox_safe_root(root)
     root.mkdir(parents=True, exist_ok=True)
     workspace_path = root / workspace_ref.replace("/", "__")
 

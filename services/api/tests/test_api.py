@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -3393,3 +3394,91 @@ def test_delete_task_cleans_up_workspace_and_removes_record():
         assert client.get(f"/tasks/{task['id']}").status_code == 404
         assert client.delete(f"/tasks/{task['id']}").status_code == 404
 
+
+
+def test_stop_recovers_task_stranded_in_starting_without_a_session():
+    """A task left in "starting" with no session used to be unrecoverable.
+
+    start_task moves a task to "starting" before it opens a runtime session,
+    so a failure in between strands it there: stop refused without a session,
+    can_retry rejects "starting", and reconcile_active_tasks skips tasks that
+    have no session. The only fix was editing the database by hand.
+    """
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Stranded Starting", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        task = client.post(
+            "/tasks",
+            json={"project_id": project["id"], "title": "Stranded", "prompt": "Do work", "model": "default"},
+        ).json()
+
+        with SessionLocal() as db:
+            current = get_task(db, task["id"])
+            assert current is not None
+            current.status = "starting"
+            current.runtime_session_id = None
+            db.add(current)
+            db.commit()
+
+        stopped = client.post(f"/tasks/{task['id']}/stop", json={"actor": "pytest"})
+        assert stopped.status_code == 200
+        assert stopped.json()["status"] == "stopped"
+
+        # And the whole point of stopping it: the task is retryable again.
+        retried = client.post(f"/tasks/{task['id']}/retry", json={"actor": "pytest"})
+        assert retried.status_code == 200
+        assert retried.json()["runtime_session_id"]
+
+
+def test_followup_that_cannot_restart_fails_the_task_instead_of_stranding_it():
+    """The path that stranded a real task: a follow-up on a sessionless task.
+
+    followup_or_restart_task falls back to start_task, which re-prepares the
+    workspace -- and that fails for good when the task's branch already
+    exists. The task must not be left in "starting".
+    """
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Followup Restart Failure", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        conversation = client.post(
+            "/conversations", json={"project_id": project["id"]}
+        ).json()
+        started = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "Start the work", "model": "default"},
+        )
+        assert started.status_code == 201
+        task_id = started.json()["task_id"]
+
+        with SessionLocal() as db:
+            current = get_task(db, task_id)
+            assert current is not None
+            current.status = "completed"
+            current.runtime_session_id = None
+            db.add(current)
+            db.commit()
+
+        # start_task only re-prepares a workspace that is no longer there --
+        # which is what a changed ZENBAR_WORKSPACE_ROOT looks like from inside
+        # the API. With the repo gone too, that re-preparation cannot succeed.
+        with SessionLocal() as db:
+            current = get_task(db, task_id)
+            shutil.rmtree(current.workspace_path, ignore_errors=True)
+        shutil.rmtree(repo)
+
+        response = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "Keep going", "model": "default"},
+        )
+        assert response.status_code == 409
+
+        with SessionLocal() as db:
+            stranded = get_task(db, task_id)
+            assert stranded is not None
+            assert stranded.status == "failed"

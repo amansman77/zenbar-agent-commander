@@ -164,6 +164,22 @@ Override `ZENBAR_DOCKER_PORT` or `ZENBAR_API_UPSTREAM` to use another port or AP
 Run `docker stop zenbar-dashboard` to stop it; rerun `pnpm docker:dashboard` to
 rebuild and replace it. Docker Engine is sufficient; Compose is not required.
 
+For Tailscale access to the Docker dashboard, stop the old development web server
+on port 15173 and forward that tailnet port to the container:
+
+```bash
+tailscale serve --bg --tcp=15173 tcp://127.0.0.1:8080
+# Optional HTTPS dashboard:
+tailscale serve --bg --https=8443 http://127.0.0.1:8080
+```
+
+With the macOS GUI install, use
+`/Applications/Tailscale.app/Contents/MacOS/Tailscale` if `tailscale` is not on PATH.
+Open `http://<tailscale-ip>:15173` or `https://<magicdns-name>:8443`. Use TCP
+forwarding for the IP URL; Tailscale's HTTP proxy routes by hostname. Both UI and
+API requests use the Docker dashboard's same-origin `/api` proxy, so the browser
+does not depend on the old host API port 18000.
+
 To also run the API in Docker:
 
 First finish active tasks, stop the host API, and run the Codex App Server
@@ -201,6 +217,14 @@ Overrides: `ZENBAR_DOCKER_API_PORT`, `ZENBAR_DOCKER_PROJECTS_ROOT`,
 `ZENBAR_DOCKER_DATABASE_FILE` (snapshot source), `ZENBAR_DOCKER_DATABASE_VOLUME`,
 and `ZENBAR_DOCKER_RUNTIME_URL`. The launcher runs as
 the host user's UID/GID. Stop it with `docker stop zenbar-api`.
+
+`ZENBAR_WORKSPACE_ROOT` must be a path with no symlink below the top level, on
+the host as well as in the container — Codex's sandbox resolves a top-level
+alias such as `/tmp -> /private/tmp` but rejects a writable root with a symlink
+under it. Pointing the root at a symlink (a `/tmp/zenbar-task-workspaces` that
+links into the repo, say) makes every one of the agent's file and command tools
+fail while the task itself still reports as running; the API now refuses such a
+root when it prepares a workspace.
 
 Start both servers from the repo root:
 

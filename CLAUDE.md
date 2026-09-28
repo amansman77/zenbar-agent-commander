@@ -212,6 +212,24 @@ origin for the phone UI to work.
 `workspace.cleanup_workspace()` so the worktree is deregistered from the parent
 repo, not just removed.
 
+**`ZENBAR_WORKSPACE_ROOT` must have no symlink below the top level.** Codex's
+sandbox resolves a top-level alias like `/tmp -> /private/tmp` but refuses a
+writable root with a symlink under it, and it refuses per *tool call*: the task
+stays `running` and emits only heartbeats while every `exec_command` and
+`apply_patch` fails, with the reason visible in the App Server's log alone.
+`workspace.py::_assert_sandbox_safe_root` mirrors that rule so the task fails
+at start instead. Note that changing the root does not move existing tasks —
+they keep the absolute `workspace_path` they were created with.
+
+**A task can hold an active status with no runtime session.** `start_task`
+moves a task to `starting` before it opens one, so a failure in between (a
+workspace that cannot be prepared) strands it there. Every route out of that
+state has to keep working: `POST /tasks/{id}/stop` deliberately skips
+`assert_actionable`, `TaskOrchestrator.stop_task` marks a sessionless task
+`stopped` rather than raising, and each caller of `start_task` fails its task
+on a start failure. Weakening any of those puts the task back to being fixable
+only by editing the database.
+
 ## Conventions
 
 - Comments explain *why*, especially when the code encodes a bug that was
