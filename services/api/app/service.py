@@ -32,6 +32,7 @@ from .repository import (
     get_task,
     replace_diff,
     list_events,
+    latest_user_message_for_task,
     list_recent_conversation_messages,
     serialize_diff,
     serialize_event,
@@ -731,20 +732,60 @@ class TaskOrchestrator:
         return result
 
     async def _restart_with_fresh_session(self, db: Session, task: Task) -> Task:
+        """Replaces a dead session, resuming from what the user last asked.
+
+        A restart has no new message of its own, so this used to fall through
+        to start_task's default and re-send `task.prompt` -- the request that
+        *started* the task, which by then can be many turns old. Live on
+        2026-09-28: a task begun with "GPT-6-sol을 실험에 추가해줘" was restarted
+        while the user was asking why a chart was missing, and the agent spent
+        the new session answering the original request again. That is the
+        exact failure resume_context was written for; only the follow-up path
+        had been wired to it.
+        """
         project = task.project
         if project is None:
             raise RuntimeError("Task project is missing")
+        recent = [
+            ResumeMessage(role=message.role, content=message.content)
+            for message in list_recent_conversation_messages(db, task.id, RECENT_MESSAGE_LIMIT)
+        ]
+        latest_request = latest_user_message_for_task(db, task.id)
+        prompt_override = (
+            build_resume_prompt(
+                original_prompt=task.prompt,
+                recent_messages=recent,
+                new_message=latest_request,
+            )
+            if latest_request
+            else None
+        )
         append_event(
             db,
             task,
             RuntimeEvent(
-                type="agent_status",
-                message="Starting a fresh Codex App Server session for retry",
-                payload={"reason": "fresh_retry_session"},
+                # session_restarted, not agent_status: the frontend filters
+                # agent_status out of the timeline, so the old breadcrumb was
+                # invisible to the person whose task had just been restarted.
+                type="session_restarted",
+                message=(
+                    "새 Codex 세션으로 다시 시작했습니다. "
+                    + (
+                        f"직전 대화 {len(recent)}건을 이어받아 마지막 요청부터 진행합니다."
+                        if prompt_override is not None
+                        else "이어받을 대화 기록이 없어 최초 요청부터 다시 진행합니다."
+                    )
+                ),
+                payload={
+                    "reason": "fresh_retry_session",
+                    "previous_session_id": task.runtime_session_id,
+                    "recent_messages": len(recent),
+                    "resumed_from_latest_request": prompt_override is not None,
+                },
             ),
         )
         refreshed = self._require_task(db, task.id, "starting fresh retry session")
-        return await self.start_task(db, refreshed, project)
+        return await self.start_task(db, refreshed, project, prompt_override=prompt_override)
 
     def _resolve_task_model(self, db: Session, task: Task) -> tuple[str, bool]:
         if task.model:

@@ -119,14 +119,22 @@ def append_event(db: Session, task: Task, event: RuntimeEvent) -> TaskEvent:
         files = event.payload.get("files_changed", [])
         task.latest_diff_files_json = json.dumps(files)
         task.latest_diff_raw = event.payload.get("raw_diff")
-    if (
+    mirrors_into_conversation = (
         record.type == "agent_status"
         and event.payload
         and event.payload.get("source") == "agent_message"
-    ):
+    ) or (
+        # A restart replaces the session the conversation was talking to, and
+        # the reply that follows comes from an agent with no memory of the
+        # thread. Saying so in the conversation itself -- not only in the
+        # timeline, which is a separate view people do not necessarily have
+        # open -- is what makes the seam visible where it matters.
+        record.type == "session_restarted"
+    )
+    if mirrors_into_conversation:
         conv = db.scalars(select(Conversation).where(Conversation.task_id == task.id)).first()
         if conv:
-            full_content = event.payload.get("full_content") or event.message
+            full_content = (event.payload or {}).get("full_content") or event.message
             assistant_msg = ConversationMessage(
                 conversation_id=conv.id,
                 role="assistant",
