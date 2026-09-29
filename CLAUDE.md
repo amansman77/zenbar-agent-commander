@@ -103,6 +103,18 @@ accept the result. Only the latter is approvable (`can_approve`), and for an
 execute-mode task, approving it is also what merges the PR the agent opened
 (`TaskOrchestrator.approve_task` with `merge_pr=True`, best-effort by design).
 
+**A restarted session must never re-run `task.prompt`.** A replacement session
+has no memory of the thread, and the request that *started* the task can be
+many turns old — re-sending it makes the agent answer a question the user has
+long since moved past (`resume_context.py`'s docstring has the original
+incident, and it recurred on 2026-09-28 through the retry path). Both restart
+paths now build their first input with `build_resume_prompt`: the follow-up
+path from the message just sent, `_restart_with_fresh_session` from the
+conversation's most recent *user* message. A restart also emits a
+`session_restarted` event, which `append_event` mirrors into the conversation
+as an assistant message — `agent_status` would be filtered out of the timeline,
+and the conversation is where the seam actually needs to be visible.
+
 **Every server request the App Server sends must get an answer.** A JSON-RPC
 *request* (as opposed to a notification) blocks the turn until it is replied
 to, so a method missing from `runtime/app_server.py::_handle_server_request`

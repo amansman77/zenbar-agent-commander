@@ -3522,3 +3522,96 @@ def test_stuck_session_watchdog_leaves_a_task_that_is_waiting_on_a_person():
             after = get_task(db, task["id"])
             assert after.status == "waiting_result_approval"
             assert after.runtime_session_id == "session-waiting"
+
+
+def test_retry_resumes_from_the_latest_request_not_the_original_prompt():
+    """A restart must not re-run the request that started the task.
+
+    A retry has no new message of its own, so it used to fall through to
+    task.prompt -- the original request, which by then can be many turns old.
+    Live on 2026-09-28: a task begun with "GPT-6-sol을 실험에 추가해줘" was
+    restarted while the user was asking why a chart was missing, and the new
+    session spent itself answering the original request again.
+    """
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Resume From Latest", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        conversation = client.post("/conversations", json={"project_id": project["id"]}).json()
+        started = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "원래 요청: 실험 대상을 추가해줘", "model": "default"},
+        )
+        assert started.status_code == 201
+        task_id = started.json()["task_id"]
+
+        from app.main import orchestrator
+        from app.repository import add_conversation_message
+        from app.schemas import AddConversationMessageRequest
+
+        with SessionLocal() as db:
+            add_conversation_message(
+                db,
+                conversation["id"],
+                AddConversationMessageRequest(content="그런데 차트가 안 보이네. 버그인가봐"),
+            )
+            current = get_task(db, task_id)
+            current.status = "failed"
+            current.runtime_session_id = None
+            db.add(current)
+            db.commit()
+
+        sent: list[str] = []
+        original_start = orchestrator.adapter.start_task
+
+        async def capture_start(request):
+            sent.append(request.prompt)
+            return await original_start(request)
+
+        try:
+            orchestrator.adapter.start_task = capture_start
+            response = client.post(f"/tasks/{task_id}/retry", json={"actor": "pytest"})
+        finally:
+            orchestrator.adapter.start_task = original_start
+
+        assert response.status_code == 200
+        assert sent, "retry should have started a fresh session"
+        prompt = sent[-1]
+        # The latest request is what the agent is told to do; the original is
+        # only background, explicitly labelled as history.
+        assert "[현재 요청]\n그런데 차트가 안 보이네. 버그인가봐" in prompt
+        assert "이 작업의 최초 요청: 원래 요청: 실험 대상을 추가해줘" in prompt
+
+
+def test_session_restart_is_mirrored_into_the_conversation():
+    # The timeline is a separate view; a person reading the conversation has
+    # to see that the agent answering next has no memory of the thread.
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Restart Notice", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        conversation = client.post("/conversations", json={"project_id": project["id"]}).json()
+        started = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "작업을 시작해줘", "model": "default"},
+        )
+        task_id = started.json()["task_id"]
+
+        with SessionLocal() as db:
+            current = get_task(db, task_id)
+            current.status = "failed"
+            current.runtime_session_id = None
+            db.add(current)
+            db.commit()
+
+        assert client.post(f"/tasks/{task_id}/retry", json={"actor": "pytest"}).status_code == 200
+
+        detail = client.get(f"/conversations/{conversation['id']}").json()
+        assert any(
+            message["role"] == "assistant" and "새 Codex 세션으로 다시 시작했습니다" in message["content"]
+            for message in detail["messages"]
+        )

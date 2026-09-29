@@ -173,6 +173,27 @@ def list_recent_conversation_messages(db: Session, task_id: str, limit: int) -> 
     return list(reversed(rows))
 
 
+def latest_user_message_for_task(db: Session, task_id: str) -> str | None:
+    """What the user most recently asked for on this task, if anything.
+
+    A restart has no new message of its own, so this is what it resumes from:
+    the task's original prompt is whatever started it, which by then can be
+    several requests out of date. Same ordering caveat as
+    list_recent_conversation_messages -- whole-second timestamps on SQLite, so
+    id breaks ties.
+    """
+    conv = db.scalars(select(Conversation).where(Conversation.task_id == task_id)).first()
+    if conv is None:
+        return None
+    row = db.scalars(
+        select(ConversationMessage)
+        .where(ConversationMessage.conversation_id == conv.id, ConversationMessage.role == "user")
+        .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
+        .limit(1)
+    ).first()
+    return row.content if row is not None else None
+
+
 def add_conversation_message_for_task(db: Session, task_id: str, role: str, content: str) -> ConversationMessage | None:
     # A pipeline's later steps are sent via TaskOrchestrator.followup_task
     # directly (not through the POST /conversations/{id}/messages endpoint,
