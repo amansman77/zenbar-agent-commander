@@ -15,6 +15,11 @@ import { App } from "../App";
 
 type Row = Record<string, unknown>;
 
+const DEFAULT_RUNTIME_MODELS: Row = {
+  source: "runtime",
+  models: [{ id: "GPT-5.4" }, { id: "GPT-5.3-Codex" }]
+};
+
 export const fixtures: {
   projects: Row[];
   tasks: Row[];
@@ -25,6 +30,8 @@ export const fixtures: {
   conversationCounts: Record<string, number>;
   projectPrompts: Record<string, Row[]>;
   globalPrompts: Row[];
+  conversationDetail: Row | null;
+  runtimeModels: Row;
 } = {
   projects: [],
   tasks: [],
@@ -34,7 +41,9 @@ export const fixtures: {
   conversations: [],
   conversationCounts: {},
   projectPrompts: {},
-  globalPrompts: []
+  globalPrompts: [],
+  conversationDetail: null,
+  runtimeModels: DEFAULT_RUNTIME_MODELS
 };
 
 export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -49,13 +58,7 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
     );
   }
   if (url.endsWith("/runtime/models")) {
-    return new Response(
-      JSON.stringify({
-        source: "runtime",
-        models: [{ id: "GPT-5.4" }, { id: "GPT-5.3-Codex" }]
-      }),
-      { status: 200 }
-    );
+    return new Response(JSON.stringify(fixtures.runtimeModels), { status: 200 });
   }
   if (url.includes("/fs/browse")) {
     return new Response(
@@ -186,6 +189,10 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
   if (url.endsWith("/conversations")) {
     return new Response(JSON.stringify(fixtures.conversations), { status: 200 });
   }
+  const conversationMatch = url.match(/\/conversations\/([^/?]+)$/);
+  if (conversationMatch && fixtures.conversationDetail?.id === conversationMatch[1]) {
+    return new Response(JSON.stringify(fixtures.conversationDetail), { status: 200 });
+  }
   if (url.endsWith("/tasks/task-1/diff")) {
     return new Response(JSON.stringify(fixtures.taskDiff), { status: 200 });
   }
@@ -252,6 +259,8 @@ export function resetAppTest() {
   fixtures.conversationCounts = {};
   fixtures.projectPrompts = {};
   fixtures.globalPrompts = [];
+  fixtures.conversationDetail = null;
+  fixtures.runtimeModels = DEFAULT_RUNTIME_MODELS;
   window.localStorage.clear();
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,

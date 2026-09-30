@@ -27,6 +27,12 @@
   white-space: nowrap;
 }
 
+/* Shown in place of the model picker when the runtime's model list could not
+   be fetched, so a missing picker reads as a fault rather than a feature gap. */
+.compose-meta-warning {
+  color: #b12a34;
+}
+
 /* Pre-task engine/model/profile <select>, styled to sit inline with the
    read-only .compose-meta text it's replaced by once a task starts. */
 .compose-meta-picker {

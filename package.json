@@ -6,6 +6,8 @@
   "scripts": {
     "docker:dashboard": "sh scripts/docker-dashboard.sh",
     "docker:api": "sh scripts/docker-api.sh",
+    "app-server:install": "sh scripts/app-server-agent.sh install",
+    "app-server:uninstall": "sh scripts/app-server-agent.sh uninstall",
     "docker:database": "sh scripts/docker-database.sh",
     "build": "pnpm --filter @zenbar/shared build && pnpm --filter web build",
     "dev": "./scripts/dev-all.sh",

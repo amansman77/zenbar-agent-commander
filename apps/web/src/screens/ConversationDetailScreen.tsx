@@ -162,7 +162,7 @@ export function ConversationDetailScreen({
   });
   const usageInfo = usageEngineSupported ? usageData?.usage ?? null : null;
 
-  const { models: rawModels, isLoading: modelsLoading } = useRuntimeModels(activeEngine);
+  const { models: rawModels, source: modelsSource, isLoading: modelsLoading, error: modelsError } = useRuntimeModels(activeEngine);
   const availableModels: string[] = rawModels
     .map((m) => (typeof m === "string" ? m : m.id))
     .filter((id) => id !== "default");
@@ -467,32 +467,41 @@ export function ConversationDetailScreen({
             // seconds. Codex's own list resolves near-instantly, which is
             // why this was never noticed there.
             <span className="compose-meta">◎ Loading models...</span>
+          ) : availableModels.length === 0 ? (
+            // "default" is filtered out above, so the API's fallback list
+            // (what it returns when it cannot reach the engine at all) leaves
+            // nothing to pick. This used to render nothing, which read as
+            // "this build has no model picker" -- hit 2026-09-30 when a
+            // reboot took down the App Server and the picker just vanished.
+            modelsError || modelsSource === "fallback" ? (
+              <span className="compose-meta compose-meta-warning" title={modelsError ?? "런타임에서 모델 목록을 받지 못했습니다"}>
+                ◎ 모델 목록을 불러오지 못함 · 런타임 연결 확인
+              </span>
+            ) : null
           ) : (
-            availableModels.length > 0 && (
-              <label className="compose-meta-picker">
-                <span>◎</span>
-                <select
-                  // selectedModel (the user's own not-yet-sent pick) must
-                  // win here, not just in handleSend's modelToUse --
-                  // effectiveModel prioritizes conversation.task_model (the
-                  // last-confirmed backend value) first, so picking a new
-                  // option looked like it did nothing until a message was
-                  // actually sent and the switch came back confirmed.
-                  value={selectedModel ?? effectiveModel ?? availableModels[0]}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                  // A finished task keeps this picker open (unlike engine/
-                  // profile, which stay locked once a task exists) -- a
-                  // follow-up sends this model for that and every turn
-                  // after it, same session/workspace/history the whole way.
-                  title={taskStarted ? "다음 메시지부터 이 모델이 적용됩니다" : undefined}
-                  className="compose-meta-select"
-                >
-                  {availableModels.map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </select>
-              </label>
-            )
+            <label className="compose-meta-picker">
+              <span>◎</span>
+              <select
+                // selectedModel (the user's own not-yet-sent pick) must
+                // win here, not just in handleSend's modelToUse --
+                // effectiveModel prioritizes conversation.task_model (the
+                // last-confirmed backend value) first, so picking a new
+                // option looked like it did nothing until a message was
+                // actually sent and the switch came back confirmed.
+                value={selectedModel ?? effectiveModel ?? availableModels[0]}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                // A finished task keeps this picker open (unlike engine/
+                // profile, which stay locked once a task exists) -- a
+                // follow-up sends this model for that and every turn
+                // after it, same session/workspace/history the whole way.
+                title={taskStarted ? "다음 메시지부터 이 모델이 적용됩니다" : undefined}
+                className="compose-meta-select"
+              >
+                {availableModels.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </label>
           )}
           {taskStarted ? (
             conversation?.task_profile ? (

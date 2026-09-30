@@ -23,6 +23,12 @@ def _load_fallback_models() -> list[str]:
 
 FALLBACK_MODELS = _load_fallback_models()
 
+# A fallback result means the runtime was unreachable, which is usually
+# transient (the App Server restarting). Caching it for the full TTL kept the
+# UI's "model list unavailable" state up for a minute after the runtime came
+# back, so a miss is retried much sooner than a hit is refreshed.
+FALLBACK_TTL_SECONDS = 5
+
 
 class RuntimeModelCatalog:
     def __init__(self, adapter: RuntimeAdapter, ttl_seconds: int = 60) -> None:
@@ -49,7 +55,8 @@ class RuntimeModelCatalog:
             resolved = ["default", *[item for item in resolved_base if item != "default"]]
             self._cached_models = resolved
             self._cached_source = source
-            self._expires_at = time.monotonic() + self._ttl_seconds
+            ttl = self._ttl_seconds if models else min(self._ttl_seconds, FALLBACK_TTL_SECONDS)
+            self._expires_at = time.monotonic() + ttl
             return resolved, source
 
     async def _load_runtime_models(self) -> list[str] | None:

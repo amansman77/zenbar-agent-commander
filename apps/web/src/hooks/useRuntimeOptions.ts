@@ -33,6 +33,7 @@ export function useRuntimeModels(engine?: string | null) {
 
   return {
     models: (query.data?.models ?? []) as RuntimeModelOption[],
+    source: query.data?.source ?? null,
     isLoading: query.isLoading,
     error: query.error instanceof Error ? query.error.message : null,
   };
