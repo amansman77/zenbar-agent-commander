@@ -202,6 +202,7 @@ pnpm dev:external           # bind 0.0.0.0 for phone/Tailscale access (15173 / 1
 pnpm test                   # shared + web (vitest) + api (pytest)
 pnpm lint                   # tsc --noEmit for shared + web
 pnpm build
+pnpm app-server:install     # launchd agent keeping the Codex App Server up on :18765 (the Docker API never starts one)
 
 pnpm --filter web test      # web only
 .venv/bin/pytest services/api/tests -q   # api only, from the repo root

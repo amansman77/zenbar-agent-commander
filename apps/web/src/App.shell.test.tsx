@@ -141,4 +141,57 @@ describe("App", () => {
     expect(await screen.findByText("Conversation 1")).toBeInTheDocument();
     expect(screen.getByText("Conversation 0")).toBeInTheDocument();
   });
+  describe("conversation model picker", () => {
+    function openConversationWithoutTask() {
+      // jsdom has no scrollIntoView; the conversation screen calls it on mount.
+      Element.prototype.scrollIntoView = vi.fn();
+      window.localStorage.setItem(
+        "zenbar:lastView",
+        JSON.stringify({
+          mobileScreen: "conversations",
+          desktopView: "chat",
+          selectedConversationId: "conv-1",
+          selectedProjectId: null,
+          selectedTaskId: null
+        })
+      );
+      const now = new Date().toISOString();
+      fixtures.conversationDetail = {
+        id: "conv-1",
+        title: "New conversation",
+        project_id: "project-1",
+        project_name: "agent-commander",
+        task_id: null,
+        task_status: null,
+        task_workspace_ref: null,
+        task_base_branch: null,
+        task_model: null,
+        task_profile: null,
+        task_engine: null,
+        messages: [],
+        created_at: now,
+        updated_at: now
+      };
+      renderApp();
+    }
+
+    it("offers the runtime's models when no profile is selected", async () => {
+      openConversationWithoutTask();
+
+      expect(await screen.findByRole("option", { name: "GPT-5.4" })).toBeInTheDocument();
+      expect(screen.queryByText(/모델 목록을 불러오지 못함/)).not.toBeInTheDocument();
+    });
+
+    it("says the model list is unavailable instead of hiding the picker", async () => {
+      // What the API returns when it cannot reach the engine: only the
+      // "default" placeholder, which the picker filters out. The picker used
+      // to disappear without a word (2026-09-30, App Server down after a
+      // reboot), which looked like a Codex update had removed it.
+      fixtures.runtimeModels = { source: "fallback", models: [{ id: "default" }] };
+      openConversationWithoutTask();
+
+      expect(await screen.findByText(/모델 목록을 불러오지 못함/)).toBeInTheDocument();
+      expect(screen.queryByRole("option", { name: "default" })).not.toBeInTheDocument();
+    });
+  });
 });
