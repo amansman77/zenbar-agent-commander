@@ -124,6 +124,19 @@ def set_pr_reviewed(db: Session, conversation_id: str, url: str, reviewed: bool)
     db.commit()
 
 
+def rename_conversation(db: Session, conversation_id: str, title: str) -> None:
+    # updated_at is written back as itself because the column has
+    # onupdate=utcnow, which fires on a Core UPDATE too. The conversation list
+    # is ordered by updated_at, so a rename would otherwise move the
+    # conversation to the top as if something new had happened in it.
+    db.execute(
+        update(Conversation)
+        .where(Conversation.id == conversation_id)
+        .values(title=title, updated_at=Conversation.updated_at)
+    )
+    db.commit()
+
+
 def set_conversation_task_id(db: Session, conversation_id: str, task_id: str) -> None:
     db.execute(update(Conversation).where(Conversation.id == conversation_id).values(task_id=task_id))
     db.commit()

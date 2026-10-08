@@ -15,6 +15,7 @@ import type {
 } from "@zenbar/shared";
 import { api } from "../api";
 import { UsageBadge } from "../components/Badges";
+import { ConversationTitleEditor } from "../components/ConversationTitleEditor";
 import { ConversationTranscript } from "../components/ConversationTranscript";
 import type { MessageGroup } from "../components/ConversationTranscript";
 import { useCloseOnOutsideClick } from "../hooks/useCloseOnOutsideClick";
@@ -60,6 +61,33 @@ export function ConversationDetailScreen({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
       onBack();
+    },
+  });
+
+  // The new title shows at once rather than after the round trip, and goes
+  // back to the old one if the server refuses it. The list is refetched
+  // either way, so its row matches whatever the server ended up with.
+  const renameConversationMutation = useMutation({
+    mutationFn: (title: string) => api.updateConversation(conversationId, { title }),
+    onMutate: async (title: string) => {
+      await queryClient.cancelQueries({ queryKey: ["conversation", conversationId] });
+      const previous = queryClient.getQueryData<ConversationDetail>(["conversation", conversationId]);
+      if (previous) {
+        queryClient.setQueryData<ConversationDetail>(["conversation", conversationId], { ...previous, title });
+      }
+      return { previous };
+    },
+    onError: (err: Error, _title, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["conversation", conversationId], context.previous);
+      }
+      alert(`제목 변경 실패: ${err.message}`);
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["conversation", conversationId], updated);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
   });
 
@@ -370,7 +398,15 @@ export function ConversationDetailScreen({
             <button type="button" className="secondary mobile-back" onClick={onBack}>Back</button>
           ) : null}
           <div style={{ minWidth: 0 }}>
-            <strong className="truncate" style={{ display: "block" }}>{conversation?.title ?? "Conversation"}</strong>
+            {conversation ? (
+              <ConversationTitleEditor
+                title={conversation.title}
+                isSaving={renameConversationMutation.isPending}
+                onRename={(title) => renameConversationMutation.mutate(title)}
+              />
+            ) : (
+              <strong className="truncate" style={{ display: "block" }}>Conversation</strong>
+            )}
             {conversation?.project_name && (
               <span style={{ fontSize: "0.75rem", color: "var(--text-soft)" }}>{conversation.project_name}</span>
             )}

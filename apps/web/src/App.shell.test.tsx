@@ -4,7 +4,7 @@
 // The fetch mock, fixture data and shared setup live in test/appHarness.
 
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { fixtures, renderApp, resetAppTest } from "./test/appHarness";
+import { fetchMock, fixtures, renderApp, resetAppTest } from "./test/appHarness";
 
 describe("App", () => {
   beforeEach(resetAppTest);
@@ -235,6 +235,36 @@ describe("App", () => {
       expect(screen.getByText("악성").closest("a")?.getAttribute("href") ?? "").not.toMatch(/javascript/i);
       // A user's own message is shown as typed, not rendered.
       expect(screen.getByText("**그대로** 보여야 함")).toBeInTheDocument();
+    });
+
+    it("renames the conversation from its header", async () => {
+      openConversationWithoutTask();
+      const patchCalls = () =>
+        fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/conversations/conv-1") && init?.method === "PATCH");
+
+      fireEvent.click(await screen.findByRole("button", { name: "제목 변경" }));
+      const input = screen.getByRole("textbox", { name: "대화 제목" });
+      expect(input).toHaveValue("New conversation");
+
+      // Escape cancels without a request.
+      fireEvent.change(input, { target: { value: "버려질 제목" } });
+      fireEvent.keyDown(input, { key: "Escape" });
+      expect(screen.queryByRole("textbox", { name: "대화 제목" })).not.toBeInTheDocument();
+      expect(screen.getByText("New conversation")).toBeInTheDocument();
+
+      // Enter while an IME is still composing is the syllable being
+      // committed, not a save.
+      fireEvent.click(screen.getByRole("button", { name: "제목 변경" }));
+      const editing = screen.getByRole("textbox", { name: "대화 제목" });
+      fireEvent.change(editing, { target: { value: "  배포 점검  " } });
+      fireEvent.keyDown(editing, { key: "Enter", isComposing: true });
+      expect(screen.getByRole("textbox", { name: "대화 제목" })).toBeInTheDocument();
+      expect(patchCalls()).toHaveLength(0);
+
+      fireEvent.keyDown(editing, { key: "Enter" });
+      expect(await screen.findByText("배포 점검")).toBeInTheDocument();
+      expect(patchCalls()).toHaveLength(1);
+      expect(JSON.parse(String(patchCalls()[0][1]?.body))).toEqual({ title: "배포 점검" });
     });
 
     it("copies a message's original text, markdown source included", async () => {

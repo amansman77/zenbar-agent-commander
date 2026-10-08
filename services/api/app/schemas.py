@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 TaskStatus = Literal[
@@ -457,6 +457,18 @@ class ConversationDetail(BaseModel):
 class CreateConversationRequest(BaseModel):
     title: str = "New Conversation"
     project_id: str | None = None
+
+
+class UpdateConversationRequest(BaseModel):
+    # Stripped before validation, so a whitespace-only title is rejected as
+    # empty rather than saved as a blank row in the conversation list. 255 is
+    # the column's own String(255).
+    title: str = Field(min_length=1, max_length=255)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _strip_title(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
 
 class AddConversationMessageRequest(BaseModel):
