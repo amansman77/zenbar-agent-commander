@@ -178,6 +178,49 @@
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+/* The renamable conversation title (ConversationTitleEditor). The title
+   truncates and the pencil stays right after it, rather than being pushed
+   out of the header by a long title. */
+.conversation-title-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.conversation-title-row strong {
+  min-width: 0;
+}
+
+/* Two classes deep to beat `.mobile-detail-control-top button`, whose 44px
+   minimum is for the header's full-size Back and 삭제 buttons. */
+.mobile-detail-control-top .conversation-rename-button {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+
+.mobile-detail-control-top .conversation-rename-button:hover:not(:disabled) {
+  background: #e8eef7;
+  color: var(--text);
+}
+
+.conversation-title-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font: inherit;
+  font-weight: 700;
+  padding: 2px 6px;
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+}
+
 .mobile-detail-action-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

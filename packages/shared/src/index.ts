@@ -398,6 +398,10 @@ export interface CreateConversationRequest {
   project_id?: string;
 }
 
+export interface UpdateConversationRequest {
+  title: string;
+}
+
 export interface AddConversationMessageRequest {
   content: string;
   role?: string;

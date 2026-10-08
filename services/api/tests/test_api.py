@@ -3162,6 +3162,51 @@ def test_conversation_read_endpoint_clears_is_unread():
         assert next(c for c in listed if c["id"] == conversation["id"])["is_unread"] is True
 
 
+def test_rename_conversation_keeps_its_place_in_the_list():
+    from app.repository import add_conversation_message
+    from app.schemas import AddConversationMessageRequest
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Rename Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        older = client.post("/conversations", json={"project_id": project["id"], "title": "Older"}).json()
+        newer = client.post("/conversations", json={"project_id": project["id"], "title": "Newer"}).json()
+
+        def project_ids_in_order():
+            return [c["id"] for c in client.get("/conversations").json() if c["project_id"] == project["id"]]
+
+        order_before = project_ids_in_order()
+        renamed = client.patch(f"/conversations/{older['id']}", json={"title": "  배포 점검  "})
+        assert renamed.status_code == 200
+        assert renamed.json()["title"] == "배포 점검"
+        assert client.get(f"/conversations/{older['id']}").json()["title"] == "배포 점검"
+        # A rename is not activity: it must not move the conversation up the
+        # list, which is ordered by updated_at.
+        assert renamed.json()["updated_at"] == older["updated_at"]
+        assert project_ids_in_order() == order_before
+
+        # The first message only auto-titles a conversation still called
+        # "New Conversation", so a rename made before it sticks.
+        fresh = client.post("/conversations", json={"project_id": project["id"]}).json()
+        client.patch(f"/conversations/{fresh['id']}", json={"title": "직접 붙인 제목"})
+        with SessionLocal() as db:
+            add_conversation_message(db, fresh["id"], AddConversationMessageRequest(role="user", content="첫 메시지"))
+        assert client.get(f"/conversations/{fresh['id']}").json()["title"] == "직접 붙인 제목"
+        assert newer["id"] in order_before
+
+
+def test_rename_conversation_rejects_blank_or_overlong_titles_and_unknown_ids():
+    conversation = client.post("/conversations", json={"title": "Keep me"}).json()
+    for title in ["", "   ", "x" * 256]:
+        response = client.patch(f"/conversations/{conversation['id']}", json={"title": title})
+        assert response.status_code == 422, title
+    assert client.get(f"/conversations/{conversation['id']}").json()["title"] == "Keep me"
+    assert client.patch("/conversations/does-not-exist", json={"title": "x"}).status_code == 404
+
+
 def test_conversation_read_endpoint_404_for_unknown_conversation():
     response = client.post("/conversations/does-not-exist/read")
     assert response.status_code == 404

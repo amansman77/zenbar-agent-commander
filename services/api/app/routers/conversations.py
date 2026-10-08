@@ -26,6 +26,7 @@ from ..repository import (
     list_conversations,
     list_reviewed_pr_urls,
     mark_conversation_read,
+    rename_conversation,
     resolve_pipeline_steps,
     serialize_conversation_detail,
     serialize_conversation_summary,
@@ -43,6 +44,7 @@ from ..schemas import (
     PrInfoResponse,
     SetPrReviewedRequest,
     TaskDiff,
+    UpdateConversationRequest,
 )
 from ..workspace import cleanup_workspace
 from .common import safe_runtime_error_detail
@@ -79,6 +81,14 @@ def get_conversation_detail(conversation_id: str, db: Session = Depends(get_db))
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return serialize_conversation_detail(conv)
+
+
+@router.patch("/conversations/{conversation_id}", response_model=ConversationDetail)
+def patch_conversation(conversation_id: str, payload: UpdateConversationRequest, db: Session = Depends(get_db)):
+    if get_conversation(db, conversation_id) is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    rename_conversation(db, conversation_id, payload.title)
+    return serialize_conversation_detail(get_conversation(db, conversation_id))
 
 
 @router.post("/conversations/{conversation_id}/read", status_code=204)

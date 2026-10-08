@@ -5,6 +5,7 @@ import type {
   ConversationDetail,
   ConversationSummary,
   CreateConversationRequest,
+  UpdateConversationRequest,
   CreateGlobalPromptRequest,
   CreateProjectPipelineRequest,
   CreateProjectPromptRequest,
@@ -125,6 +126,8 @@ export const api = {
     request<TaskDiff>(`/conversations/${id}/pr-diff?url=${encodeURIComponent(url)}`),
   setPrReviewed: (id: string, payload: SetPrReviewedRequest) =>
     request<void>(`/conversations/${id}/pr-reviews`, { method: "PUT", body: JSON.stringify(payload) }),
+  updateConversation: (id: string, payload: UpdateConversationRequest) =>
+    request<ConversationDetail>(`/conversations/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteConversation: (id: string) =>
     request<void>(`/conversations/${id}`, { method: "DELETE" }),
   addConversationMessage: (id: string, payload: AddConversationMessageRequest) =>

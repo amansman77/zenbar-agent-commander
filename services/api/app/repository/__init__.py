@@ -82,6 +82,7 @@ from .conversations import (
     list_recent_conversation_messages,
     list_reviewed_pr_urls,
     mark_conversation_read,
+    rename_conversation,
     set_conversation_task_id,
     set_pr_reviewed,
 )
@@ -167,6 +168,7 @@ __all__ = [
     "list_recent_conversation_messages",
     "list_reviewed_pr_urls",
     "mark_conversation_read",
+    "rename_conversation",
     "set_conversation_task_id",
     "set_pr_reviewed",
     "serialize_conversation_detail",

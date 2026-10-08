@@ -191,6 +191,9 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
   }
   const conversationMatch = url.match(/\/conversations\/([^/?]+)$/);
   if (conversationMatch && fixtures.conversationDetail?.id === conversationMatch[1]) {
+    if (init?.method === "PATCH") {
+      fixtures.conversationDetail = { ...fixtures.conversationDetail, ...JSON.parse(String(init.body)) };
+    }
     return new Response(JSON.stringify(fixtures.conversationDetail), { status: 200 });
   }
   if (url.endsWith("/tasks/task-1/diff")) {
