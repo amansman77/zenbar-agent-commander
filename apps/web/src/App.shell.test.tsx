@@ -142,7 +142,7 @@ describe("App", () => {
     expect(screen.getByText("Conversation 0")).toBeInTheDocument();
   });
   describe("conversation model picker", () => {
-    function openConversationWithoutTask() {
+    function openConversationWithoutTask(messages: Record<string, unknown>[] = []) {
       // jsdom has no scrollIntoView; the conversation screen calls it on mount.
       Element.prototype.scrollIntoView = vi.fn();
       window.localStorage.setItem(
@@ -168,7 +168,7 @@ describe("App", () => {
         task_model: null,
         task_profile: null,
         task_engine: null,
-        messages: [],
+        messages,
         created_at: now,
         updated_at: now
       };
@@ -192,6 +192,49 @@ describe("App", () => {
 
       expect(await screen.findByText(/모델 목록을 불러오지 못함/)).toBeInTheDocument();
       expect(screen.queryByRole("option", { name: "default" })).not.toBeInTheDocument();
+    });
+
+    it("renders an assistant reply as markdown and keeps a screenshot inside its list", async () => {
+      const now = new Date().toISOString();
+      const reply = [
+        "## 결과",
+        "",
+        "**완료**했습니다. `npm test` 통과.",
+        "",
+        "- [x] 마이그레이션",
+        "- 스크린샷: ![결과](https://example.com/shot.png)",
+        "- 로그는 [PR](https://github.com/o/r/pull/1) 참고",
+        "",
+        "| 항목 | 상태 |",
+        "| --- | --- |",
+        "| API | OK |",
+        "",
+        "```ts",
+        "const a = 1;",
+        "```",
+        "",
+        "[악성](javascript:alert(1))"
+      ].join("\n");
+      openConversationWithoutTask([
+        { id: "m1", conversation_id: "conv-1", role: "user", content: "**그대로** 보여야 함", created_at: now },
+        { id: "m2", conversation_id: "conv-1", role: "assistant", content: reply, created_at: now }
+      ]);
+
+      expect(await screen.findByRole("heading", { name: "결과" })).toBeInTheDocument();
+      expect(screen.getByText("완료").tagName).toBe("STRONG");
+      expect(screen.getByText("npm test")).toHaveClass("inline-code");
+      expect(screen.getByRole("checkbox")).toBeChecked();
+      expect(screen.getByRole("cell", { name: "OK" })).toBeInTheDocument();
+      expect(screen.getByText("const a = 1;").closest("pre")).toHaveClass("output-pre");
+      // The screenshot becomes a thumbnail without splitting the list: all
+      // three items stay in one <ul>.
+      const shot = screen.getByRole("img", { name: "https://example.com/shot.png" });
+      expect(shot.closest("ul")?.querySelectorAll(":scope > li")).toHaveLength(3);
+      expect(screen.getByRole("link", { name: "PR" })).toHaveAttribute("target", "_blank");
+      // react-markdown's URL sanitizer still applies to agent-written links.
+      expect(screen.getByText("악성").closest("a")?.getAttribute("href") ?? "").not.toMatch(/javascript/i);
+      // A user's own message is shown as typed, not rendered.
+      expect(screen.getByText("**그대로** 보여야 함")).toBeInTheDocument();
     });
   });
 });

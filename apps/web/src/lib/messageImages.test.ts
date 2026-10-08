@@ -1,4 +1,4 @@
-import { extractMessageSegments, isRemoteImageUrl } from "./messageImages";
+import { classifyReferencePath, extractMessageSegments, isRemoteImageUrl } from "./messageImages";
 
 describe("extractMessageSegments", () => {
   it("splits a backtick-quoted image path out from surrounding text", () => {
@@ -108,5 +108,17 @@ describe("isRemoteImageUrl", () => {
   it("is false for local workspace-relative or absolute paths", () => {
     expect(isRemoteImageUrl("docs/evidence/a.png")).toBe(false);
     expect(isRemoteImageUrl("/tmp/a.png")).toBe(false);
+  });
+});
+
+describe("classifyReferencePath", () => {
+  it("classifies image and html link targets, stripping Codex's sandbox: prefix", () => {
+    expect(classifyReferencePath("sandbox:/tmp/shot.png")).toEqual({ type: "image", path: "/tmp/shot.png" });
+    expect(classifyReferencePath("docs/proposal.html")).toEqual({ type: "html", path: "docs/proposal.html" });
+  });
+
+  it("returns null for an ordinary link", () => {
+    expect(classifyReferencePath("https://github.com/openai/codex/pull/1")).toBeNull();
+    expect(classifyReferencePath("src/index.ts")).toBeNull();
   });
 });

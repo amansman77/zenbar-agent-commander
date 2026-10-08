@@ -1,11 +1,13 @@
 // Conversation message bubbles and assistant message grouping.
 
-import { useState } from "react";
+import { Children, useState, type ReactNode } from "react";
+import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type {
   ConversationMessageItem
 } from "@zenbar/shared";
 import { api } from "../api";
-import { extractMessageSegments, isRemoteImageUrl } from "../lib/messageImages";
+import { classifyReferencePath, extractMessageSegments, isRemoteImageUrl } from "../lib/messageImages";
 
 // A screenshot/evidence image an agent mentioned by path, rendered as an
 // actual thumbnail instead of the raw path text. taskId is only available
@@ -75,23 +77,92 @@ function MessageHtml({ path, taskId }: { path: string; taskId: string | null }) 
   );
 }
 
-function MessageContent({ content, taskId }: { content: string; taskId: string | null }) {
+function renderSegments(content: string, taskId: string | null): ReactNode {
   const segments = extractMessageSegments(content);
   if (segments.length === 1 && segments[0].type === "text") {
-    return <>{content}</>;
+    return content;
   }
+  return segments.map((segment, index) =>
+    segment.type === "image" ? (
+      <MessageImage key={`img-${index}`} path={segment.path} taskId={taskId} />
+    ) : segment.type === "html" ? (
+      <MessageHtml key={`html-${index}`} path={segment.path} taskId={taskId} />
+    ) : (
+      <span key={`text-${index}`}>{segment.value}</span>
+    )
+  );
+}
+
+function MessageContent({ content, taskId }: { content: string; taskId: string | null }) {
+  return <>{renderSegments(content, taskId)}</>;
+}
+
+function MessageReference({ target, taskId, fallback }: { target: string; taskId: string | null; fallback: ReactNode }) {
+  const reference = classifyReferencePath(target);
+  if (reference?.type === "image") return <MessageImage path={reference.path} taskId={taskId} />;
+  if (reference?.type === "html") return <MessageHtml path={reference.path} taskId={taskId} />;
+  return <>{fallback}</>;
+}
+
+// Codex writes the files it produced as `sandbox:/tmp/shot.png`.
+// react-markdown's default transform blanks any URL whose scheme it does not
+// know, so the prefix is stripped first, the same way extractMessageSegments
+// strips it. Every other URL still goes through the default transform, which
+// is what blocks `javascript:` links in agent-written markdown.
+function transformMessageUrl(url: string): string {
+  return defaultUrlTransform(url.replace(/^sandbox:/i, ""));
+}
+
+// Assistant replies are markdown, and are rendered as markdown. The file
+// references extractMessageSegments finds in plain text (images, HTML
+// prototypes) still have to become thumbnails and previews. Markdown links,
+// images and inline code arrive here as parsed nodes, and a quoted or bare
+// path in prose arrives as a text child of the block around it, so references
+// are resolved per node instead of by splitting the raw message. Splitting it
+// first would break a list or a table in two around every screenshot.
+function MarkdownMessage({ content, taskId }: { content: string; taskId: string | null }) {
+  const withReferences = (children: ReactNode) =>
+    Children.map(children, (child) => (typeof child === "string" ? renderSegments(child, taskId) : child));
+
+  const components: Components = {
+    p: ({ children }) => <p>{withReferences(children)}</p>,
+    li: ({ children, className }) => <li className={className}>{withReferences(children)}</li>,
+    td: ({ children, style }) => <td style={style}>{withReferences(children)}</td>,
+    img: ({ src, alt }) =>
+      typeof src === "string" && src ? (
+        <MessageReference target={src} taskId={taskId} fallback={<code className="inline-code">{alt || src}</code>} />
+      ) : null,
+    a: ({ href, children }) => {
+      const link = (
+        <a href={href} target="_blank" rel="noreferrer">
+          {children}
+        </a>
+      );
+      return href ? <MessageReference target={href} taskId={taskId} fallback={link} /> : link;
+    },
+    pre: ({ children }) => <pre className="output-pre">{children}</pre>,
+    code: ({ children, className }) => {
+      const text = String(children ?? "");
+      // Fenced blocks carry a language class or span lines; anything else is
+      // inline code, where a backticked screenshot path is the common way an
+      // agent mentions one.
+      if (className || text.includes("\n")) {
+        return <code className={className}>{children}</code>;
+      }
+      const segments = extractMessageSegments(text);
+      if (segments.length === 1 && segments[0].type === "image") {
+        return <MessageImage path={segments[0].path} taskId={taskId} />;
+      }
+      return <code className="inline-code">{children}</code>;
+    },
+  };
+
   return (
-    <>
-      {segments.map((segment, index) =>
-        segment.type === "image" ? (
-          <MessageImage key={`img-${index}`} path={segment.path} taskId={taskId} />
-        ) : segment.type === "html" ? (
-          <MessageHtml key={`html-${index}`} path={segment.path} taskId={taskId} />
-        ) : (
-          <span key={`text-${index}`}>{segment.value}</span>
-        )
-      )}
-    </>
+    <div className="chat-markdown">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={transformMessageUrl} components={components}>
+        {content}
+      </ReactMarkdown>
+    </div>
   );
 }
 
@@ -108,11 +179,17 @@ export function ChatBubble({ message, taskId = null, muted = false }: { message:
         fontSize: muted ? "0.85rem" : "0.93rem",
         fontStyle: muted ? "italic" : "normal",
         lineHeight: "1.45",
-        whiteSpace: "pre-wrap",
+        // A user's own message is shown as typed. Markdown spaces its own
+        // blocks, so pre-wrap there would double every paragraph gap.
+        whiteSpace: isUser ? "pre-wrap" : "normal",
         wordBreak: "break-word",
       }}
     >
-      <MessageContent content={message.content} taskId={taskId} />
+      {isUser ? (
+        <MessageContent content={message.content} taskId={taskId} />
+      ) : (
+        <MarkdownMessage content={message.content} taskId={taskId} />
+      )}
     </div>
   );
 }
