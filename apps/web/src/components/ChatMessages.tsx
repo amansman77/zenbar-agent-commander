@@ -1,12 +1,13 @@
 // Conversation message bubbles and assistant message grouping.
 
-import { Children, useState, type ReactNode } from "react";
+import { Children, useEffect, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
   ConversationMessageItem
 } from "@zenbar/shared";
 import { api } from "../api";
+import { copyToClipboard } from "../lib/clipboard";
 import { classifyReferencePath, extractMessageSegments, isRemoteImageUrl } from "../lib/messageImages";
 
 // A screenshot/evidence image an agent mentioned by path, rendered as an
@@ -166,30 +167,73 @@ function MarkdownMessage({ content, taskId }: { content: string; taskId: string 
   );
 }
 
+// Copies a message's original text: what the user typed, or the agent's
+// markdown source rather than the rendered page, which is what pastes cleanly
+// into another chat, an issue or an editor.
+function MessageCopyButton({ content }: { content: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "error">("idle");
+  const resetTimer = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+  }, []);
+
+  const copy = async () => {
+    const copied = await copyToClipboard(content);
+    setState(copied ? "copied" : "error");
+    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    resetTimer.current = window.setTimeout(() => setState("idle"), 1500);
+  };
+
+  const label = state === "copied" ? "복사됨" : state === "error" ? "복사 실패" : "메시지 복사";
+  return (
+    <button
+      type="button"
+      className={`icon-button message-copy-button${state === "idle" ? "" : ` ${state}`}`}
+      onClick={copy}
+      title={label}
+      aria-label={label}
+    >
+      {state === "copied" ? (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      ) : (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <rect x="9" y="9" width="13" height="13" rx="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 export function ChatBubble({ message, taskId = null, muted = false }: { message: ConversationMessageItem; taskId?: string | null; muted?: boolean }) {
   const isUser = message.role === "user";
   return (
-    <div
-      style={{
-        maxWidth: "85%",
-        padding: "0.55rem 0.75rem",
-        borderRadius: isUser ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
-        background: isUser ? "#0f3158" : muted ? "#f7f8fa" : "#f0f4fa",
-        color: isUser ? "#fff" : muted ? "#5b6472" : "#16253a",
-        fontSize: muted ? "0.85rem" : "0.93rem",
-        fontStyle: muted ? "italic" : "normal",
-        lineHeight: "1.45",
-        // A user's own message is shown as typed. Markdown spaces its own
-        // blocks, so pre-wrap there would double every paragraph gap.
-        whiteSpace: isUser ? "pre-wrap" : "normal",
-        wordBreak: "break-word",
-      }}
-    >
-      {isUser ? (
-        <MessageContent content={message.content} taskId={taskId} />
-      ) : (
-        <MarkdownMessage content={message.content} taskId={taskId} />
-      )}
+    <div className={`chat-message${isUser ? " chat-message-user" : ""}`}>
+      <div
+        style={{
+          maxWidth: "100%",
+          padding: "0.55rem 0.75rem",
+          borderRadius: isUser ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
+          background: isUser ? "#0f3158" : muted ? "#f7f8fa" : "#f0f4fa",
+          color: isUser ? "#fff" : muted ? "#5b6472" : "#16253a",
+          fontSize: muted ? "0.85rem" : "0.93rem",
+          fontStyle: muted ? "italic" : "normal",
+          lineHeight: "1.45",
+          // A user's own message is shown as typed. Markdown spaces its own
+          // blocks, so pre-wrap there would double every paragraph gap.
+          whiteSpace: isUser ? "pre-wrap" : "normal",
+          wordBreak: "break-word",
+        }}
+      >
+        {isUser ? (
+          <MessageContent content={message.content} taskId={taskId} />
+        ) : (
+          <MarkdownMessage content={message.content} taskId={taskId} />
+        )}
+      </div>
+      <MessageCopyButton content={message.content} />
     </div>
   );
 }

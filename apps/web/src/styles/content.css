@@ -133,6 +133,65 @@
   color: var(--primary);
 }
 
+/* A chat bubble plus its copy button underneath, on the bubble's own side.
+   The 85% cap lives here rather than on the bubble so the button lines up
+   with the bubble's edge. */
+.chat-message {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  max-width: 85%;
+}
+
+.chat-message-user {
+  align-items: flex-end;
+}
+
+.message-copy-button {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  /* Hidden until the message is hovered or focused, but it keeps its space,
+     so showing it never shifts the transcript. */
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.chat-message:hover .message-copy-button,
+.message-copy-button:focus-visible,
+.message-copy-button.copied,
+.message-copy-button.error {
+  opacity: 1;
+}
+
+/* :not(:disabled) matches base.css's global button:hover, which would
+   otherwise win on specificity and paint the primary navy fill. */
+.message-copy-button:hover:not(:disabled) {
+  background: #e8eef7;
+  color: var(--text);
+}
+
+.message-copy-button.copied,
+.message-copy-button.copied:hover:not(:disabled) {
+  color: #1f7a45;
+}
+
+.message-copy-button.error,
+.message-copy-button.error:hover:not(:disabled) {
+  color: #b12a34;
+}
+
+/* Touch screens have no hover to reveal it with. */
+@media (hover: none) {
+  .message-copy-button {
+    opacity: 0.6;
+  }
+}
+
 .event-list {
   list-style: none;
   padding: 0;

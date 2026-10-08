@@ -30,4 +30,18 @@ describe("copyToClipboard", () => {
     // Restore
     Object.assign(navigator, { clipboard: originalClipboard });
   });
+
+  it("falls back to document.execCommand when writeText rejects", async () => {
+    const originalClipboard = navigator.clipboard;
+    Object.assign(navigator, {
+      clipboard: { writeText: vi.fn().mockRejectedValue(new DOMException("denied", "NotAllowedError")) },
+    });
+    const execMock = vi.fn().mockReturnValue(true);
+    document.execCommand = execMock;
+
+    await expect(copyToClipboard("denied text")).resolves.toBe(true);
+    expect(execMock).toHaveBeenCalledWith("copy");
+
+    Object.assign(navigator, { clipboard: originalClipboard });
+  });
 });
