@@ -3,7 +3,7 @@
 //
 // The fetch mock, fixture data and shared setup live in test/appHarness.
 
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { fixtures, renderApp, resetAppTest } from "./test/appHarness";
 
 describe("App", () => {
@@ -235,6 +235,25 @@ describe("App", () => {
       expect(screen.getByText("악성").closest("a")?.getAttribute("href") ?? "").not.toMatch(/javascript/i);
       // A user's own message is shown as typed, not rendered.
       expect(screen.getByText("**그대로** 보여야 함")).toBeInTheDocument();
+    });
+
+    it("copies a message's original text, markdown source included", async () => {
+      const now = new Date().toISOString();
+      const reply = "## 결과\n\n- **완료**\n- `npm test` 통과";
+      openConversationWithoutTask([
+        { id: "m1", conversation_id: "conv-1", role: "user", content: "요청\n두 줄", created_at: now },
+        { id: "m2", conversation_id: "conv-1", role: "assistant", content: reply, created_at: now }
+      ]);
+
+      const buttons = await screen.findAllByRole("button", { name: "메시지 복사" });
+      expect(buttons).toHaveLength(2);
+
+      fireEvent.click(buttons[1]);
+      expect(await screen.findByRole("button", { name: "복사됨" })).toBeInTheDocument();
+      expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(reply);
+
+      fireEvent.click(buttons[0]);
+      await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("요청\n두 줄"));
     });
   });
 });
