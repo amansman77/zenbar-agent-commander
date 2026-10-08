@@ -88,6 +88,19 @@ export function extractMessageSegments(content: string): MessageSegment[] {
   return segments;
 }
 
+const IMAGE_PATH_RE = new RegExp("\\.(?:" + IMAGE_EXTENSION + ")$", "i");
+
+// What a markdown link or image target points at, for the chat's markdown
+// renderer. It sees `[text](path)` and `![alt](path)` as parsed nodes rather
+// than as text, so REFERENCE_RE's first branch never gets to run on them and
+// the same image/HTML rule has to be applied to the bare target here.
+export function classifyReferencePath(raw: string): { type: "image" | "html"; path: string } | null {
+  const path = normalizeReferencePath(raw.trim());
+  if (IMAGE_PATH_RE.test(path)) return { type: "image", path };
+  if (HTML_PATH_RE.test(path)) return { type: "html", path };
+  return null;
+}
+
 export function isRemoteImageUrl(path: string): boolean {
   return /^https?:\/\//i.test(path);
 }
