@@ -47,8 +47,8 @@ const API_TOKEN = (import.meta.env.VITE_API_TOKEN as string | undefined)?.trim()
 // EventSource target, an <img src>) rather than handing a path to fetch().
 //
 // The second argument is what makes this safe: `API_BASE` is relative in the
-// Docker build (`ENV VITE_API_BASE_URL=/api`, served behind the dashboard's
-// own nginx), and one-argument `new URL("/api/...")` throws `TypeError:
+// deployed dashboard build (`VITE_API_BASE_URL=/api`, served behind the
+// dashboard's own /api proxy -- see scripts/services.sh deploy-web), and one-argument `new URL("/api/...")` throws `TypeError:
 // Invalid URL` on a relative input. That threw *during render* in
 // MessageImage -> workspaceFileUrl, which unmounts the React tree and left
 // the whole dashboard blank as soon as any message mentioned an image path.

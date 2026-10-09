@@ -202,7 +202,8 @@ pnpm dev:external           # bind 0.0.0.0 for phone/Tailscale access (15173 / 1
 pnpm test                   # shared + web (vitest) + api (pytest)
 pnpm lint                   # tsc --noEmit for shared + web
 pnpm build
-pnpm app-server:install     # launchd agent keeping the Codex App Server up on :18765 (the Docker API never starts one)
+pnpm services:install       # run app-server/api/dashboard as launchd agents (see README)
+pnpm deploy:web             # rebuild what the dashboard agent serves
 
 pnpm --filter web test      # web only
 .venv/bin/pytest services/api/tests -q   # api only, from the repo root
@@ -213,9 +214,13 @@ Install it with `python3 -m venv .venv && .venv/bin/pip install -e 'services/api
 
 ## Gotchas
 
-**The production database is a real file next to the code.** `dev-api.sh` runs
-uvicorn with cwd `services/api`, so the default `sqlite:///./zenbar.db` resolves
-to `services/api/zenbar.db` with real user data in it. `tests/conftest.py`
+**Real databases sit where a stray path will find them.** The running service
+uses `~/.zenbar/zenbar.db`: `scripts/services.sh` sets `ZENBAR_DATABASE_URL`
+after loading the env files, so it never picks up the dev value. `dev-api.sh`
+runs uvicorn with cwd `services/api`, so the default `sqlite:///./zenbar.db`
+resolves to `services/api/zenbar.db`, an older copy that still holds real user
+data. Importing `app` from `services/api` with no env set resolves to that same
+file. `tests/conftest.py`
 therefore *overwrites* `ZENBAR_DATABASE_URL`, `ZENBAR_RUNTIME_MODE` and the auth
 env vars unconditionally rather than using `setdefault` — a developer shell that
 exports the real values would otherwise point the whole test suite, including
