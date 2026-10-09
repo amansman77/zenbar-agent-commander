@@ -25,7 +25,7 @@ afterEach(() => {
   vi.resetModules();
 });
 
-describe("url builders with a relative API base (the Docker build)", () => {
+describe("url builders with a relative API base (the deployed dashboard build)", () => {
   it("workspaceFileUrl returns an absolute url instead of throwing", async () => {
     const api = await loadApi("/api");
     const url = api.workspaceFileUrl("task-1", "/tmp/shot.png");

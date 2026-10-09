@@ -1,11 +1,11 @@
 #!/bin/sh
 # Runs the Codex App Server in the foreground on ZENBAR_APP_SERVER_WS_URL.
 #
-# This is what the launchd agent from app-server-agent.sh runs. The Docker API
-# never starts an App Server itself (ZENBAR_APP_SERVER_MANAGED=false in the
-# container), so before this existed it was started by hand and did not come
-# back after a reboot: the API then served only the fallback model list and
-# the model picker vanished (2026-09-30).
+# This is what the com.zenbar.app-server launchd agent runs (scripts/services.sh).
+# The API never starts an App Server itself when run as a service
+# (ZENBAR_APP_SERVER_MANAGED=false). Before this agent existed it was started by
+# hand and did not come back after a reboot: the API then served only the
+# fallback model list and the model picker vanished (2026-09-30).
 set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"

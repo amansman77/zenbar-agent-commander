@@ -144,28 +144,43 @@ Early prototype.
 
 ## Development
 
-Run the dashboard in Docker, connected to the existing host API and agent runtime:
+### Running Zenbar as services (launchd)
+
+The day-to-day deployment is three launchd user agents on the Mac, all bound to
+loopback:
+
+| Agent | Serves |
+| ----- | ------ |
+| `com.zenbar.app-server` | Codex App Server, `ws://127.0.0.1:18765` |
+| `com.zenbar.api` | Orchestration API, `http://127.0.0.1:18001` |
+| `com.zenbar.dashboard` | Web Commander, `http://127.0.0.1:8080`, proxying `/api` (SSE included) to the API |
 
 ```bash
-pnpm dev:api:external  # if the host API is not already running on port 18000
-pnpm docker:dashboard
+pnpm services:install     # write the plists and start all three
+pnpm services:status
+pnpm services:restart     # all, or: sh scripts/services.sh restart api
+pnpm deploy:web           # rebuild the dashboard bundle; served live, no restart
+pnpm services:uninstall
 ```
 
-Open `http://localhost:8080`. The container serves the built UI and proxies API
-requests (including SSE) to `host.docker.internal:18000`. The API and agent runtime
-remain on the host so existing database, project paths, and task worktrees keep
-working. The API must listen on `0.0.0.0` for the container to reach it. Its access
-policy must permit the proxy: configure `ZENBAR_API_TOKEN` (preferred) or explicitly
-allow unauthenticated remote access. The launcher reads the same `.env.local`
-files as the host API and supplies the token to the proxy without embedding it in
-the browser bundle. Docker publishes the dashboard on loopback only.
+Each agent starts at login and is restarted if it exits. The API and the App
+Server read both `.env.local` files. The dashboard adds `ZENBAR_API_TOKEN` to
+each proxied request, so the token is never embedded in the browser bundle.
+Logs are in `~/Library/Logs/com.zenbar.*.log`.
 
-Override `ZENBAR_DOCKER_PORT` or `ZENBAR_API_UPSTREAM` to use another port or API.
-Run `docker stop zenbar-dashboard` to stop it; rerun `pnpm docker:dashboard` to
-rebuild and replace it. Docker Engine is sufficient; Compose is not required.
+The database is `~/.zenbar/zenbar.db` (override the directory with
+`ZENBAR_HOME`), deliberately outside the repo: `services/api/zenbar.db` is the
+development database that `pnpm dev` uses. The built dashboard goes to
+`~/.zenbar/dashboard`, so a development `pnpm build` never replaces what is
+being served. After pulling API changes, run `sh scripts/services.sh restart api`.
+After pulling web changes, run `pnpm deploy:web`.
 
-For Tailscale access to the Docker dashboard, stop the old development web server
-on port 15173 and forward that tailnet port to the container:
+This used to run in Docker. It moved to launchd because the CLI engines
+(`claude`, `agy`, `grok`) and their logins only exist on the host. Inside a
+container, those engines could not run a task, and their usage readouts came
+back empty.
+
+For Tailscale access, forward a tailnet port to the dashboard:
 
 ```bash
 tailscale serve --bg --tcp=15173 tcp://127.0.0.1:8080
@@ -176,51 +191,11 @@ tailscale serve --bg --https=8443 http://127.0.0.1:8080
 With the macOS GUI install, use
 `/Applications/Tailscale.app/Contents/MacOS/Tailscale` if `tailscale` is not on PATH.
 Open `http://<tailscale-ip>:15173` or `https://<magicdns-name>:8443`. Use TCP
-forwarding for the IP URL; Tailscale's HTTP proxy routes by hostname. Both UI and
-API requests use the Docker dashboard's same-origin `/api` proxy, so the browser
-does not depend on the old host API port 18000.
+forwarding for the IP URL; Tailscale's HTTP proxy routes by hostname. Both the UI
+and API requests go through the dashboard's same-origin `/api` proxy.
 
-To also run the API in Docker:
-
-First finish active tasks, stop the host API, and run the Codex App Server
-independently on port 18765. The API launcher refuses to migrate while the host API
-port is still in use, preventing two control planes from sharing live tasks.
-
-```bash
-pnpm docker:database
-pnpm docker:api
-pnpm docker:dashboard
-```
-
-The dashboard automatically connects to `zenbar-api:8000` on the `zenbar` Docker
-network. The API is also available on `http://localhost:18001` with its existing
-token. SQLite runs inside the API process and stores its database and journals in
-the persistent Docker volume `zenbar-data` at `/data/zenbar.db`; it needs no separate
-database server container. `docker:database` uses SQLite's online backup API to
-import a consistent snapshot of the host database, verifies the copy, and refuses
-to overwrite an existing volume. The original host database is preserved. A
-snapshot taken before host work finishes is only a staging copy: initialize a
-fresh volume after stopping the host API for final migration, using
-`ZENBAR_DOCKER_DATABASE_VOLUME` with the same value for both commands. Container
-replacement preserves the volume; deleting the volume deletes its data.
-
-The API mounts `~/Workspace`, task
-workspaces, and Codex configuration/profile files. Absolute project and worktree
-paths are preserved for the host Codex runtime. The runtime must already be
-running on host port 18765; this container does not manage or stop it. If the host
-API owns that runtime, keep it running until its active tasks finish and the
-runtime is managed independently, before migrating. Other CLI engines need their Linux executables
-and credentials installed in the API image. Host macOS native folder selection is
-unavailable; use the web folder browser or specify the project path.
-
-Overrides: `ZENBAR_DOCKER_API_PORT`, `ZENBAR_DOCKER_PROJECTS_ROOT`,
-`ZENBAR_DOCKER_DATABASE_FILE` (snapshot source), `ZENBAR_DOCKER_DATABASE_VOLUME`,
-and `ZENBAR_DOCKER_RUNTIME_URL`. The launcher runs as
-the host user's UID/GID. Stop it with `docker stop zenbar-api`.
-
-`ZENBAR_WORKSPACE_ROOT` must be a path with no symlink below the top level, on
-the host as well as in the container — Codex's sandbox resolves a top-level
-alias such as `/tmp -> /private/tmp` but rejects a writable root with a symlink
+`ZENBAR_WORKSPACE_ROOT` must be a path with no symlink below the top level.
+Codex's sandbox resolves a top-level alias such as `/tmp -> /private/tmp` but rejects a writable root with a symlink
 under it. Pointing the root at a symlink (a `/tmp/zenbar-task-workspaces` that
 links into the repo, say) makes every one of the agent's file and command tools
 fail while the task itself still reports as running; the API now refuses such a
