@@ -30,6 +30,7 @@ from ..repository import (
 )
 from ..runtime_registry import model_catalog_for, orchestrator, validate_task_model
 from ..schemas import (
+    as_utc,
     CreateTaskRequest,
     FollowupTurnRequest,
     RespondTaskRequest,
@@ -119,7 +120,7 @@ async def get_task_events(
         # ones, which is most of the time for an active task.
         latest_at = latest_event_at(db, task_id)
         if latest_at is not None:
-            response.headers["X-Latest-Event-At"] = latest_at.isoformat()
+            response.headers["X-Latest-Event-At"] = as_utc(latest_at).isoformat()
     return [serialize_event(item) for item in list_events(db, task_id, exclude_types=excluded or None)]
 
 

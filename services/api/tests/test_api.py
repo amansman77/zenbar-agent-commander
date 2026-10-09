@@ -3207,6 +3207,25 @@ def test_rename_conversation_rejects_blank_or_overlong_titles_and_unknown_ids():
     assert client.patch("/conversations/does-not-exist", json={"title": "x"}).status_code == 404
 
 
+def test_timestamps_are_sent_with_their_utc_offset():
+    # SQLite returns the stored UTC timestamps without an offset. Sent as-is,
+    # a browser parses "2026-10-09T12:33:08" as local time, which put every
+    # time the dashboard showed 9 hours early in KST.
+    from datetime import datetime
+
+    from app.repository import add_conversation_message
+    from app.schemas import AddConversationMessageRequest
+
+    conversation = client.post("/conversations", json={"title": "Offsets"}).json()
+    with SessionLocal() as db:
+        add_conversation_message(db, conversation["id"], AddConversationMessageRequest(role="user", content="hi"))
+    detail = client.get(f"/conversations/{conversation['id']}").json()
+    for value in [detail["created_at"], detail["updated_at"], detail["messages"][0]["created_at"]]:
+        assert datetime.fromisoformat(value.replace("Z", "+00:00")).utcoffset() is not None, value
+    listed = next(c for c in client.get("/conversations").json() if c["id"] == conversation["id"])
+    assert datetime.fromisoformat(listed["updated_at"].replace("Z", "+00:00")).utcoffset() is not None
+
+
 def test_conversation_read_endpoint_404_for_unknown_conversation():
     response = client.post("/conversations/does-not-exist/read")
     assert response.status_code == 404

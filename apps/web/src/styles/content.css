@@ -148,6 +148,26 @@
   align-items: flex-end;
 }
 
+/* Under the bubble: when it was sent or received, and the copy button. A
+   user's own message has them mirrored, so the time sits nearest the bubble's
+   edge on both sides. */
+.chat-message-meta {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.chat-message-user .chat-message-meta {
+  flex-direction: row-reverse;
+}
+
+.chat-message-time {
+  padding: 0 4px;
+  font-size: 0.7rem;
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+
 .message-copy-button {
   width: 24px;
   height: 24px;

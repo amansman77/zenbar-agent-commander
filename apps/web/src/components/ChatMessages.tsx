@@ -8,6 +8,7 @@ import type {
 } from "@zenbar/shared";
 import { api } from "../api";
 import { copyToClipboard } from "../lib/clipboard";
+import { formatFullTimestamp, formatMessageTime } from "../lib/format";
 import { classifyReferencePath, extractMessageSegments, isRemoteImageUrl } from "../lib/messageImages";
 
 // A screenshot/evidence image an agent mentioned by path, rendered as an
@@ -233,7 +234,12 @@ export function ChatBubble({ message, taskId = null, muted = false }: { message:
           <MarkdownMessage content={message.content} taskId={taskId} />
         )}
       </div>
-      <MessageCopyButton content={message.content} />
+      <div className="chat-message-meta">
+        <time className="chat-message-time" dateTime={message.created_at} title={formatFullTimestamp(message.created_at)}>
+          {formatMessageTime(message.created_at)}
+        </time>
+        <MessageCopyButton content={message.content} />
+      </div>
     </div>
   );
 }
