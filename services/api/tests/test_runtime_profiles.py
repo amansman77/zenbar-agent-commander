@@ -58,3 +58,23 @@ def test_no_profile_leaves_turn_start_params_unchanged(tmp_path: Path, monkeypat
     assert "model" not in params
     assert params["approvalPolicy"] == "on-request"
     assert params["sandboxPolicy"]["type"] == "workspaceWrite"
+
+
+def test_profile_sandbox_workspace_write_reaches_the_turn_sandbox_policy(tmp_path: Path, monkeypatch):
+    # Zenbar sends an explicit sandboxPolicy on every turn, so the profile's
+    # own [sandbox_workspace_write] would otherwise be silently ignored, and a
+    # tool that needs the network (the sqlgen infra bot) fails in the sandbox.
+    (tmp_path / "netted.config.toml").write_text(
+        '[sandbox_workspace_write]\nnetwork_access = true\nwritable_roots = ["/srv/shared-cache"]\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    adapter = AppServerWebSocketAdapter("ws://127.0.0.1:0")
+    policy = adapter._build_turn_start_params("thread-1", _request(profile="netted"))["sandboxPolicy"]
+    assert policy["type"] == "workspaceWrite"
+    assert policy["networkAccess"] is True
+    assert policy["writableRoots"] == ["/srv/repos/demo", "/srv/shared-cache"]
+
+    plain = adapter._build_turn_start_params("thread-1", _request(profile=None))["sandboxPolicy"]
+    assert plain["networkAccess"] is False
+    assert plain["writableRoots"] == ["/srv/repos/demo"]
