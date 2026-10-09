@@ -18,7 +18,7 @@ from itertools import count
 from typing import Any
 from websockets.asyncio.client import ClientConnection
 
-from ..codex_profiles import get_profile
+from ..codex_profiles import RuntimeProfile, get_profile
 from ..schemas import (
     RuntimeEvent,
     RuntimeSession,
@@ -31,16 +31,22 @@ from .base import RuntimeAdapter, _prompt_with_workspace, is_default_model_alias
 from .diffs import _build_diff_payload, _coerce_diff_text, _extract_diff_payload
 from .usage import _classify_rate_limit_windows
 
-def _sandbox_policy_for_mode(mode: str, working_directory: str) -> dict[str, Any]:
+def _sandbox_policy_for_mode(
+    mode: str, working_directory: str, profile: RuntimeProfile | None = None
+) -> dict[str, Any]:
     if mode == "read-only":
         return {"type": "readOnly", "networkAccess": False}
     if mode == "danger-full-access":
         return {"type": "dangerFullAccess"}
+    # A profile's [sandbox_workspace_write] is honored here, the way Codex CLI
+    # honors it, because this policy is sent explicitly on every turn and
+    # replaces the App Server's own config. Network stays off unless a profile
+    # turns it on.
     return {
         "type": "workspaceWrite",
-        "writableRoots": [working_directory],
+        "writableRoots": [working_directory, *(profile.writable_roots if profile else [])],
         "readOnlyAccess": {"type": "fullAccess"},
-        "networkAccess": False,
+        "networkAccess": bool(profile and profile.network_access),
         "excludeTmpdirEnvVar": False,
         "excludeSlashTmp": False,
     }
@@ -362,7 +368,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                 if request.execution_mode == "plan"
                 else None
             ),
-            "sandboxPolicy": _sandbox_policy_for_mode(sandbox_mode, request.working_directory),
+            "sandboxPolicy": _sandbox_policy_for_mode(sandbox_mode, request.working_directory, profile),
             "approvalPolicy": (profile.approval_policy if profile else None) or "on-request",
             "personality": (profile.personality if profile else None) or "pragmatic",
         }
