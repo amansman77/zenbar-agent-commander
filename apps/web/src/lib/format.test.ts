@@ -1,4 +1,4 @@
-import { formatRemainingTime } from "./format";
+import { formatFullTimestamp, formatMessageTime, formatRemainingTime } from "./format";
 
 describe("formatRemainingTime", () => {
   beforeEach(() => {
@@ -30,5 +30,36 @@ describe("formatRemainingTime", () => {
 
   it("returns null for an unparseable timestamp instead of throwing", () => {
     expect(formatRemainingTime("not-a-date")).toBeNull();
+  });
+});
+
+describe("formatMessageTime", () => {
+  // Local-time constructors, so these hold in any test timezone.
+  const now = new Date(2026, 9, 9, 22, 0);
+
+  it("shows only the clock for a message from today", () => {
+    expect(formatMessageTime(new Date(2026, 9, 9, 21, 33).toISOString(), now)).toBe("오후 9:33");
+    expect(formatMessageTime(new Date(2026, 9, 9, 0, 5).toISOString(), now)).toBe("오전 12:05");
+    expect(formatMessageTime(new Date(2026, 9, 9, 12, 0).toISOString(), now)).toBe("오후 12:00");
+  });
+
+  it("adds the date for an earlier day, and the year for an earlier year", () => {
+    expect(formatMessageTime(new Date(2026, 9, 8, 9, 7).toISOString(), now)).toBe("10월 8일 오전 9:07");
+    expect(formatMessageTime(new Date(2025, 11, 31, 23, 59).toISOString(), now)).toBe("2025년 12월 31일 오후 11:59");
+  });
+
+  it("reads a UTC timestamp with its offset as the same instant", () => {
+    const instant = new Date(2026, 9, 9, 21, 33);
+    expect(formatMessageTime(instant.toISOString(), now)).toBe(formatMessageTime(instant.toString(), now));
+  });
+
+  it("returns an empty string for an unparseable timestamp", () => {
+    expect(formatMessageTime("not a date", now)).toBe("");
+  });
+});
+
+describe("formatFullTimestamp", () => {
+  it("includes the date and seconds", () => {
+    expect(formatFullTimestamp(new Date(2026, 9, 9, 21, 33, 8).toISOString())).toBe("2026년 10월 9일 오후 9:33:08");
   });
 });

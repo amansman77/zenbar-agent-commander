@@ -6,10 +6,25 @@ changing a shape here means changing it there too.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Literal
+from datetime import datetime, timezone
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AfterValidator, BaseModel, Field, field_validator
+
+
+def as_utc(value: datetime) -> datetime:
+    """Marks a naive datetime as the UTC it already is.
+
+    Every timestamp is written in UTC, but SQLite drops the offset, so they
+    come back naive. Sent like that ("2026-10-09T12:33:08"), a browser reads
+    the string as *local* time: every time the dashboard showed was 9 hours
+    early in KST, and every "N minutes ago" was 9 hours off.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+# Serialized with its offset ("...Z"), so clients parse it as the instant it is.
+UtcDatetime = Annotated[datetime, AfterValidator(as_utc)]
 
 
 TaskStatus = Literal[
@@ -67,8 +82,8 @@ class ProjectPromptItem(BaseModel):
     title: str
     content: str
     position: int
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
 
 class CreateProjectPromptRequest(BaseModel):
@@ -93,8 +108,8 @@ class GlobalPromptItem(BaseModel):
     title: str
     content: str
     position: int
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
 
 class CreateGlobalPromptRequest(BaseModel):
@@ -116,8 +131,8 @@ class ProjectPipelineItem(BaseModel):
     project_id: str
     name: str
     prompt_ids: list[str]
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
 
 class CreateProjectPipelineRequest(BaseModel):
@@ -240,7 +255,7 @@ class ProjectSummary(BaseModel):
     name: str
     repo_path: str
     default_branch: str
-    created_at: datetime
+    created_at: UtcDatetime
 
 
 class CreateTaskRequest(BaseModel):
@@ -264,7 +279,7 @@ class TaskApprovalRequest(BaseModel):
 class TaskApprovalResponse(BaseModel):
     action: Literal["approve", "stop", "retry"]
     actor: str
-    created_at: datetime
+    created_at: UtcDatetime
 
 
 class TaskQuestionOption(BaseModel):
@@ -306,7 +321,7 @@ class TaskEventResponse(BaseModel):
     type: EventType
     message: str
     payload_json: dict[str, Any] | None = None
-    created_at: datetime
+    created_at: UtcDatetime
 
 
 class TaskSummary(BaseModel):
@@ -328,8 +343,8 @@ class TaskSummary(BaseModel):
     pipeline_name: str | None = None
     pipeline_step_index: int | None = None
     pipeline_total_steps: int | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
 
 class TaskDetail(TaskSummary):
@@ -356,7 +371,7 @@ class SessionTurn(BaseModel):
     session_id: str
     role: TurnRole
     content: str
-    created_at: datetime
+    created_at: UtcDatetime
 
 
 class SessionRun(BaseModel):
@@ -365,7 +380,7 @@ class SessionRun(BaseModel):
     parent_run_id: str | None = None
     status: RunState
     input: str
-    created_at: datetime
+    created_at: UtcDatetime
 
 
 class RuntimeStartRequest(BaseModel):
@@ -415,7 +430,7 @@ class ConversationMessageItem(BaseModel):
     conversation_id: str
     role: str
     content: str
-    created_at: datetime
+    created_at: UtcDatetime
 
 
 class ConversationSummary(BaseModel):
@@ -426,7 +441,7 @@ class ConversationSummary(BaseModel):
     project_name: str | None
     task_id: str | None
     task_status: TaskStatus | None
-    updated_at: datetime
+    updated_at: UtcDatetime
     # True when the latest message is from the assistant and arrived after
     # this conversation was last opened (see repository.mark_conversation_read
     # and serialize_conversation_summary for the exact rule).
@@ -450,8 +465,8 @@ class ConversationDetail(BaseModel):
     task_pipeline_step_index: int | None = None
     task_pipeline_total_steps: int | None = None
     messages: list[ConversationMessageItem]
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
 
 class CreateConversationRequest(BaseModel):

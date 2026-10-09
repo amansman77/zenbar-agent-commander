@@ -267,6 +267,25 @@ describe("App", () => {
       expect(JSON.parse(String(patchCalls()[0][1]?.body))).toEqual({ title: "배포 점검" });
     });
 
+    it("shows when each message was sent or received", async () => {
+      const sent = new Date();
+      sent.setHours(9, 5, 0, 0);
+      const earlier = new Date(sent);
+      earlier.setDate(earlier.getDate() - 1);
+      earlier.setHours(21, 40, 0, 0);
+      openConversationWithoutTask([
+        { id: "m1", conversation_id: "conv-1", role: "user", content: "질문", created_at: earlier.toISOString() },
+        { id: "m2", conversation_id: "conv-1", role: "assistant", content: "답변", created_at: sent.toISOString() }
+      ]);
+
+      const today = await screen.findByText("오전 9:05");
+      expect(today.tagName).toBe("TIME");
+      expect(today).toHaveAttribute("dateTime", sent.toISOString());
+      expect(
+        screen.getByText(`${earlier.getMonth() + 1}월 ${earlier.getDate()}일 오후 9:40`)
+      ).toBeInTheDocument();
+    });
+
     it("copies a message's original text, markdown source included", async () => {
       const now = new Date().toISOString();
       const reply = "## 결과\n\n- **완료**\n- `npm test` 통과";

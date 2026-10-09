@@ -54,3 +54,42 @@ export function formatUsageResetLine(label: string, window: RuntimeUsageWindow):
   const remaining = window.resets_at ? formatRemainingTime(window.resets_at) : null;
   return remaining ? `${label} 리셋: ${absolute} (${remaining})` : `${label} 리셋: ${absolute}`;
 }
+
+// Built from the date's parts rather than toLocaleTimeString("ko-KR"), whose
+// output depends on the runtime's ICU data: Node prints "PM 9:33" where
+// browsers print "오후 9:33".
+function koreanClock(date: Date, withSeconds = false): string {
+  const hours = date.getHours();
+  const period = hours < 12 ? "오전" : "오후";
+  const hour12 = hours % 12 === 0 ? 12 : hours % 12;
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = withSeconds ? `:${String(date.getSeconds()).padStart(2, "0")}` : "";
+  return `${period} ${hour12}:${minutes}${seconds}`;
+}
+
+// When a chat message was sent or received, in the viewer's local time: just
+// the clock for today, the date too for an earlier day, the year too for an
+// earlier year.
+export function formatMessageTime(timestamp: string, now: Date = new Date()): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const clock = koreanClock(date);
+  if (date.getFullYear() !== now.getFullYear()) {
+    return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일 ${clock}`;
+  }
+  if (date.getMonth() !== now.getMonth() || date.getDate() !== now.getDate()) {
+    return `${date.getMonth() + 1}월 ${date.getDate()}일 ${clock}`;
+  }
+  return clock;
+}
+
+// The exact moment, for a tooltip.
+export function formatFullTimestamp(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일 ${koreanClock(date, true)}`;
+}
