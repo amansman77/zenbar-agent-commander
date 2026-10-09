@@ -1296,6 +1296,115 @@ def test_reconcile_active_tasks_marks_stale_sessions_failed():
         assert detail.json()["runtime_session_id"] is None
 
 
+def _fake_claude_cli(tmp: Path) -> tuple[Path, Path]:
+    """A stand-in `claude` that records its argv and prints one result line."""
+    log = tmp / "claude-argv.log"
+    script = tmp / "claude"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{log}"\n'
+        'echo \'{"type":"result","subtype":"success","is_error":false,"result":"resumed"}\'\n'
+    )
+    script.chmod(0o755)
+    return script, log
+
+
+def _claude_task_after_restart(tmpdir: str, monkeypatch, status: str) -> tuple[dict, Path]:
+    """A Claude task whose session exists on disk, seen by a fresh adapter --
+    the state right after an API restart."""
+    from app.claude_adapter import ClaudeCliAdapter
+    from app.main import orchestrator
+
+    tmp = Path(tmpdir)
+    cli, log = _fake_claude_cli(tmp)
+    monkeypatch.setenv("CLAUDE_BIN", str(cli))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp / "claude-home"))
+    monkeypatch.setitem(orchestrator.adapters, "claude", ClaudeCliAdapter())
+
+    repo = init_repo(tmpdir)
+    project = client.post(
+        "/projects", json={"name": "Claude Reattach", "repo_path": str(repo), "default_branch": "main"}
+    ).json()
+    task = client.post(
+        "/tasks",
+        json={"project_id": project["id"], "title": "Long session", "prompt": "Start", "model": "default"},
+    ).json()
+    transcripts = tmp / "claude-home" / "projects" / "-encoded-cwd"
+    transcripts.mkdir(parents=True)
+    (transcripts / f"{task['id']}.jsonl").write_text("{}\n")
+    with SessionLocal() as db:
+        current = get_task(db, task["id"])
+        current.engine = "claude"
+        current.model = "opus"
+        current.status = status
+        current.runtime_session_id = task["id"]
+        current.workspace_path = str(repo)
+        db.add(current)
+        db.commit()
+    return task, log
+
+
+def test_claude_followup_after_api_restart_resumes_the_same_session(monkeypatch):
+    # An API restart used to drop the adapter's in-memory session, so the next
+    # message took the "session expired" path and the agent was restarted
+    # from a three-message summary, although the CLI still had the whole
+    # conversation on disk (2026-10-09).
+    from app.main import orchestrator
+    from app.models import Project
+
+    with TemporaryDirectory() as tmpdir:
+        task, log = _claude_task_after_restart(tmpdir, monkeypatch, status="completed")
+
+        async def follow_up():
+            with SessionLocal() as db:
+                current = get_task(db, task["id"])
+                project = db.get(Project, current.project_id)
+                await orchestrator.followup_or_restart_task(db, current, project, "계속해줘")
+            for _ in range(100):
+                if log.exists() and log.read_text():
+                    break
+                await asyncio.sleep(0.02)
+
+        asyncio.run(follow_up())
+
+        argv = log.read_text()
+        assert f"--resume {task['id']} 계속해줘" in argv
+        assert "--session-id" not in argv
+        events = client.get(f"/tasks/{task['id']}/events").json()
+        assert not any(e["type"] == "session_restarted" for e in events)
+
+
+def test_claude_turn_running_at_restart_is_failed_but_keeps_its_session(monkeypatch):
+    from app.main import orchestrator
+
+    with TemporaryDirectory() as tmpdir:
+        task, _ = _claude_task_after_restart(tmpdir, monkeypatch, status="running")
+
+        asyncio.run(orchestrator.reconcile_active_tasks())
+
+        body = client.get(f"/tasks/{task['id']}").json()
+        assert body["status"] == "failed"
+        # Kept, so a retry resumes the same conversation.
+        assert body["runtime_session_id"] == task["id"]
+        events = client.get(f"/tasks/{task['id']}/events").json()
+        assert any((e.get("payload_json") or {}).get("reason") == "turn_interrupted_by_restart" for e in events)
+
+
+def test_claude_session_without_a_transcript_is_not_reattached(monkeypatch, tmp_path):
+    from app.claude_adapter import ClaudeCliAdapter
+    from app.schemas import RuntimeStartRequest
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    adapter = ClaudeCliAdapter()
+    request = RuntimeStartRequest(
+        task_id="t", title="t", prompt="", model="opus", repo_path=str(tmp_path),
+        working_directory=str(tmp_path), default_branch="main", workspace_type="branch", workspace_ref="r",
+    )
+    assert adapter.knows_session("gone") is False
+    assert asyncio.run(adapter.reattach_session("gone", request)) is False
+    assert adapter.knows_session("gone") is False
+
+
 def test_ensure_runtime_stream_noops_without_running_loop(monkeypatch):
     from app.main import orchestrator
 

@@ -106,6 +106,40 @@ class TaskOrchestrator:
             raise RuntimeError(f"Task '{task_id}' disappeared while {action}")
         return refreshed
 
+    async def _reattach_session_if_lost(self, db: Session, task: Task) -> bool:
+        """Lets the adapter rebuild a session this process forgot.
+
+        A task's runtime_session_id survives an API restart in the database,
+        but the adapter's state for it does not. Without this, every restart
+        turned the next message into "session expired", and the agent was
+        restarted from a summary even when the engine still had the whole
+        conversation (see RuntimeAdapter.reattach_session). Returns whether
+        the adapter holds the session now.
+        """
+        session_id = task.runtime_session_id
+        if not session_id:
+            return False
+        adapter = self._adapter_for(task)
+        if adapter.knows_session(session_id):
+            return True
+        if not task.workspace_path or task.project is None:
+            return False
+        request = RuntimeStartRequest(
+            task_id=task.id,
+            title=task.title,
+            prompt="",
+            engine=task.engine,
+            model=task.model or "default",
+            profile=task.profile,
+            repo_path=task.project.repo_path,
+            working_directory=task.workspace_path,
+            default_branch=task.project.default_branch,
+            execution_mode=task.execution_mode,  # type: ignore[arg-type]
+            workspace_type=task.workspace_type,  # type: ignore[arg-type]
+            workspace_ref=task.workspace_ref,
+        )
+        return await adapter.reattach_session(session_id, request)
+
     def ensure_runtime_stream(self, task_id: str, session_id: str | None) -> None:
         if not self._adapter_for_task_id(task_id).stream_in_background:
             return
@@ -364,6 +398,7 @@ class TaskOrchestrator:
             refreshed = self._require_task(db, task.id, "stopping a task with no session")
             return set_task_status(db, refreshed, "stopped")
         adapter = self._adapter_for(task)
+        await self._reattach_session_if_lost(db, task)
         try:
             # turn/interrupt usually answers promptly even on a wedged turn,
             # but not always: a turn blocked on a server request nobody
@@ -438,6 +473,7 @@ class TaskOrchestrator:
         parent_run = get_latest_run(db, task.id)
         create_run(db, task, input_text="Run again", parent_run_id=parent_run.id if parent_run else None)
         adapter = self._adapter_for(task)
+        await self._reattach_session_if_lost(db, task)
         try:
             session = await adapter.retry_task(task.runtime_session_id)
         except RuntimeError as exc:
@@ -488,6 +524,7 @@ class TaskOrchestrator:
         # already using". effective_model below picks up the change
         # automatically since it already always trusts what the adapter
         # reports back.
+        await self._reattach_session_if_lost(db, task)
         session = await adapter.followup_task(task.runtime_session_id, content, selected_skill=selected_skill, model=model)
         refreshed = self._require_task(db, task.id, "starting follow-up turn")
         refreshed = set_task_status(
@@ -587,6 +624,7 @@ class TaskOrchestrator:
     async def refresh_diff(self, db: Session, task: Task) -> Task:
         runtime_diff: TaskDiff | None = None
         if task.runtime_session_id:
+            await self._reattach_session_if_lost(db, task)
             try:
                 runtime_diff = await self._adapter_for(task).get_diff(task.runtime_session_id)
             except RuntimeError as exc:
@@ -611,8 +649,28 @@ class TaskOrchestrator:
             return task
         if not task.runtime_session_id:
             return task
+        adapter = self._adapter_for(task)
+        was_known = adapter.knows_session(task.runtime_session_id)
+        reattached = not was_known and await self._reattach_session_if_lost(db, task)
+        if reattached and not adapter.has_running_turn(task.runtime_session_id):
+            # The session is back, but the turn that was running is not: a
+            # CLI engine's turn is a child process of the API, and it died in
+            # the restart. Say so, and keep the session id, so a retry or the
+            # next message resumes the same conversation instead of starting
+            # one from a summary.
+            append_event(
+                db,
+                task,
+                RuntimeEvent(
+                    type="failed",
+                    message="The running turn was interrupted by an API restart. Retry or send a message to continue the same session.",
+                    payload={"reason": "turn_interrupted_by_restart"},
+                ),
+            )
+            db.expire_all()
+            return self._require_task(db, task.id, "marking an interrupted turn")
         try:
-            await self._adapter_for(task).get_diff(task.runtime_session_id)
+            await adapter.get_diff(task.runtime_session_id)
             return task
         except RuntimeError as exc:
             # See _is_stale_session_error's own comment for the two shapes
@@ -833,6 +891,13 @@ class TaskOrchestrator:
                 current = get_task(db, task_id)
             return current is not None and current.status in self.ACTIVE_TASK_STATUSES
 
+        # Whatever opens a task after an API restart starts this consumer, so
+        # this is usually the first thing to touch a forgotten session.
+        with SessionLocal() as db:
+            current = get_task(db, task_id)
+            if current is not None and current.runtime_session_id == session_id:
+                await self._reattach_session_if_lost(db, current)
+
         attempts = 0
         # See the comment on self._stuck_session_idle_seconds: codex-rs
         # itself never reaps a backgrounded process nobody polls again, so a
@@ -1010,20 +1075,19 @@ class TaskOrchestrator:
             if task is None:
                 return
             terminal = task.status in {"completed", "stopped"}
-            if task.runtime_session_id:
-                task = clear_runtime_session(db, task, status=task.status if terminal else "failed")
             if terminal:
-                event = RuntimeEvent(
-                    type="agent_status",
-                    message="Runtime session ended after task completion.",
-                    payload={"attempts": attempts, "reason": "stale_runtime_session_terminal"},
-                )
-            else:
-                event = RuntimeEvent(
-                    type="failed",
-                    message="Runtime session is no longer available. Retry the task to continue.",
-                    payload={"attempts": attempts, "reason": "stale_runtime_session"},
-                )
+                # Nothing is running, so there is nothing to fail. The session
+                # id is kept: clearing it here, as this used to, meant the next
+                # message could not even report which session it replaced, and
+                # an adapter able to reattach never got the chance.
+                return
+            if task.runtime_session_id:
+                task = clear_runtime_session(db, task, status="failed")
+            event = RuntimeEvent(
+                type="failed",
+                message="Runtime session is no longer available. Retry the task to continue.",
+                payload={"attempts": attempts, "reason": "stale_runtime_session"},
+            )
             append_event(db, task, event)
             task = get_task(db, task_id)
             if task is None:

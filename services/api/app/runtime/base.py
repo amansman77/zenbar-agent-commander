@@ -25,6 +25,30 @@ from ..schemas import (
 class RuntimeAdapter(ABC):
     stream_in_background = True
 
+    # Session state lives in this process, but a task's runtime_session_id is
+    # in the database, so an API restart leaves the second without the first.
+    # An adapter whose engine keeps the session somewhere durable can rebuild
+    # it from that id instead of letting the task's session be declared
+    # expired and replaced by a summary of the conversation. The defaults
+    # keep today's behaviour for adapters that cannot.
+
+    def knows_session(self, session_id: str) -> bool:
+        """Whether this process holds state for session_id. The default
+        claims it does, so the orchestrator never tries to reattach."""
+        return True
+
+    async def reattach_session(self, session_id: str, request: RuntimeStartRequest) -> bool:
+        """Rebuilds state for a session this process lost. `request` carries
+        the task's workspace and settings; its prompt is empty. Returns True
+        if the session can be used again."""
+        return False
+
+    def has_running_turn(self, session_id: str) -> bool:
+        """Whether a turn is still executing for session_id. Only consulted
+        right after a reattach, to tell a turn that survived the restart from
+        one that died with it."""
+        return True
+
     @abstractmethod
     async def list_collaboration_modes(self) -> list[str] | None:
         raise NotImplementedError
