@@ -28,6 +28,13 @@ from .schemas import (
 )
 
 
+def _claude_projects_dir() -> Path:
+    # Where the CLI keeps each session's transcript, as
+    # <projects>/<encoded cwd>/<session id>.jsonl.
+    root = os.getenv("CLAUDE_CONFIG_DIR")
+    return (Path(root).expanduser() if root else Path.home() / ".claude") / "projects"
+
+
 def _claude_bin() -> str:
     configured = os.getenv("CLAUDE_BIN")
     if configured:
@@ -210,6 +217,37 @@ class ClaudeCliAdapter(RuntimeAdapter):
         session = self._require_session(session_id)
         while True:
             yield await session.queue.get()
+
+    def knows_session(self, session_id: str) -> bool:
+        return session_id in self._sessions
+
+    async def reattach_session(self, session_id: str, request: RuntimeStartRequest) -> bool:
+        # The session id is the task id (start_task passes it as
+        # --session-id), and the CLI keeps the whole transcript on disk, so
+        # nothing about the session is lost when this process restarts except
+        # this bookkeeping. Rebuilding it lets the next turn `--resume` the
+        # same conversation. Before this, every API restart sent the task down
+        # the "session expired" path, which re-seeded the agent with a
+        # three-message summary instead (2026-10-09, four restarts in a day).
+        if session_id in self._sessions:
+            return True
+        if "/" in session_id or not any(_claude_projects_dir().glob(f"*/{session_id}.jsonl")):
+            return False
+        self._sessions[session_id] = _ClaudeSession(
+            working_directory=request.working_directory,
+            default_branch=request.default_branch,
+            model=None if is_default_model_alias(request.model) else request.model.strip(),
+            execution_mode=request.execution_mode,
+            claude_session_id=session_id,
+        )
+        return True
+
+    def has_running_turn(self, session_id: str) -> bool:
+        # A turn is a `claude --print` child of this process, so one that was
+        # running when the API restarted died with it.
+        session = self._sessions.get(session_id)
+        process = session.current_process if session else None
+        return process is not None and process.returncode is None
 
     def _require_session(self, session_id: str) -> _ClaudeSession:
         session = self._sessions.get(session_id)
