@@ -3300,13 +3300,18 @@ def test_conversation_read_endpoint_clears_is_unread():
                 db, conversation["id"], AddConversationMessageRequest(role="assistant", content="Done.")
             )
         listed = client.get("/conversations").json()
-        assert next(c for c in listed if c["id"] == conversation["id"])["is_unread"] is True
+        before = next(c for c in listed if c["id"] == conversation["id"])
+        assert before["is_unread"] is True
 
         mark_read = client.post(f"/conversations/{conversation['id']}/read")
         assert mark_read.status_code == 204
 
         listed = client.get("/conversations").json()
-        assert next(c for c in listed if c["id"] == conversation["id"])["is_unread"] is False
+        after = next(c for c in listed if c["id"] == conversation["id"])
+        assert after["is_unread"] is False
+        # Opening a conversation is not activity: it must not move the
+        # conversation up the list, which is ordered by updated_at.
+        assert after["updated_at"] == before["updated_at"]
 
         # A later assistant message flips it back on -- reading isn't a
         # one-time flag, it's "as of last_read_at".
