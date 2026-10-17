@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -3234,6 +3235,52 @@ def test_conversation_is_unread_true_only_when_newest_message_is_from_assistant(
         assert next(c for c in listed if c["id"] == conversation["id"])["is_unread"] is True
 
 
+def test_conversation_last_response_at_is_the_latest_assistant_message():
+    # The list shows when the agent last replied. updated_at can't stand in
+    # for that: the user's own messages (and opening the conversation) move it.
+    from app.repository import add_conversation_message
+    from app.schemas import AddConversationMessageRequest
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Last Response Project", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        conversation = client.post(
+            "/conversations",
+            json={"project_id": project["id"], "title": "Last response conversation"},
+        ).json()
+
+        def listed_last_response_at():
+            listed = client.get("/conversations").json()
+            return next(c for c in listed if c["id"] == conversation["id"])["last_response_at"]
+
+        assert listed_last_response_at() is None
+
+        with SessionLocal() as db:
+            add_conversation_message(
+                db, conversation["id"], AddConversationMessageRequest(role="user", content="Do the thing")
+            )
+        assert listed_last_response_at() is None
+
+        with SessionLocal() as db:
+            reply = add_conversation_message(
+                db, conversation["id"], AddConversationMessageRequest(role="assistant", content="Done.")
+            )
+            reply_at = reply.created_at
+        first = listed_last_response_at()
+        assert first is not None and first.endswith("Z")
+        assert datetime.fromisoformat(first.replace("Z", "+00:00")).replace(tzinfo=None) == reply_at.replace(tzinfo=None)
+
+        with SessionLocal() as db:
+            add_conversation_message(
+                db, conversation["id"], AddConversationMessageRequest(role="user", content="And another")
+            )
+        # A newer user message doesn't count as a response.
+        assert listed_last_response_at() == first
+
+
 def test_conversation_read_endpoint_clears_is_unread():
     from app.repository import add_conversation_message
     from app.schemas import AddConversationMessageRequest
@@ -3253,13 +3300,18 @@ def test_conversation_read_endpoint_clears_is_unread():
                 db, conversation["id"], AddConversationMessageRequest(role="assistant", content="Done.")
             )
         listed = client.get("/conversations").json()
-        assert next(c for c in listed if c["id"] == conversation["id"])["is_unread"] is True
+        before = next(c for c in listed if c["id"] == conversation["id"])
+        assert before["is_unread"] is True
 
         mark_read = client.post(f"/conversations/{conversation['id']}/read")
         assert mark_read.status_code == 204
 
         listed = client.get("/conversations").json()
-        assert next(c for c in listed if c["id"] == conversation["id"])["is_unread"] is False
+        after = next(c for c in listed if c["id"] == conversation["id"])
+        assert after["is_unread"] is False
+        # Opening a conversation is not activity: it must not move the
+        # conversation up the list, which is ordered by updated_at.
+        assert after["updated_at"] == before["updated_at"]
 
         # A later assistant message flips it back on -- reading isn't a
         # one-time flag, it's "as of last_read_at".

@@ -99,7 +99,14 @@ def mark_conversation_read(db: Session, conversation_id: str) -> None:
     # mismatched precision made a message that arrived earlier in the same
     # second as this write look newer than this read, leaving is_unread
     # stuck True right after marking read. Reproduced live by a test.
-    db.execute(update(Conversation).where(Conversation.id == conversation_id).values(last_read_at=utcnow()))
+    # updated_at is written back as itself for the same reason as in
+    # rename_conversation: opening a conversation is not activity in it, and
+    # onupdate would otherwise move it to the top of the list.
+    db.execute(
+        update(Conversation)
+        .where(Conversation.id == conversation_id)
+        .values(last_read_at=utcnow(), updated_at=Conversation.updated_at)
+    )
     db.commit()
 
 
@@ -138,7 +145,13 @@ def rename_conversation(db: Session, conversation_id: str, title: str) -> None:
 
 
 def set_conversation_task_id(db: Session, conversation_id: str, task_id: str) -> None:
-    db.execute(update(Conversation).where(Conversation.id == conversation_id).values(task_id=task_id))
+    # Same as rename_conversation: linking a task is not activity on its own
+    # (the message that started it already moved updated_at).
+    db.execute(
+        update(Conversation)
+        .where(Conversation.id == conversation_id)
+        .values(task_id=task_id, updated_at=Conversation.updated_at)
+    )
     db.commit()
 
 

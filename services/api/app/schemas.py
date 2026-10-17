@@ -442,6 +442,9 @@ class ConversationSummary(BaseModel):
     task_id: str | None
     task_status: TaskStatus | None
     updated_at: UtcDatetime
+    # When the agent last replied. updated_at is not a stand-in for this: it
+    # also moves when the user sends a message or opens the conversation.
+    last_response_at: UtcDatetime | None
     # True when the latest message is from the assistant and arrived after
     # this conversation was last opened (see repository.mark_conversation_read
     # and serialize_conversation_summary for the exact rule).

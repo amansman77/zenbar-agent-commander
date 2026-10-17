@@ -183,6 +183,7 @@ def serialize_conversation_message(msg: ConversationMessage) -> ConversationMess
 def serialize_conversation_summary(conv: Conversation) -> ConversationSummary:
     last_msg = conv.messages[-1] if conv.messages else None
     task_status = conv.task.status if conv.task else None
+    last_response = next((msg for msg in reversed(conv.messages) if msg.role == "assistant"), None)
     # Unread means "the newest thing in this conversation is something the
     # agent said, and I haven't opened it since" -- a user's own message
     # never counts (they obviously already saw what they just typed), and
@@ -202,6 +203,7 @@ def serialize_conversation_summary(conv: Conversation) -> ConversationSummary:
         task_id=conv.task_id,
         task_status=task_status,  # type: ignore[arg-type]
         updated_at=conv.updated_at,
+        last_response_at=last_response.created_at if last_response else None,
         is_unread=is_unread,
     )
 

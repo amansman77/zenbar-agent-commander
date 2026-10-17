@@ -367,6 +367,9 @@ export interface ConversationSummary {
   task_id: string | null;
   task_status: TaskStatus | null;
   updated_at: string;
+  // When the agent last replied; null until it has. Not updated_at, which
+  // also moves when the user sends a message or opens the conversation.
+  last_response_at: string | null;
   // True when the latest message is from the assistant and arrived after
   // this conversation was last opened.
   is_unread: boolean;
