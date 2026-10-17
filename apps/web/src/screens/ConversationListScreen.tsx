@@ -13,6 +13,7 @@ import {
   loadCollapsedConversationGroups,
   saveCollapsedConversationGroups,
 } from "../lib/conversations";
+import { formatFullTimestamp, formatMessageTime } from "../lib/format";
 import { inferRunStatus } from "../lib/taskStatus";
 
 export function ConversationListScreen({
@@ -185,9 +186,15 @@ export function ConversationListScreen({
                     {conv.last_message && (
                       <span className="item-secondary truncate conversation-preview">{conv.last_message}</span>
                     )}
-                    <span className="item-secondary conversation-time">
-                      {new Date(conv.updated_at).toLocaleString()}
-                    </span>
+                    {conv.last_response_at && (
+                      <time
+                        className="item-secondary conversation-time"
+                        dateTime={conv.last_response_at}
+                        title={`마지막 응답: ${formatFullTimestamp(conv.last_response_at)}`}
+                      >
+                        마지막 응답 {formatMessageTime(conv.last_response_at)}
+                      </time>
+                    )}
                   </button>
                   <button
                     className="icon-button conversation-delete-button"

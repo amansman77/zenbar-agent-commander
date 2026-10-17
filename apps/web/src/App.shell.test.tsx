@@ -120,6 +120,7 @@ describe("App", () => {
       task_id: null,
       task_status: null,
       updated_at: new Date(2026, 0, 1, 0, i).toISOString(),
+      last_response_at: null,
       is_unread: false
     })).reverse(); // most-recently-updated first, matching the real endpoint's ordering
     fixtures.conversations = allFive;
@@ -140,6 +141,52 @@ describe("App", () => {
 
     expect(await screen.findByText("Conversation 1")).toBeInTheDocument();
     expect(screen.getByText("Conversation 0")).toBeInTheDocument();
+  });
+  it("shows when the agent last replied in the conversation list, not updated_at", async () => {
+    window.localStorage.setItem(
+      "zenbar:lastView",
+      JSON.stringify({
+        mobileScreen: "conversations",
+        desktopView: "chat",
+        selectedConversationId: null,
+        selectedProjectId: null,
+        selectedTaskId: null
+      })
+    );
+    fixtures.conversations = [
+      {
+        id: "conv-replied",
+        title: "Replied conversation",
+        last_message: "Done.",
+        project_id: "project-1",
+        project_name: "agent-commander",
+        task_id: null,
+        task_status: null,
+        // Opening the conversation later moved updated_at; the list should
+        // still show the reply's own time.
+        updated_at: new Date(2025, 4, 6, 10, 0).toISOString(),
+        last_response_at: new Date(2025, 2, 4, 21, 5).toISOString(),
+        is_unread: false
+      },
+      {
+        id: "conv-waiting",
+        title: "Waiting conversation",
+        last_message: "Do the thing",
+        project_id: "project-1",
+        project_name: "agent-commander",
+        task_id: null,
+        task_status: null,
+        updated_at: new Date(2025, 4, 6, 9, 0).toISOString(),
+        last_response_at: null,
+        is_unread: false
+      }
+    ];
+    fixtures.conversationCounts = { "project-1": 2 };
+
+    renderApp();
+
+    expect(await screen.findByText("마지막 응답 2025년 3월 4일 오후 9:05")).toBeInTheDocument();
+    expect(screen.getAllByText(/^마지막 응답/)).toHaveLength(1);
   });
   describe("conversation model picker", () => {
     function openConversationWithoutTask(messages: Record<string, unknown>[] = []) {
