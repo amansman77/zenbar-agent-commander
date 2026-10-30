@@ -32,6 +32,7 @@ class RuntimeProfile:
     approval_policy: str | None = None
     sandbox_mode: str | None = None
     personality: str | None = None
+    approvals_reviewer: str | None = None
     # The profile's [sandbox_workspace_write] table, the same keys Codex CLI
     # reads. Zenbar sends an explicit sandboxPolicy on every turn, which
     # replaces whatever the App Server's own config says, so these only take
@@ -80,6 +81,7 @@ def _parse_profile_file(path: Path) -> RuntimeProfile | None:
         approval_policy=raw.get("approval_policy") if isinstance(raw.get("approval_policy"), str) else None,
         sandbox_mode=raw.get("sandbox_mode") if isinstance(raw.get("sandbox_mode"), str) else None,
         personality=raw.get("personality") if isinstance(raw.get("personality"), str) else None,
+        approvals_reviewer=raw.get("approvals_reviewer") if isinstance(raw.get("approvals_reviewer"), str) else None,
         network_access=network_access if isinstance(network_access, bool) else None,
         writable_roots=[r for r in writable_roots if isinstance(r, str)] if isinstance(writable_roots, list) else [],
         raw=raw,

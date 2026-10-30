@@ -119,3 +119,18 @@ def test_provider_app_servers_are_read_from_the_environment(monkeypatch):
 
     monkeypatch.delenv("ZENBAR_APP_SERVER_PROVIDER_URLS")
     assert create_codex_provider_adapters() == {}
+
+
+def test_approval_requests_go_to_codex_auto_review_unless_a_profile_says_otherwise(tmp_path: Path, monkeypatch):
+    # config.toml's approvals_reviewer never reached Zenbar's threads, so every
+    # sandbox escape waited for a person. Zenbar now sends it on each turn.
+    (tmp_path / "ask-me.config.toml").write_text('approvals_reviewer = "user"\n')
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.delenv("ZENBAR_CODEX_APPROVALS_REVIEWER", raising=False)
+
+    adapter = AppServerWebSocketAdapter("ws://127.0.0.1:0")
+    assert adapter._build_turn_start_params("thread-1", _request(profile=None))["approvalsReviewer"] == "auto_review"
+    assert adapter._build_turn_start_params("thread-1", _request(profile="ask-me"))["approvalsReviewer"] == "user"
+
+    monkeypatch.setenv("ZENBAR_CODEX_APPROVALS_REVIEWER", "user")
+    assert adapter._build_turn_start_params("thread-1", _request(profile=None))["approvalsReviewer"] == "user"

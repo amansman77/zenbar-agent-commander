@@ -31,6 +31,20 @@ from .base import RuntimeAdapter, _prompt_with_workspace, is_default_model_alias
 from .diffs import _build_diff_payload, _coerce_diff_text, _extract_diff_payload
 from .usage import _classify_rate_limit_windows
 
+def _approvals_reviewer(profile: RuntimeProfile | None) -> str:
+    # Who answers an approval request: "user" sends it to the person in the
+    # Zenbar UI; "auto_review" has Codex's reviewer subagent approve or deny
+    # it on risk. ~/.codex/config.toml's approvals_reviewer does not reach
+    # threads Zenbar starts through the App Server -- their turn context
+    # recorded "user" while config.toml said guardian_subagent -- so it is
+    # sent explicitly. One Income agent task stopped 26 times on sandbox
+    # escapes (local ports, HTTP checks, the uv cache) and Computer Use app
+    # prompts, each waiting for a person (2026-10-30).
+    return (profile.approvals_reviewer if profile else None) or os.getenv(
+        "ZENBAR_CODEX_APPROVALS_REVIEWER", "auto_review"
+    )
+
+
 def _sandbox_policy_for_mode(
     mode: str, working_directory: str, profile: RuntimeProfile | None = None
 ) -> dict[str, Any]:
@@ -130,6 +144,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         thread_start_params: dict[str, Any] = {
             "cwd": request.working_directory,
             "approvalPolicy": (profile.approval_policy if profile else None) or "on-request",
+            "approvalsReviewer": _approvals_reviewer(profile),
             "sandbox": (profile.sandbox_mode if profile else None) or "workspace-write",
             "personality": (profile.personality if profile else None) or "pragmatic",
         }
@@ -370,6 +385,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             ),
             "sandboxPolicy": _sandbox_policy_for_mode(sandbox_mode, request.working_directory, profile),
             "approvalPolicy": (profile.approval_policy if profile else None) or "on-request",
+            "approvalsReviewer": _approvals_reviewer(profile),
             "personality": (profile.personality if profile else None) or "pragmatic",
         }
         if profile and profile.model:
