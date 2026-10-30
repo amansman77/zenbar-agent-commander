@@ -43,6 +43,7 @@ from .repository import (
 )
 from .resume_context import RECENT_MESSAGE_LIMIT, ResumeMessage, build_resume_prompt
 from . import workspace_git
+from .codex_profiles import get_profile
 from .runtime import RuntimeAdapter
 from .schemas import (
     RespondTaskRequest,
@@ -68,9 +69,17 @@ _is_stale_session_error = is_stale_session_error
 class TaskOrchestrator:
     ACTIVE_TASK_STATUSES = {"starting", "running", "waiting_user_input", "waiting_result_approval"}
 
-    def __init__(self, adapters: dict[str, RuntimeAdapter], default_engine: str = "codex") -> None:
+    def __init__(
+        self,
+        adapters: dict[str, RuntimeAdapter],
+        default_engine: str = "codex",
+        codex_provider_adapters: dict[str, RuntimeAdapter] | None = None,
+    ) -> None:
         self.adapters = adapters
         self.default_engine = default_engine
+        # Codex adapters for App Servers pinned to one provider (see
+        # create_codex_provider_adapters), keyed by provider id.
+        self.codex_provider_adapters = codex_provider_adapters or {}
         # Back-compat alias: main.py's model_catalog and several tests reach
         # into `orchestrator.adapter` directly, expecting "the" adapter. Keep
         # it pointed at the default engine's (same object as adapters[...],
@@ -93,6 +102,17 @@ class TaskOrchestrator:
 
     def _adapter_for(self, task: Task | None) -> RuntimeAdapter:
         engine = (task.engine if task is not None else None) or self.default_engine
+        if engine == "codex" and task is not None and task.profile and self.codex_provider_adapters:
+            # Since Codex 0.166 one App Server serves one provider, and every
+            # task on a profile whose provider differed from config.toml's
+            # failed at turn/start with "This chat uses azure, but your
+            # current provider is openai" (2026-10-30). Such a task goes to
+            # the App Server pinned to its provider. The profile is read on
+            # each call, so a retry that changes the profile changes servers.
+            profile = get_profile(task.profile)
+            provider = profile.model_provider if profile else None
+            if provider and provider in self.codex_provider_adapters:
+                return self.codex_provider_adapters[provider]
         return self.adapters.get(engine, self.adapter)
 
     def _adapter_for_task_id(self, task_id: str) -> RuntimeAdapter:

@@ -1,7 +1,8 @@
 #!/bin/sh
 # Runs Zenbar as three launchd user agents on this Mac:
 #
-#   com.zenbar.app-server  Codex App Server   ws://127.0.0.1:18765 (scripts/app-server.sh)
+#   com.zenbar.app-server        Codex App Server   ws://127.0.0.1:18765 (scripts/app-server.sh)
+#   com.zenbar.app-server-azure  the same, pinned to the azure provider, ws://127.0.0.1:18766
 #   com.zenbar.api         Orchestration API  http://127.0.0.1:18001
 #   com.zenbar.dashboard   Web Commander      http://127.0.0.1:8080, proxying /api
 #
@@ -12,7 +13,7 @@
 #
 #   sh scripts/services.sh install       write the plists and start everything
 #   sh scripts/services.sh uninstall     stop everything and remove the plists
-#   sh scripts/services.sh restart [api|dashboard|app-server]
+#   sh scripts/services.sh restart [api|dashboard|app-server|app-server-azure]
 #   sh scripts/services.sh deploy-web    rebuild the dashboard bundle (served live, no restart)
 #   sh scripts/services.sh status
 #
@@ -27,7 +28,11 @@ ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 ZENBAR_HOME="${ZENBAR_HOME:-$HOME/.zenbar}"
 VENV_PYTHON="$ROOT_DIR/.venv/bin/python"
 DOMAIN="gui/$(id -u)"
-LABELS="com.zenbar.app-server com.zenbar.api com.zenbar.dashboard"
+LABELS="com.zenbar.app-server com.zenbar.app-server-azure com.zenbar.api com.zenbar.dashboard"
+# Codex profiles whose model_provider has its own App Server (see app-server.sh
+# for why one server cannot serve two providers). The API routes those tasks
+# there; everything else uses com.zenbar.app-server.
+AZURE_APP_SERVER_URL="${ZENBAR_AZURE_APP_SERVER_URL:-ws://127.0.0.1:18766}"
 
 load_env() {
     for env_file in "$ROOT_DIR/.env.local" "$ROOT_DIR/services/api/.env.local"; do
@@ -79,6 +84,7 @@ case "${1:-}" in
         # launchd agent, and a managed one here would fight it for the port.
         export ZENBAR_DATABASE_URL="sqlite:///$ZENBAR_HOME/zenbar.db"
         export ZENBAR_APP_SERVER_MANAGED=false
+        export ZENBAR_APP_SERVER_PROVIDER_URLS="${ZENBAR_APP_SERVER_PROVIDER_URLS:-azure=$AZURE_APP_SERVER_URL}"
         if [ ! -f "$ZENBAR_HOME/zenbar.db" ]; then
             echo "No database at $ZENBAR_HOME/zenbar.db" >&2
             exit 1
@@ -112,6 +118,7 @@ case "${1:-}" in
             sh "$ROOT_DIR/scripts/services.sh" deploy-web
         fi
         write_plist com.zenbar.app-server /bin/sh "$ROOT_DIR/scripts/app-server.sh"
+        write_plist com.zenbar.app-server-azure /bin/sh "$ROOT_DIR/scripts/app-server.sh" azure "$AZURE_APP_SERVER_URL"
         write_plist com.zenbar.api /bin/sh "$ROOT_DIR/scripts/services.sh" run-api
         write_plist com.zenbar.dashboard /bin/sh "$ROOT_DIR/scripts/services.sh" run-dashboard
         for label in $LABELS; do
@@ -137,7 +144,7 @@ case "${1:-}" in
         echo "Removed: $LABELS"
         ;;
     restart)
-        for label in ${2:-api dashboard app-server}; do
+        for label in ${2:-api dashboard app-server app-server-azure}; do
             launchctl kickstart -k "$DOMAIN/com.zenbar.${label#com.zenbar.}"
         done
         ;;
@@ -148,7 +155,7 @@ case "${1:-}" in
         done
         ;;
     *)
-        echo "usage: $0 install|uninstall|restart [api|dashboard|app-server]|deploy-web|status" >&2
+        echo "usage: $0 install|uninstall|restart [api|dashboard|app-server|app-server-azure]|deploy-web|status" >&2
         exit 1
         ;;
 esac

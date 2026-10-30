@@ -19,7 +19,7 @@ RuntimeAdapter`.
 from .base import RuntimeAdapter, is_default_model_alias
 from .app_server import AppServerWebSocketAdapter, PendingRequest, SessionState
 from .mock import MockRuntimeAdapter
-from .factory import ENGINE_LABELS, create_engine_adapters, create_runtime_adapter
+from .factory import ENGINE_LABELS, create_codex_provider_adapters, create_engine_adapters, create_runtime_adapter
 
 __all__ = [
     "ENGINE_LABELS",
@@ -28,6 +28,7 @@ __all__ = [
     "PendingRequest",
     "RuntimeAdapter",
     "SessionState",
+    "create_codex_provider_adapters",
     "create_engine_adapters",
     "create_runtime_adapter",
     "is_default_model_alias",
