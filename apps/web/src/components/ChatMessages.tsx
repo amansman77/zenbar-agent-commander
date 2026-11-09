@@ -7,6 +7,7 @@ import type {
   ConversationMessageItem
 } from "@zenbar/shared";
 import { api } from "../api";
+import { PASTED_IMAGE_RE } from "../lib/pastedImages";
 import { copyToClipboard } from "../lib/clipboard";
 import { formatFullTimestamp, formatMessageTime } from "../lib/format";
 import { classifyReferencePath, extractMessageSegments, isRemoteImageUrl } from "../lib/messageImages";
@@ -18,7 +19,7 @@ import { classifyReferencePath, extractMessageSegments, isRemoteImageUrl } from 
 // local workspace path from without a task to scope it to.
 function MessageImage({ path, taskId }: { path: string; taskId: string | null }) {
   const [failed, setFailed] = useState(false);
-  const src = isRemoteImageUrl(path) ? path : taskId ? api.workspaceFileUrl(taskId, path) : null;
+  const src = (isRemoteImageUrl(path) || PASTED_IMAGE_RE.test(path)) ? path : taskId ? api.workspaceFileUrl(taskId, path) : null;
 
   if (!src || failed) {
     return <code className="inline-code">{path}</code>;
@@ -28,7 +29,7 @@ function MessageImage({ path, taskId }: { path: string; taskId: string | null })
     <a href={src} target="_blank" rel="noreferrer" style={{ display: "block", margin: "4px 0" }}>
       <img
         src={src}
-        alt={path}
+        alt={PASTED_IMAGE_RE.test(path) ? "붙여넣은 이미지" : path}
         onError={() => setFailed(true)}
         style={{ display: "block", maxWidth: "100%", maxHeight: "260px", borderRadius: "8px", border: "1px solid var(--line)" }}
       />
@@ -112,6 +113,7 @@ function MessageReference({ target, taskId, fallback }: { target: string; taskId
 // strips it. Every other URL still goes through the default transform, which
 // is what blocks `javascript:` links in agent-written markdown.
 function transformMessageUrl(url: string): string {
+  if (PASTED_IMAGE_RE.test(url)) return url;
   return defaultUrlTransform(url.replace(/^sandbox:/i, ""));
 }
 

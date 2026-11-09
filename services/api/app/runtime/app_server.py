@@ -18,6 +18,7 @@ from itertools import count
 from typing import Any
 from websockets.asyncio.client import ClientConnection
 
+from ..message_images import INLINE_IMAGE_RE
 from ..codex_profiles import RuntimeProfile, get_profile
 from ..schemas import (
     RuntimeEvent,
@@ -89,6 +90,23 @@ def _is_unsupported_model_error(message: str) -> bool:
 # available to confirm its exact minute count, so this classifies by
 # threshold (<=360 min ~ session-scale, >=10000 min ~ week-scale) rather
 # than an exact match, and drops anything in between as unrecognized.
+
+
+# Keep attachments in persisted markdown so retries retain them, but send actual
+# image inputs to Codex instead of making the model read base64 as prompt text.
+def _message_inputs(message: str) -> list[dict[str, Any]]:
+    inputs: list[dict[str, Any]] = []
+    offset = 0
+    for match in INLINE_IMAGE_RE.finditer(message):
+        text = message[offset:match.start()]
+        if text.strip():
+            inputs.append({"type": "text", "text": text, "text_elements": []})
+        inputs.append({"type": "image", "url": match.group(1)})
+        offset = match.end()
+    text = message[offset:]
+    if text.strip() or not inputs:
+        inputs.append({"type": "text", "text": text, "text_elements": []})
+    return inputs
 
 
 @dataclass
@@ -337,7 +355,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         if model is not None and not (profile and profile.model):
             params["model"] = None if is_default_model_alias(request.model) else request.model
         full_message = f"[Skill: {selected_skill}]\n{message}" if selected_skill else message
-        params["input"] = [{"type": "text", "text": full_message, "text_elements": []}]
+        params["input"] = _message_inputs(full_message)
         turn = await self._rpc("turn/start", params)
         state.current_turn_id = turn["turn"]["id"]
         state.pending_requests.clear()
@@ -353,7 +371,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         sandbox_mode = (profile.sandbox_mode if profile else None) or "workspace-write"
         params: dict[str, Any] = {
             "threadId": thread_id,
-            "input": [{"type": "text", "text": _prompt_with_workspace(request), "text_elements": []}],
+            "input": _message_inputs(_prompt_with_workspace(request)),
             "collaborationMode": (
                 {
                     "mode": "plan",

@@ -64,3 +64,46 @@ def test_elicitation_is_answered_with_an_action_not_a_decision():
     )
 
     assert adapter._approval_result_for(pending) == {"action": "accept", "content": None}
+
+
+def test_inline_images_are_sent_as_image_inputs_on_initial_and_followup_turns():
+    from unittest.mock import AsyncMock
+
+    from app.schemas import RuntimeStartRequest
+
+    adapter, state = _adapter_with_session()
+    image = "data:image/png;base64,aGVsbG8="
+    message = f"확인해줘\n\n![붙여넣은 이미지]({image})"
+    request = RuntimeStartRequest(
+        task_id="task-1", prompt=message, title="Image", model="default",
+        reasoning_effort="medium", execution_mode="execute", repo_path="/tmp/repo", working_directory="/tmp/workspace",
+        workspace_type="worktree", workspace_ref="task/test",
+        default_branch="main",
+    )
+    state.start_request = request
+    params = adapter._build_turn_start_params("thread-1", request)
+    assert params["input"][-1] == {"type": "image", "url": image}
+    assert image not in params["input"][0]["text"]
+
+    adapter._rpc = AsyncMock(return_value={"turn": {"id": "turn-2"}})
+    asyncio.run(adapter.followup_task("thread-1", message))
+    sent = adapter._rpc.call_args.args[1]["input"]
+    assert sent == [
+        {"type": "text", "text": "확인해줘\n\n", "text_elements": []},
+        {"type": "image", "url": image},
+    ]
+
+
+def test_image_only_and_text_only_inputs():
+    from app.runtime.app_server import _message_inputs
+
+    image = "data:image/webp;base64,aGVsbG8="
+    assert _message_inputs(f"![이미지]({image})") == [{"type": "image", "url": image}]
+    assert _message_inputs("plain text") == [{"type": "text", "text": "plain text", "text_elements": []}]
+    assert _message_inputs("![unsafe](data:image/svg+xml;base64,PHN2Zz4=)")[0]["type"] == "text"
+
+
+def test_conversation_preview_omits_inline_image_data():
+    from app.message_images import message_preview
+
+    assert message_preview("확인\n![이미지](data:image/png;base64,aGVsbG8=)") == "확인\n[첨부 이미지]"

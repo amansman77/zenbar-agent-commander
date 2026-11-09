@@ -98,6 +98,10 @@ Isolation options:
 * Option A: git branch
 * Option B: git worktree
 
+Codex conversations accept clipboard images in the message box (Cmd+V / Ctrl+V).
+Preview or remove attachments before sending, with or without text. PNG, JPEG,
+GIF and WebP are supported, up to four images per message and 5 MB per image.
+
 ## Agent Host
 
 Zenbar Agent Commander runs on a self-hosted Agent Host machine.

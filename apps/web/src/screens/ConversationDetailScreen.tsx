@@ -24,6 +24,7 @@ import { useRuntimeEngines, useRuntimeModels, useRuntimeProfiles } from "../hook
 import { useSavedPrompts } from "../hooks/useSavedPrompts";
 import { USAGE_SUPPORTED_ENGINES, actor } from "../lib/constants";
 import { ACTIVE_TASK_STATUSES } from "../lib/notifications";
+import { MAX_IMAGES, readPastedImage, withPastedImages } from "../lib/pastedImages";
 import { extractFailureReason } from "../lib/taskEvents";
 
 export function ConversationDetailScreen({
@@ -45,6 +46,17 @@ export function ConversationDetailScreen({
   const [activeTab, setActiveTab] = useState<"chat" | "diff">("chat");
   const [diffExpanded, setDiffExpanded] = useState<Record<string, boolean>>({});
   const [input, setInput] = useState("");
+  const [images, setImages] = useState<string[]>([]);
+  const [readingImages, setReadingImages] = useState(false);
+  const [imageError, setImageError] = useState("");
+  const pasteGeneration = useRef(0);
+  useEffect(() => {
+    setImages([]);
+    setImageError("");
+    setReadingImages(false);
+    pasteGeneration.current += 1;
+    return () => { pasteGeneration.current += 1; };
+  }, [conversationId]);
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [skillSearch, setSkillSearch] = useState("");
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
@@ -254,6 +266,9 @@ export function ConversationDetailScreen({
       api.addConversationMessage(conversationId, payload),
     onSuccess: (updated) => {
       setInput("");
+      setImages([]);
+      setImageError("");
+      setSelectedPipelineId(null);
       setSelectedSkill(null);
       // A model switch is only meant to apply once (this and every turn
       // after it, per the backend) -- not keep resending the same explicit
@@ -339,7 +354,7 @@ export function ConversationDetailScreen({
   // before the first message.
   const canSendPipeline = Boolean(selectedPipelineId && !taskStarted);
   const selectedPipelineName = availablePipelines.find((p) => p.id === selectedPipelineId)?.name ?? null;
-  const isSendDisabled = (!input.trim() && !canSendPipeline) || addMessageMutation.isPending || isTaskActive;
+  const isSendDisabled = (!input.trim() && images.length === 0 && !canSendPipeline) || readingImages || addMessageMutation.isPending || isTaskActive;
 
   const handleSend = () => {
     if (isSendDisabled) return;
@@ -356,6 +371,11 @@ export function ConversationDetailScreen({
       : selectedModel || (taskStarted ? null : availableModels[0] || null);
     const profileToUse = taskStarted ? null : selectedProfile;
     const engineToUse = taskStarted ? null : selectedEngine;
+    if (images.length && (activeEngine || "codex") !== "codex") {
+      setImageError("이미지를 보내려면 Codex 엔진을 선택해 주세요.");
+      return;
+    }
+    const content = withPastedImages(input, images);
     if (canSendPipeline) {
       // Typing is still optional here (a pipeline can start with nothing
       // typed, same as before), but anything typed is no longer thrown
@@ -365,7 +385,7 @@ export function ConversationDetailScreen({
       // still be pointed at something specific (e.g. "이슈 #123") when
       // started, instead of always running the template verbatim.
       addMessageMutation.mutate({
-        content: input.trim(),
+        content,
         selected_skill: null,
         engine: engineToUse,
         // Previously hardcoded to null regardless of what was actually
@@ -378,11 +398,9 @@ export function ConversationDetailScreen({
         profile: profileToUse,
         pipeline_id: selectedPipelineId,
       });
-      setSelectedPipelineId(null);
-      setInput("");
       return;
     }
-    const trimmed = input.trim();
+    const trimmed = content;
     if (!trimmed) return;
     addMessageMutation.mutate({ content: trimmed, selected_skill: selectedSkill, engine: engineToUse, model: modelToUse, profile: profileToUse });
   };
@@ -716,10 +734,49 @@ export function ConversationDetailScreen({
             🔗 "{selectedPipelineName}" 파이프라인이 선택됨 — 보내기를 누르면 전체 단계가 자동으로 순서대로 실행돼요. 아래에 이슈 번호 등을 적으면 1단계 프롬프트 앞에 함께 전달돼요.
           </p>
         )}
+        {images.length > 0 && (
+          <div className="compose-images" aria-label="첨부 이미지">
+            {images.map((url, index) => (
+              <div className="compose-image" key={index}>
+                <img src={url} alt={`첨부 이미지 ${index + 1}`} />
+                <button type="button" disabled={addMessageMutation.isPending || readingImages} onClick={() => setImages((items) => items.filter((_, i) => i !== index))} aria-label={`첨부 이미지 ${index + 1} 삭제`}>삭제</button>
+              </div>
+            ))}
+          </div>
+        )}
+        {imageError && <p role="alert" className="compose-image-error">{imageError}</p>}
+        {readingImages && <p role="status">이미지를 읽는 중…</p>}
         <div className="compose-input-row">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={async (event) => {
+              const files = Array.from(event.clipboardData.items)
+                .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+                .map((item) => item.getAsFile()).filter((file): file is File => file !== null);
+              if (!files.length) return;
+              event.preventDefault();
+              if (readingImages || addMessageMutation.isPending) return;
+              setImageError("");
+              if ((activeEngine || "codex") !== "codex") {
+                setImageError("이미지 붙여넣기는 Codex 엔진에서 지원해요.");
+                return;
+              }
+              if (images.length + files.length > MAX_IMAGES) {
+                setImageError("이미지는 최대 4장까지 첨부할 수 있어요.");
+                return;
+              }
+              const generation = pasteGeneration.current;
+              setReadingImages(true);
+              try {
+                const urls = await Promise.all(files.map(readPastedImage));
+                if (generation === pasteGeneration.current) setImages((items) => [...items, ...urls]);
+              } catch (error) {
+                if (generation === pasteGeneration.current) setImageError((error as Error).message);
+              } finally {
+                if (generation === pasteGeneration.current) setReadingImages(false);
+              }
+            }}
             placeholder={
               isTaskActive
                 ? "Codex is working..."
@@ -727,7 +784,7 @@ export function ConversationDetailScreen({
                   ? "예: 이슈 #123 (1단계 프롬프트 앞에 함께 전달돼요, 비워둬도 돼요)"
                   : "메시지를 입력하세요..."
             }
-            disabled={isTaskActive}
+            disabled={isTaskActive || addMessageMutation.isPending}
             className="compose-textarea"
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !isMobile) {

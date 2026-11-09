@@ -222,6 +222,32 @@ describe("App", () => {
       renderApp();
     }
 
+    it("previews, removes and sends a pasted image without text", async () => {
+      openConversationWithoutTask();
+      const input = await screen.findByPlaceholderText("메시지를 입력하세요...");
+      const paste = () => fireEvent.paste(input, { clipboardData: { items: [{
+        kind: "file", type: "image/png",
+        getAsFile: () => new File(["hello"], "image.png", { type: "image/png" })
+      }] } });
+      paste();
+      expect(await screen.findByAltText("첨부 이미지 1")).toHaveAttribute("src", "data:image/png;base64,aGVsbG8=");
+      fireEvent.click(screen.getByRole("button", { name: "첨부 이미지 1 삭제" }));
+      expect(screen.queryByAltText("첨부 이미지 1")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+      paste();
+      await screen.findByAltText("첨부 이미지 1");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+      expect(await screen.findByAltText("붙여넣은 이미지")).toHaveAttribute("src", "data:image/png;base64,aGVsbG8=");
+      expect(screen.queryByAltText("첨부 이미지 1")).not.toBeInTheDocument();
+    });
+
+    it("leaves text pastes to the browser", async () => {
+      openConversationWithoutTask();
+      const input = await screen.findByPlaceholderText("메시지를 입력하세요...");
+      expect(fireEvent.paste(input, { clipboardData: { items: [{ kind: "string", type: "text/plain" }] } })).toBe(true);
+    });
+
     it("offers the runtime's models when no profile is selected", async () => {
       openConversationWithoutTask();
 

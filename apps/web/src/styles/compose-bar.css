@@ -177,3 +177,29 @@
   min-height: 44px;
   padding: 0 16px;
 }
+
+.compose-images {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+
+.compose-image {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.compose-image img {
+  width: 96px;
+  height: 80px;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.compose-image-error {
+  color: var(--text-soft);
+  font-size: 0.85rem;
+}

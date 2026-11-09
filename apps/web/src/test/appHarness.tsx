@@ -189,6 +189,16 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
   if (url.endsWith("/conversations")) {
     return new Response(JSON.stringify(fixtures.conversations), { status: 200 });
   }
+  if (url.endsWith("/conversations/conv-1/messages") && init?.method === "POST") {
+    const payload = JSON.parse(String(init.body));
+    fixtures.conversationDetail = {
+      ...fixtures.conversationDetail,
+      messages: [...(Array.isArray(fixtures.conversationDetail?.messages) ? fixtures.conversationDetail.messages : []), {
+        id: "message-pasted", role: "user", content: payload.content, created_at: new Date().toISOString()
+      }]
+    };
+    return new Response(JSON.stringify(fixtures.conversationDetail), { status: 201 });
+  }
   const conversationMatch = url.match(/\/conversations\/([^/?]+)$/);
   if (conversationMatch && fixtures.conversationDetail?.id === conversationMatch[1]) {
     if (init?.method === "PATCH") {

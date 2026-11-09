@@ -10,6 +10,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
+from ..message_images import message_preview
 from ..db import get_db
 from ..pr_info import fetch_pr_or_mr_diff, fetch_pr_or_mr_info, find_all_pr_or_mr_urls
 from ..repository import (
@@ -239,7 +240,7 @@ async def post_conversation_message(
             default_model = allowed_models[0] if allowed_models else "default"
             task_request = CreateTaskRequest(
                 project_id=project.id,
-                title=payload.content[:50].strip() or "Conversation",
+                title=message_preview(payload.content)[:50].strip() or "Conversation",
                 prompt=payload.content,
                 engine=payload.engine,
                 model=payload.model or default_model,

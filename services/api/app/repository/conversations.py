@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, selectinload
 
+from ..message_images import message_preview
 from ..models import Conversation, ConversationMessage, ConversationPrReview, Task, utcnow
 from ..schemas import AddConversationMessageRequest, CreateConversationRequest
 
@@ -167,7 +168,7 @@ def add_conversation_message(
     conv = db.get(Conversation, conversation_id)
     if conv:
         if not conv.messages and conv.title == "New Conversation":
-            conv.title = payload.content[:50].strip() or "New Conversation"
+            conv.title = message_preview(payload.content)[:50].strip() or "New Conversation"
         db.execute(
             update(Conversation)
             .where(Conversation.id == conversation_id)

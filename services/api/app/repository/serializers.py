@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 
+from ..message_images import message_preview
 from ..models import (
     Conversation,
     ConversationMessage,
@@ -197,7 +198,7 @@ def serialize_conversation_summary(conv: Conversation) -> ConversationSummary:
     return ConversationSummary(
         id=conv.id,
         title=conv.title,
-        last_message=last_msg.content if last_msg else None,
+        last_message=message_preview(last_msg.content) if last_msg else None,
         project_id=conv.project_id,
         project_name=conv.project.name if conv.project else None,
         task_id=conv.task_id,

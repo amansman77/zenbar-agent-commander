@@ -9,6 +9,8 @@
 // Splitting the message around these references is what lets the chat
 // bubble render an actual thumbnail in place of the path text.
 
+import { PASTED_IMAGE_RE } from "./pastedImages";
+
 export type MessageSegment =
   | { type: "text"; value: string }
   | { type: "image"; path: string }
@@ -21,19 +23,20 @@ const HTML_EXTENSION = "html?";
 // Branches are ordered most-delimited first, because several can start at the
 // same character and the first listed wins there.
 //
-// Group 1: markdown [text](path) / ![alt](path). The header comment above used
+// Group 1: inline clipboard image data.
+// Group 2: markdown [text](path) / ![alt](path). The header comment above used
 // to say agents never write this -- they do now (a Codex screenshot arrived as
 // "![관리자 E2E 최종 결과](sandbox:/tmp/shot.png)"), and it has to be tried
 // first: the bare alternative's \S+ would otherwise start mid-syntax and
 // capture "결과](sandbox:/tmp/shot.png", which is not a path anything can
 // fetch. Matching the whole ![...](...) also keeps the "](" out of the text.
-// Group 2: a backtick-quoted path/URL (the common case in real agent output)
+// Group 3: a backtick-quoted path/URL (the common case in real agent output)
 // -- the closing backtick is an unambiguous boundary.
-// Group 3: a double-quoted path. This is what carries an HTML preview in
+// Group 4: a double-quoted path. This is what carries an HTML preview in
 // practice: agents leak a tool call into the message body, e.g.
 // visualize{"path":"/…/proposal.html","mode":"wide"}, where nothing is
 // whitespace-separated and only the quotes bound the path.
-// Group 4: bare in running text -- \b right after the extension stops the
+// Group 5: bare in running text -- \b right after the extension stops the
 // match there, so trailing punctuation ("...foo.png.", "(foo.png)") is
 // naturally excluded rather than needing separate stripping. Its character
 // class excludes the delimiters the branches above own: a plain \S+ starts
@@ -47,6 +50,7 @@ const HTML_EXTENSION = "html?";
 // link or a quoted path is a deliberate enough reference to act on.
 const REFERENCE_RE = new RegExp(
   [
+    "!\\[[^\\]]*\\]\\((data:image/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2})\\)",
     "!?\\[[^\\]]*\\]\\(([^)\\s]+\\.(?:" + IMAGE_EXTENSION + "|" + HTML_EXTENSION + "))\\)",
     "`([^`\\s]+\\.(?:" + IMAGE_EXTENSION + "))`",
     '"([^"\\s]+\\.(?:' + IMAGE_EXTENSION + "|" + HTML_EXTENSION + '))"',
@@ -69,7 +73,7 @@ export function extractMessageSegments(content: string): MessageSegment[] {
   const segments: MessageSegment[] = [];
   let lastIndex = 0;
   for (const match of content.matchAll(REFERENCE_RE)) {
-    const raw = match[1] ?? match[2] ?? match[3] ?? match[4];
+    const raw = match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5];
     if (!raw) continue;
     const path = normalizeReferencePath(raw);
     if (!path) continue;
@@ -96,7 +100,7 @@ const IMAGE_PATH_RE = new RegExp("\\.(?:" + IMAGE_EXTENSION + ")$", "i");
 // the same image/HTML rule has to be applied to the bare target here.
 export function classifyReferencePath(raw: string): { type: "image" | "html"; path: string } | null {
   const path = normalizeReferencePath(raw.trim());
-  if (IMAGE_PATH_RE.test(path)) return { type: "image", path };
+  if (PASTED_IMAGE_RE.test(path) || IMAGE_PATH_RE.test(path)) return { type: "image", path };
   if (HTML_PATH_RE.test(path)) return { type: "html", path };
   return null;
 }
