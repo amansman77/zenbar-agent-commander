@@ -7,6 +7,7 @@ import type {
   ProjectSummary
 } from "@zenbar/shared";
 import { api } from "../api";
+import { DeleteConversationDialog } from "../components/DeleteConversationDialog";
 import { CONVERSATION_GROUP_PREVIEW_COUNT } from "../lib/constants";
 import {
   groupConversationsByProject,
@@ -49,6 +50,7 @@ export function ConversationListScreen({
   onManageProjects?: () => void;
 }) {
   const [projectSheetOpen, setProjectSheetOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ConversationSummary | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   // Whether a project's whole group (header + rows) is collapsed down to
   // just the header -- persisted (unlike expandedGroups' preview/full
@@ -198,7 +200,7 @@ export function ConversationListScreen({
                   </button>
                   <button
                     className="icon-button conversation-delete-button"
-                    onClick={() => onDelete(conv.id)}
+                    onClick={() => setDeleteTarget(conv)}
                     title="대화 삭제"
                     aria-label="대화 삭제"
                   >
@@ -236,6 +238,16 @@ export function ConversationListScreen({
         })}
       </div>
 
+      {deleteTarget && (
+        <DeleteConversationDialog
+          title={deleteTarget.title}
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => {
+            onDelete(deleteTarget.id);
+            setDeleteTarget(null);
+          }}
+        />
+      )}
       {projectSheetOpen && (
         <div className="bottom-sheet-backdrop" onClick={() => setProjectSheetOpen(false)}>
           <div className="bottom-sheet" onClick={(e) => e.stopPropagation()}>

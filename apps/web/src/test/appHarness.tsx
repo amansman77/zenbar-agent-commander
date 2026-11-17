@@ -190,6 +190,10 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
     return new Response(JSON.stringify(fixtures.conversations), { status: 200 });
   }
   const conversationMatch = url.match(/\/conversations\/([^/?]+)$/);
+  if (conversationMatch && init?.method === "DELETE") {
+    fixtures.conversations = fixtures.conversations.filter((conv) => conv.id !== conversationMatch[1]);
+    return new Response(null, { status: 204 });
+  }
   if (conversationMatch && fixtures.conversationDetail?.id === conversationMatch[1]) {
     if (init?.method === "PATCH") {
       fixtures.conversationDetail = { ...fixtures.conversationDetail, ...JSON.parse(String(init.body)) };

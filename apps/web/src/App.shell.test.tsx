@@ -3,7 +3,7 @@
 //
 // The fetch mock, fixture data and shared setup live in test/appHarness.
 
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { fetchMock, fixtures, renderApp, resetAppTest } from "./test/appHarness";
 
 describe("App", () => {
@@ -221,6 +221,32 @@ describe("App", () => {
       };
       renderApp();
     }
+
+    it.each(["list", "detail"])("confirms conversation deletion from the %s before sending a request", async (surface) => {
+      fixtures.conversations = [{
+        id: "conv-1", title: "New conversation", project_id: "project-1",
+        project_name: "agent-commander", task_id: null, task_status: null,
+      }];
+      openConversationWithoutTask();
+      const trigger = surface === "list"
+        ? await screen.findByRole("button", { name: "대화 삭제" })
+        : await screen.findByRole("button", { name: "삭제" });
+      const deleteCalls = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE");
+
+      fireEvent.click(trigger);
+      let dialog = screen.getByRole("dialog", { name: "대화를 삭제할까요?" });
+      expect(within(dialog).getByText("New conversation")).toBeInTheDocument();
+      expect(deleteCalls()).toHaveLength(0);
+      fireEvent.click(within(dialog).getByRole("button", { name: "취소" }));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(deleteCalls()).toHaveLength(0);
+
+      fireEvent.click(trigger);
+      dialog = screen.getByRole("dialog", { name: "대화를 삭제할까요?" });
+      fireEvent.click(within(dialog).getByRole("button", { name: "삭제" }));
+      await waitFor(() => expect(deleteCalls()).toHaveLength(1));
+      expect(String(deleteCalls()[0][0])).toMatch(/\/conversations\/conv-1$/);
+    });
 
     it("offers the runtime's models when no profile is selected", async () => {
       openConversationWithoutTask();
