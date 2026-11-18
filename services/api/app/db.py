@@ -7,6 +7,7 @@ adds columns/backfills that `create_all` cannot, and runs once at startup.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, text
@@ -29,6 +30,23 @@ def ensure_schema() -> None:
     if not DATABASE_URL.startswith("sqlite"):
         return
     with engine.begin() as connection:
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        if any(row[1] == "project_id" and row[3] for row in connection.exec_driver_sql("PRAGMA table_info(tasks)")):
+            task_ddl = connection.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
+            ).scalar_one()
+            new_ddl = re.sub(r"\b(project_id\s+VARCHAR)\s+NOT NULL\b", r"\1", task_ddl, count=1, flags=re.I)
+            if new_ddl == task_ddl:
+                raise RuntimeError("Could not migrate tasks.project_id to a nullable column")
+            dependent_ddl = connection.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE tbl_name = 'tasks' AND type IN ('index', 'trigger') AND sql IS NOT NULL"
+            ).scalars().all()
+            connection.exec_driver_sql(re.sub(r"^CREATE TABLE tasks\b", "CREATE TABLE tasks_rebuilt", new_ddl, flags=re.I))
+            connection.exec_driver_sql("INSERT INTO tasks_rebuilt SELECT * FROM tasks")
+            connection.exec_driver_sql("DROP TABLE tasks")
+            connection.exec_driver_sql("ALTER TABLE tasks_rebuilt RENAME TO tasks")
+            for ddl in dependent_ddl:
+                connection.exec_driver_sql(ddl)
         conv_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(conversations)"))}
         if "project_id" not in conv_columns and conv_columns:
             connection.execute(text("ALTER TABLE conversations ADD COLUMN project_id VARCHAR NULL REFERENCES projects(id)"))

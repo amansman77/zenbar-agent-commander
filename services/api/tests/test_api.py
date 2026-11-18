@@ -1906,6 +1906,100 @@ def test_ensure_schema_migrates_waiting_approval_to_waiting_result_approval():
         assert task.status == "waiting_result_approval"
 
 
+def test_general_conversation_uses_shared_directory_and_leaves_it_intact(tmp_path, monkeypatch):
+    from app.runtime_registry import orchestrator
+    from app.schemas import RuntimeStartRequest
+
+    workspace = tmp_path / "Workspace"
+    workspace.mkdir()
+    existing_file = workspace / "notes.txt"
+    existing_file.write_text("keep me")
+    monkeypatch.setenv("ZENBAR_GENERAL_WORKSPACE", str(workspace))
+    requests: list[RuntimeStartRequest] = []
+    original_start = orchestrator.adapter.start_task
+
+    async def capture_start(request):
+        requests.append(request)
+        return await original_start(request)
+
+    monkeypatch.setattr(orchestrator.adapter, "start_task", capture_start)
+    created = client.post("/conversations", json={"project_id": None})
+    assert created.status_code == 201
+    conversation = created.json()
+    assert conversation["project_id"] is None
+    conversation_url = f"/conversations/{conversation['id']}"
+    started = client.post(f"{conversation_url}/messages", json={"content": "What is in this folder?"})
+    assert started.status_code == 201, started.text
+    assert started.json()["task_workspace_ref"] is None
+    task_id = started.json()["task_id"]
+    task_url = f"/tasks/{task_id}"
+    task = client.get(task_url).json()
+    assert task["project"] is None
+    assert task["workspace_type"] == "directory"
+    assert task["workspace_path"] == str(workspace.resolve())
+    assert requests[0].working_directory == task["workspace_path"]
+    assert list(workspace.iterdir()) == [existing_file]
+    assert client.post(f"{task_url}/commit", json={"message": "test"}).status_code == 409
+    assert client.post(f"{task_url}/approve", json={}).status_code == 200
+    followed_up = client.post(f"{conversation_url}/messages", json={"content": "Tell me more"})
+    assert followed_up.status_code == 201, followed_up.text
+    assert followed_up.json()["task_id"] == task_id
+    assert len(requests) == 1
+
+    with SessionLocal() as db:
+        stored_task = get_task(db, task_id)
+        stored_task.status = "failed"
+        stored_task.runtime_session_id = None
+        db.commit()
+    monkeypatch.setenv("ZENBAR_GENERAL_WORKSPACE", str(tmp_path))
+    retried = client.post(f"{task_url}/retry", json={})
+    assert retried.status_code == 200, retried.text
+    assert requests[-1].working_directory == requests[0].working_directory
+    assert "[현재 요청]\nTell me more" in requests[-1].prompt
+
+    assert client.delete(conversation_url).status_code == 204
+    assert client.get(task_url).status_code == 404
+    assert existing_file.read_text() == "keep me"
+
+
+def test_schema_migration_keeps_existing_tasks_and_conversation_links(tmp_path, monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app import db as app_db
+    from app.models import Conversation, Project, Task
+
+    database_url = f"sqlite:///{tmp_path / 'legacy.db'}"
+    legacy_engine = create_engine(database_url)
+    monkeypatch.setattr(app_db, "engine", legacy_engine)
+    monkeypatch.setattr(app_db, "DATABASE_URL", database_url)
+    Base.metadata.create_all(legacy_engine)
+    with legacy_engine.begin() as connection:
+        ddl = connection.exec_driver_sql("SELECT sql FROM sqlite_master WHERE name = 'tasks'").scalar_one()
+        connection.exec_driver_sql("DROP TABLE tasks")
+        connection.exec_driver_sql(ddl.replace("project_id VARCHAR", "project_id VARCHAR NOT NULL", 1))
+        connection.exec_driver_sql("CREATE INDEX legacy_tasks_project ON tasks(project_id)")
+    with Session(legacy_engine) as db:
+        project = Project(name="Legacy", repo_path="/tmp/repo", default_branch="main")
+        task = Task(project=project, title="Legacy", prompt="Original", workspace_ref="task/legacy")
+        db.add(Conversation(id="legacy-conversation", project=project, task=task))
+        db.commit()
+
+    ensure_schema()
+    ensure_schema()
+
+    with Session(legacy_engine) as db:
+        conversation = db.get(Conversation, "legacy-conversation")
+        assert conversation.task.prompt == "Original"
+        assert conversation.task.project.name == "Legacy"
+        db.add(Task(title="General", prompt="New", workspace_ref="general", workspace_type="directory"))
+        db.commit()
+    with legacy_engine.connect() as connection:
+        assert not connection.exec_driver_sql("PRAGMA foreign_key_check").all()
+        assert "legacy_tasks_project" in [row[1] for row in connection.exec_driver_sql("PRAGMA index_list(tasks)")]
+    legacy_engine.dispose()
+
+
 def test_get_runtime_profiles_reads_codex_home_config_profiles(tmp_path, monkeypatch):
     (tmp_path / "azure-sqlgen.config.toml").write_text(
         'model = "gpt-5.5"\nmodel_provider = "azure"\napproval_policy = "on-request"\nsandbox_mode = "workspace-write"\n'

@@ -19,7 +19,6 @@ from ..repository import (
     create_conversation,
     create_task,
     delete_conversation,
-    delete_task,
     get_conversation,
     get_project,
     get_task,
@@ -40,13 +39,12 @@ from ..schemas import (
     ConversationDetail,
     ConversationSummary,
     CreateConversationRequest,
-    CreateTaskRequest,
     PrInfoResponse,
     SetPrReviewedRequest,
+    TaskCreate,
     TaskDiff,
     UpdateConversationRequest,
 )
-from ..workspace import cleanup_workspace
 from .common import safe_runtime_error_detail
 
 router = APIRouter()
@@ -178,9 +176,7 @@ def delete_conversation_endpoint(conversation_id: str, db: Session = Depends(get
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     if conv.task:
-        repo_path = conv.task.project.repo_path if conv.task.project else None
-        cleanup_workspace(conv.task.workspace_path, conv.task.workspace_type, repo_path)
-        delete_task(db, conv.task.id)
+        orchestrator.delete_task(db, conv.task)
     delete_conversation(db, conversation_id)
     return Response(status_code=204)
 
@@ -195,6 +191,10 @@ async def post_conversation_message(
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    project = get_project(db, conv.project_id) if conv.project_id and payload.role == "user" else None
+    if conv.project_id and payload.role == "user" and project is None:
+        raise HTTPException(status_code=400, detail="Conversation project is unavailable")
+
     # Starting a pipeline: resolve it up front (before saving the visible
     # message) so the first step's actual prompt content becomes the task's
     # prompt. The compose bar doesn't require typing anything when a
@@ -208,11 +208,10 @@ async def post_conversation_message(
     pipeline = None
     pipeline_steps: list[dict[str, str]] | None = None
     if payload.role == "user" and payload.pipeline_id and conv.task_id is None:
-        project_for_pipeline = get_project(db, conv.project_id) if conv.project_id else None
-        if project_for_pipeline is None:
+        if project is None:
             raise HTTPException(status_code=400, detail="Conversation has no associated project")
         try:
-            pipeline, pipeline_steps = resolve_pipeline_steps(db, project_for_pipeline.id, payload.pipeline_id)
+            pipeline, pipeline_steps = resolve_pipeline_steps(db, project.id, payload.pipeline_id)
         except ValueError as exc:
             if "not found" in str(exc).lower():
                 raise HTTPException(status_code=404, detail="Pipeline not found") from exc
@@ -230,15 +229,11 @@ async def post_conversation_message(
     if payload.role == "user":
         conv = get_conversation(db, conversation_id)
         selected_skill = payload.selected_skill or None
-        project = get_project(db, conv.project_id) if conv.project_id else None
-        if project is None:
-            raise HTTPException(status_code=400, detail="Conversation has no associated project")
-
         if conv.task_id is None:
             allowed_models, _ = await model_catalog_for(payload.engine).list_models()
             default_model = allowed_models[0] if allowed_models else "default"
-            task_request = CreateTaskRequest(
-                project_id=project.id,
+            task_request = TaskCreate(
+                project_id=project.id if project else None,
                 title=payload.content[:50].strip() or "Conversation",
                 prompt=payload.content,
                 engine=payload.engine,
@@ -246,9 +241,9 @@ async def post_conversation_message(
                 profile=payload.profile,
                 reasoning_effort="medium",
                 execution_mode="execute",
-                workspace_type="worktree",
+                workspace_type="worktree" if project else "directory",
             )
-            task = create_task(db, task_request, project_name=project.name)
+            task = create_task(db, task_request, project_name=project.name if project else None)
             if pipeline_steps is not None and pipeline is not None:
                 task = attach_pipeline(db, task, pipeline.id, pipeline.name, pipeline_steps)
             set_conversation_task_id(db, conversation_id, task.id)

@@ -407,8 +407,10 @@ export function ConversationDetailScreen({
             ) : (
               <strong className="truncate" style={{ display: "block" }}>Conversation</strong>
             )}
-            {conversation?.project_name && (
-              <span style={{ fontSize: "0.75rem", color: "var(--text-soft)" }}>{conversation.project_name}</span>
+            {conversation && (
+              <span style={{ fontSize: "0.75rem", color: "var(--text-soft)" }}>
+                {conversation.project_id === null ? "일반 대화" : conversation.project_name}
+              </span>
             )}
           </div>
           <button

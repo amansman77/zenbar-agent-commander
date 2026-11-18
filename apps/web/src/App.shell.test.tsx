@@ -25,6 +25,22 @@ describe("App", () => {
     expect(await screen.findByText("Task Detail")).toBeInTheDocument();
   });
 
+  it("opens a general conversation without any registered project", async () => {
+    window.localStorage.clear();
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "새 대화" }));
+    fireEvent.click(screen.getByRole("button", { name: /프로젝트 없이 시작/ }));
+
+    await waitFor(() => {
+      const creation = fetchMock.mock.calls.find(([url, init]) =>
+        String(url).endsWith("/conversations") && init?.method === "POST"
+      );
+      expect(JSON.parse(String(creation?.[1]?.body))).toEqual({ project_id: null });
+    });
+    expect(await screen.findByRole("button", { name: "삭제" })).toBeInTheDocument();
+  });
+
   it("renders Web Commander shell", async () => {
     renderApp();
 
@@ -190,8 +206,6 @@ describe("App", () => {
   });
   describe("conversation model picker", () => {
     function openConversationWithoutTask(messages: Record<string, unknown>[] = []) {
-      // jsdom has no scrollIntoView; the conversation screen calls it on mount.
-      Element.prototype.scrollIntoView = vi.fn();
       window.localStorage.setItem(
         "zenbar:lastView",
         JSON.stringify({

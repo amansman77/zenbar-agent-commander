@@ -186,6 +186,20 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
     });
     return new Response(JSON.stringify(preview), { status: 200 });
   }
+  if (url.endsWith("/conversations") && init?.method === "POST") {
+    const payload = JSON.parse(String(init.body));
+    const conversation = {
+      id: "new-conversation",
+      title: "새 대화",
+      project_id: payload.project_id ?? null,
+      project_name: fixtures.projects.find((project) => project.id === payload.project_id)?.name ?? null,
+      updated_at: new Date().toISOString(),
+      messages: []
+    };
+    fixtures.conversationDetail = conversation;
+    fixtures.conversations = [conversation, ...fixtures.conversations];
+    return new Response(JSON.stringify(conversation), { status: 201 });
+  }
   if (url.endsWith("/conversations")) {
     return new Response(JSON.stringify(fixtures.conversations), { status: 200 });
   }
@@ -253,6 +267,7 @@ vi.stubGlobal(
  *  desktop viewport seeded onto the workspace view. */
 export function resetAppTest() {
   fetchMock.mockClear();
+  Element.prototype.scrollIntoView = vi.fn();
   fixtures.projects = [];
   fixtures.tasks = [];
   fixtures.taskDetail = null;

@@ -12,10 +12,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from ..models import Task, TaskRun, TaskTurn
-from ..schemas import CreateTaskRequest
+from ..schemas import TaskCreate
 from .naming import build_workspace_ref
 
-def create_task(db: Session, payload: CreateTaskRequest, project_name: str | None = None) -> Task:
+def create_task(db: Session, payload: TaskCreate, project_name: str | None = None) -> Task:
     task = Task(
         project_id=payload.project_id,
         title=payload.title,

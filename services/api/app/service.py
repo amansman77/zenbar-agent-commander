@@ -14,6 +14,7 @@ import logging
 import os
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -54,7 +55,7 @@ from .schemas import (
     TaskPushRequest,
 )
 from .streaming import broker
-from .workspace import cleanup_workspace, prepare_workspace
+from .workspace import PreparedWorkspace, cleanup_workspace, prepare_directory_workspace, prepare_workspace
 
 from .pipeline_runner import advance_pipeline_if_needed
 from .stale_session import is_stale_session_error
@@ -122,7 +123,8 @@ class TaskOrchestrator:
         adapter = self._adapter_for(task)
         if adapter.knows_session(session_id):
             return True
-        if not task.workspace_path or task.project is None:
+        project = task.project
+        if not task.workspace_path or (project is None and task.workspace_type != "directory"):
             return False
         request = RuntimeStartRequest(
             task_id=task.id,
@@ -131,9 +133,9 @@ class TaskOrchestrator:
             engine=task.engine,
             model=task.model or "default",
             profile=task.profile,
-            repo_path=task.project.repo_path,
+            repo_path=project.repo_path if project else task.workspace_path,
             working_directory=task.workspace_path,
-            default_branch=task.project.default_branch,
+            default_branch=project.default_branch if project else "",
             execution_mode=task.execution_mode,  # type: ignore[arg-type]
             workspace_type=task.workspace_type,  # type: ignore[arg-type]
             workspace_ref=task.workspace_ref,
@@ -182,7 +184,7 @@ class TaskOrchestrator:
         self,
         db: Session,
         task: Task,
-        project: Project,
+        project: Project | None,
         selected_skill: str | None = None,
         prompt_override: str | None = None,
     ) -> Task:
@@ -219,10 +221,11 @@ class TaskOrchestrator:
                 raise RuntimeError("Plan mode is not supported by this Codex App Server")
             else:
                 append_event(db, task, RuntimeEvent(type="agent_status", message="Codex runtime supports plan mode"))
-        from pathlib import Path
-        existing_workspace = task.workspace_path and Path(task.workspace_path).exists()
-        if existing_workspace:
-            from .workspace import PreparedWorkspace
+        if task.workspace_type == "directory":
+            prepared = prepare_directory_workspace(task.workspace_path, task.workspace_ref)
+        elif project is None:
+            raise RuntimeError("Task project is missing")
+        elif task.workspace_path and Path(task.workspace_path).exists():
             prepared = PreparedWorkspace(task.workspace_path, task.workspace_ref, task.workspace_type)
         else:
             prepared = await asyncio.to_thread(
@@ -246,9 +249,9 @@ class TaskOrchestrator:
             model=resolved_model,
             profile=refreshed.profile,
             reasoning_effort=resolved_reasoning_effort,  # type: ignore[arg-type]
-            repo_path=project.repo_path,
+            repo_path=project.repo_path if project else prepared.workspace_path,
             working_directory=prepared.workspace_path,
-            default_branch=project.default_branch,
+            default_branch=project.default_branch if project else "",
             execution_mode=refreshed.execution_mode,  # type: ignore[arg-type]
             workspace_type=refreshed.workspace_type,  # type: ignore[arg-type]
             workspace_ref=refreshed.workspace_ref,
@@ -313,7 +316,7 @@ class TaskOrchestrator:
         (no PR, conflicts, plan-mode task, missing credential) must not
         retroactively fail it -- the event log is where the user sees why.
         """
-        if task.execution_mode == "plan" or not task.workspace_path:
+        if task.execution_mode == "plan" or task.workspace_type == "directory" or not task.workspace_path:
             return
         try:
             result = await merge_pull_request_for_branch(task.workspace_path, task.workspace_ref)
@@ -555,7 +558,7 @@ class TaskOrchestrator:
         self,
         db: Session,
         task: Task,
-        project: Project,
+        project: Project | None,
         content: str,
         selected_skill: str | None = None,
         model: str | None = None,
@@ -622,6 +625,8 @@ class TaskOrchestrator:
             )
 
     async def refresh_diff(self, db: Session, task: Task) -> Task:
+        if task.workspace_type == "directory":
+            return task
         runtime_diff: TaskDiff | None = None
         if task.runtime_session_id:
             await self._reattach_session_if_lost(db, task)
@@ -755,6 +760,8 @@ class TaskOrchestrator:
             return reconciled
 
     async def commit_workspace(self, db: Session, task: Task, payload: TaskCommitRequest) -> TaskGitActionResponse:
+        if task.workspace_type == "directory":
+            raise RuntimeError("General conversations do not have a task Git workspace")
         if not task.workspace_path:
             raise RuntimeError("Task workspace is not ready")
         result = await asyncio.to_thread(workspace_git.commit_workspace, task.workspace_path, payload.message, payload.actor)
@@ -770,6 +777,8 @@ class TaskOrchestrator:
         return result
 
     async def push_workspace(self, db: Session, task: Task, payload: TaskPushRequest) -> TaskGitActionResponse:
+        if task.workspace_type == "directory":
+            raise RuntimeError("General conversations do not have a task Git workspace")
         if not task.workspace_path:
             raise RuntimeError("Task workspace is not ready")
         result = await asyncio.to_thread(
@@ -802,7 +811,7 @@ class TaskOrchestrator:
         had been wired to it.
         """
         project = task.project
-        if project is None:
+        if project is None and task.workspace_type != "directory":
             raise RuntimeError("Task project is missing")
         recent = [
             ResumeMessage(role=message.role, content=message.content)

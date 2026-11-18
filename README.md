@@ -194,6 +194,13 @@ Open `http://<tailscale-ip>:15173` or `https://<magicdns-name>:8443`. Use TCP
 forwarding for the IP URL; Tailscale's HTTP proxy routes by hostname. Both the UI
 and API requests go through the dashboard's same-origin `/api` proxy.
 
+To chat without registering a project, choose **+ → 프로젝트 없이 시작**.
+The runtime starts in the API user's `~/Workspace` directory by default;
+set `ZENBAR_GENERAL_WORKSPACE` in the API environment to use another existing
+directory (for example `/Workspace`). These conversations share the directory
+directly: edits can affect the original files, and deleting a conversation
+does not delete the directory or undo its changes.
+
 `ZENBAR_WORKSPACE_ROOT` must be a path with no symlink below the top level.
 Codex's sandbox resolves a top-level alias such as `/tmp -> /private/tmp` but rejects a writable root with a symlink
 under it. Pointing the root at a symlink (a `/tmp/zenbar-task-workspaces` that

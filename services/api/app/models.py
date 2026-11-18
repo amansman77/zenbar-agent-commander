@@ -93,7 +93,7 @@ class Task(Base):
     __tablename__ = "tasks"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"))
     title: Mapped[str] = mapped_column(String(255))
     prompt: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(64), default="queued")
@@ -136,7 +136,7 @@ class Task(Base):
         except (TypeError, ValueError):
             return None
 
-    project: Mapped[Project] = relationship(back_populates="tasks")
+    project: Mapped[Project | None] = relationship(back_populates="tasks")
     events: Mapped[list["TaskEvent"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     approvals: Mapped[list["TaskApproval"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     turns: Mapped[list["TaskTurn"]] = relationship(back_populates="task", cascade="all, delete-orphan")
