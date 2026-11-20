@@ -386,6 +386,12 @@ export interface ScheduledActionItem extends CreateScheduledActionRequest {
   status: "pending" | "running" | "completed" | "failed" | "stopped";
 }
 
+export interface ScheduledActionListItem extends ScheduledActionItem {
+  conversation_id: string;
+  conversation_title: string;
+  project_name: string | null;
+}
+
 export interface ConversationDetail {
   id: string;
   title: string;

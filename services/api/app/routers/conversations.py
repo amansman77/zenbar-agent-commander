@@ -28,6 +28,7 @@ from ..repository import (
     get_task,
     list_conversations,
     list_reviewed_pr_urls,
+    list_scheduled_actions,
     mark_conversation_read,
     rename_conversation,
     resolve_pipeline_steps,
@@ -46,6 +47,7 @@ from ..schemas import (
     CreateScheduledActionRequest,
     CreateTaskRequest,
     PrInfoResponse,
+    ScheduledActionListItem,
     SetPrReviewedRequest,
     TaskDiff,
     UpdateConversationRequest,
@@ -77,6 +79,11 @@ def post_conversation(payload: CreateConversationRequest = CreateConversationReq
     conv = create_conversation(db, payload)
     conv_with_messages = get_conversation(db, conv.id)
     return serialize_conversation_detail(conv_with_messages)
+
+
+@router.get("/conversations/scheduled-actions", response_model=list[ScheduledActionListItem])
+def get_scheduled_actions(db: Session = Depends(get_db)):
+    return list_scheduled_actions(db)
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetail)

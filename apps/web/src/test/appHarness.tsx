@@ -31,6 +31,7 @@ export const fixtures: {
   projectPrompts: Record<string, Row[]>;
   globalPrompts: Row[];
   conversationDetail: Row | null;
+  scheduledActions: Row[];
   runtimeModels: Row;
 } = {
   projects: [],
@@ -43,6 +44,7 @@ export const fixtures: {
   projectPrompts: {},
   globalPrompts: [],
   conversationDetail: null,
+  scheduledActions: [],
   runtimeModels: DEFAULT_RUNTIME_MODELS
 };
 
@@ -189,11 +191,15 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
   if (url.endsWith("/conversations")) {
     return new Response(JSON.stringify(fixtures.conversations), { status: 200 });
   }
-  const scheduleMatch = url.match(/\/conversations\/([^/?]+)\/scheduled-actions$/);
-  if (scheduleMatch && init?.method === "POST" && fixtures.conversationDetail?.id === scheduleMatch[1]) {
-    const action = { ...JSON.parse(String(init.body)), id: "schedule-1", status: "pending" };
-    fixtures.conversationDetail = { ...fixtures.conversationDetail, scheduled_actions: [action] };
-    return new Response(JSON.stringify(fixtures.conversationDetail), { status: 201 });
+  if (url.endsWith("/conversations/scheduled-actions")) {
+    return new Response(JSON.stringify(fixtures.scheduledActions), { status: 200 });
+  }
+  const scheduleMatch = url.match(/\/conversations\/([^/?]+)\/scheduled-actions\/([^/?]+)$/);
+  if (scheduleMatch && init?.method === "DELETE") {
+    fixtures.scheduledActions = fixtures.scheduledActions.filter((action) =>
+      action.conversation_id !== scheduleMatch[1] || action.id !== scheduleMatch[2]
+    );
+    return new Response(null, { status: 204 });
   }
   const conversationMatch = url.match(/\/conversations\/([^/?]+)$/);
   if (conversationMatch && fixtures.conversationDetail?.id === conversationMatch[1]) {
@@ -269,6 +275,7 @@ export function resetAppTest() {
   fixtures.projectPrompts = {};
   fixtures.globalPrompts = [];
   fixtures.conversationDetail = null;
+  fixtures.scheduledActions = [];
   fixtures.runtimeModels = DEFAULT_RUNTIME_MODELS;
   window.localStorage.clear();
   Object.defineProperty(navigator, "clipboard", {

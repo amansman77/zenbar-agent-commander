@@ -45,6 +45,7 @@ from .scheduled_actions import (
     has_running_scheduled_action,
     list_due_scheduled_actions,
     list_running_scheduled_sessions,
+    list_scheduled_actions,
     recover_interrupted_scheduled_actions,
 )
 from .tasks import (
@@ -120,6 +121,7 @@ __all__ = [
     "has_running_scheduled_action",
     "list_due_scheduled_actions",
     "list_running_scheduled_sessions",
+    "list_scheduled_actions",
     "recover_interrupted_scheduled_actions",
     "build_workspace_ref",
     "slugify",

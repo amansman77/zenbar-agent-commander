@@ -3893,6 +3893,14 @@ def test_scheduled_conversation_followup_runs_once_and_reports_its_status(tmp_pa
     detail = client.get(conversation_url).json()
     assert detail["task_id"] == task_id
     assert [a["status"] for a in detail["scheduled_actions"]] == ["completed"]
+    actions = client.get("/conversations/scheduled-actions")
+    assert actions.status_code == 200
+    assert [a for a in actions.json() if a["conversation_id"] == conversation_id] == [{
+        **detail["scheduled_actions"][0],
+        "conversation_id": conversation_id,
+        "conversation_title": detail["title"],
+        "project_name": "Scheduled QA",
+    }]
     contents = [message["content"] for message in detail["messages"]]
     assert sum("Inspect published listing" in content for content in contents) == 1
     assert all("Cancelled instruction" not in content for content in contents)

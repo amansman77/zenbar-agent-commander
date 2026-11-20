@@ -15,7 +15,6 @@ import type {
 } from "@zenbar/shared";
 import { api } from "../api";
 import { UsageBadge } from "../components/Badges";
-import { ConversationScheduledActions } from "../components/ConversationScheduledActions";
 import { ConversationTitleEditor } from "../components/ConversationTitleEditor";
 import { ConversationTranscript } from "../components/ConversationTranscript";
 import type { MessageGroup } from "../components/ConversationTranscript";
@@ -716,16 +715,6 @@ export function ConversationDetailScreen({
           <p className="item-secondary compose-pipeline-note">
             🔗 "{selectedPipelineName}" 파이프라인이 선택됨 — 보내기를 누르면 전체 단계가 자동으로 순서대로 실행돼요. 아래에 이슈 번호 등을 적으면 1단계 프롬프트 앞에 함께 전달돼요.
           </p>
-        )}
-        {taskStarted && conversation?.project_id && (
-          <ConversationScheduledActions
-            key={conversationId}
-            conversation={conversation}
-            draft={input}
-            onScheduled={(content) => {
-              if (input.trim() === content) setInput("");
-            }}
-          />
         )}
         <div className="compose-input-row">
           <textarea

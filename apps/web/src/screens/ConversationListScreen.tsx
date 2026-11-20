@@ -26,6 +26,7 @@ export function ConversationListScreen({
   onCreate,
   onDelete,
   onManageProjects,
+  onOpenScheduledActions,
 }: {
   // The default-visible preview (server-side capped per project, see
   // list_conversations' own docstring) -- NOT the full set, so
@@ -47,6 +48,7 @@ export function ConversationListScreen({
   onDelete: (id: string) => void;
   // Omitted on desktop, which reaches projects via its own view switcher.
   onManageProjects?: () => void;
+  onOpenScheduledActions?: () => void;
 }) {
   const [projectSheetOpen, setProjectSheetOpen] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
@@ -94,7 +96,7 @@ export function ConversationListScreen({
       <div className="panel-header">
         <div className="row-header">
           <h2>Conversations</h2>
-          <div style={{ display: "flex", gap: "8px" }}>
+          <div className="conversation-list-actions">
             {groups.length > 0 ? (
               <button
                 type="button"
@@ -108,6 +110,9 @@ export function ConversationListScreen({
             {onManageProjects ? (
               <button type="button" className="secondary" onClick={onManageProjects} style={{ fontSize: "0.8rem", padding: "4px 10px" }}>Projects</button>
             ) : null}
+            {onOpenScheduledActions && (
+              <button type="button" className="secondary" onClick={onOpenScheduledActions}>예약 작업</button>
+            )}
             <button type="button" onClick={() => setProjectSheetOpen(true)}>+</button>
           </div>
         </div>

@@ -4,14 +4,38 @@ from __future__ import annotations
 
 from datetime import timezone
 
-from sqlalchemy import delete, exists, or_, select, update
+from sqlalchemy import case, delete, exists, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from ..models import Conversation, ConversationMessage, Project, ScheduledAction, Task, utcnow
-from ..schemas import CreateScheduledActionRequest
+from ..schemas import CreateScheduledActionRequest, ScheduledActionListItem
 
 FOLLOWUP_READY_STATUSES = {"completed", "failed", "stopped"}
+
+
+def list_scheduled_actions(db: Session) -> list[ScheduledActionListItem]:
+    active = ScheduledAction.status.in_(("pending", "running"))
+    stmt = (
+        select(
+            ScheduledAction.id,
+            ScheduledAction.content,
+            ScheduledAction.run_at,
+            ScheduledAction.status,
+            ScheduledAction.conversation_id,
+            Conversation.title.label("conversation_title"),
+            Project.name.label("project_name"),
+        )
+        .join(Conversation, Conversation.id == ScheduledAction.conversation_id)
+        .outerjoin(Project, Project.id == Conversation.project_id)
+        .order_by(
+            active.desc(),
+            case((active, ScheduledAction.run_at)),
+            ScheduledAction.run_at.desc(),
+            ScheduledAction.id,
+        )
+    )
+    return [ScheduledActionListItem.model_validate(row) for row in db.execute(stmt).mappings()]
 
 
 def create_scheduled_action(db: Session, conversation_id: str, payload: CreateScheduledActionRequest) -> None:

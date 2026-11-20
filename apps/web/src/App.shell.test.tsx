@@ -78,6 +78,10 @@ describe("App", () => {
 
     renderApp();
 
+    fireEvent.click(screen.getByRole("button", { name: "예약 작업" }));
+    expect(await screen.findByText("예약된 작업이 없습니다.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "뒤로" }));
+
     // Mobile opens on Conversations; step into the Projects screen first.
     fireEvent.click(await screen.findByRole("button", { name: "Projects" }));
     fireEvent.click((await screen.findAllByRole("button", { name: "새 프로젝트" }))[1]);
@@ -262,24 +266,34 @@ describe("App", () => {
       renderApp();
     }
 
-    it("saves a scheduled instruction from the conversation composer", async () => {
-      openConversation([], "task-1");
-      fireEvent.change(await screen.findByPlaceholderText("메시지를 입력하세요..."), {
-        target: { value: "Check the published listing" },
-      });
-      fireEvent.click(screen.getByRole("button", { name: "작업 예약" }));
-      expect(screen.getByLabelText("실행할 작업")).toHaveValue("Check the published listing");
-      const localTime = `${new Date().getFullYear() + 1}-01-10T09:30`;
-      fireEvent.change(screen.getByLabelText(/실행 시각/), { target: { value: localTime } });
-      fireEvent.click(screen.getByRole("button", { name: "예약 확정" }));
-
-      expect(await screen.findByText("예약 작업 (1)")).toBeInTheDocument();
-      const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/conv-1/scheduled-actions"));
-      expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+    it("shows scheduled work separately and opens the originating conversation", async () => {
+      const action = {
+        id: "schedule-1",
         content: "Check the published listing",
-        run_at: new Date(localTime).toISOString(),
-      });
-      expect(screen.getByPlaceholderText("메시지를 입력하세요...")).toHaveValue("");
+        run_at: "2030-01-10T09:30:00Z",
+        status: "pending",
+        conversation_id: "conv-1",
+        conversation_title: "New conversation",
+        project_name: "agent-commander",
+      };
+      fixtures.scheduledActions = [action, {
+        ...action,
+        id: "schedule-2",
+        content: "Review yesterday's report",
+        status: "completed",
+      }];
+      openConversation([], "task-1");
+      await screen.findByPlaceholderText("메시지를 입력하세요...");
+      expect(screen.queryByRole("button", { name: "작업 예약" })).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "예약 작업" }));
+      expect(await screen.findByText(action.content)).toBeInTheDocument();
+      expect(screen.getByText("완료")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "예약 취소" }));
+      await waitFor(() => expect(screen.queryByText(action.content)).not.toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole("button", { name: "agent-commander / New conversation" }));
+      expect(await screen.findByPlaceholderText("메시지를 입력하세요...")).toBeInTheDocument();
     });
 
     it("offers the runtime's models when no profile is selected", async () => {

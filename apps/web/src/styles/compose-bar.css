@@ -177,37 +177,3 @@
   min-height: 44px;
   padding: 0 16px;
 }
-
-.compose-scheduled-actions {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  padding: 4px 12px;
-  font-size: 0.875rem;
-}
-
-.compose-scheduled-actions details,
-.compose-scheduled-actions form {
-  min-width: 0;
-}
-
-.compose-scheduled-actions ul {
-  max-height: 9rem;
-  overflow: auto;
-  padding-inline-start: 1.25rem;
-  overflow-wrap: anywhere;
-}
-
-.compose-scheduled-actions form {
-  display: grid;
-  flex-basis: 100%;
-  gap: 0.35rem;
-  justify-items: start;
-}
-
-.compose-scheduled-actions textarea {
-  width: 100%;
-  min-height: 3rem;
-  resize: vertical;
-}

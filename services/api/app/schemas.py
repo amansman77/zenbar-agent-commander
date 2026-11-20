@@ -469,6 +469,12 @@ class ScheduledActionItem(BaseModel):
     status: Literal["pending", "running", "completed", "failed", "stopped"]
 
 
+class ScheduledActionListItem(ScheduledActionItem):
+    conversation_id: str
+    conversation_title: str
+    project_name: str | None
+
+
 class ConversationDetail(BaseModel):
     id: str
     title: str
