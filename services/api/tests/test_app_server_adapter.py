@@ -84,8 +84,16 @@ def test_reattach_subscribes_once_and_keeps_replayed_approval(monkeypatch, tmp_p
     request = _resume_request(tmp_path)
 
     async def rpc(method, params):
+        if method == "thread/turns/list":
+            assert params == {
+                "threadId": "thread-1", "limit": 1, "sortDirection": "desc", "itemsView": "notLoaded",
+            }
+            return {"data": [{"id": "turn-1", "status": "inProgress", "items": []}]}
+        if method == "turn/interrupt":
+            assert params == {"threadId": "thread-1", "turnId": "turn-1"}
+            return {}
         assert method == "thread/resume"
-        assert params == {"threadId": "thread-1", "cwd": str(tmp_path)}
+        assert params == {"threadId": "thread-1", "cwd": str(tmp_path), "excludeTurns": True}
         assert not adapter.knows_session("thread-1")
         await adapter._handle_server_request(
             {"id": 7, "method": "mcpServer/elicitation/request", "params": ELICITATION_PARAMS}
@@ -94,7 +102,7 @@ def test_reattach_subscribes_once_and_keeps_replayed_approval(monkeypatch, tmp_p
             "thread": {
                 "id": "thread-1",
                 "status": {"type": "active", "activeFlags": ["waitingOnApproval"]},
-                "turns": [{"id": "turn-1", "status": "inProgress"}],
+                "turns": [],
             }
         }
 
@@ -114,9 +122,12 @@ def test_reattach_subscribes_once_and_keeps_replayed_approval(monkeypatch, tmp_p
         await adapter.approve_task("thread-1")
         assert (await anext(events)).type == "result_approval_granted"
         await events.aclose()
+        await adapter.stop_task("thread-1")
 
     asyncio.run(scenario())
-    resume.assert_awaited_once()
+    assert [call.args[0] for call in resume.await_args_list] == [
+        "thread/resume", "thread/turns/list", "turn/interrupt",
+    ]
     send.assert_awaited_once_with({"jsonrpc": "2.0", "id": 7, "result": {"action": "accept", "content": None}})
 
 
@@ -168,7 +179,9 @@ def test_unloaded_thread_resumes_before_next_turn(monkeypatch, tmp_path, followu
 
     asyncio.run(scenario())
     resume, start = rpc.await_args_list
-    assert resume.args == ("thread/resume", {"threadId": "thread-1", "cwd": str(tmp_path)})
+    assert resume.args == (
+        "thread/resume", {"threadId": "thread-1", "cwd": str(tmp_path), "excludeTurns": True},
+    )
     method, params = start.args
     assert method == "turn/start"
     assert params["threadId"] == "thread-1"

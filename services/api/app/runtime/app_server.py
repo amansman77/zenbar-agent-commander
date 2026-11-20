@@ -151,7 +151,9 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             self._sessions[session_id] = state
             attached = False
             try:
-                params = {"threadId": session_id, "cwd": request.working_directory}
+                # Codex keeps the transcript. Returning it to Zenbar can
+                # exceed the WebSocket message limit on long conversations.
+                params = {"threadId": session_id, "cwd": request.working_directory, "excludeTurns": True}
                 profile = get_profile(request.profile)
                 if profile and profile.model_provider:
                     params["modelProvider"] = profile.model_provider
@@ -161,13 +163,24 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                     raise RuntimeError("Codex App Server did not return the requested thread")
                 active = thread.get("status", {}).get("type") == "active"
                 if active and state.current_turn_id is None:
-                    state.current_turn_id = next(
-                        (
-                            turn["id"] for turn in reversed(thread.get("turns") or [])
-                            if turn.get("status") == "inProgress"
-                        ),
-                        None,
-                    )
+                    turns = list(reversed(thread.get("turns") or []))
+                    if not turns:
+                        page = await asyncio.wait_for(
+                            self._rpc("thread/turns/list", {
+                                "threadId": session_id,
+                                "limit": 1,
+                                "sortDirection": "desc",
+                                "itemsView": "notLoaded",
+                            }),
+                            timeout=10,
+                        )
+                        turns = page.get("data") or []
+                    # A live notification can set the ID while the page is loading.
+                    if state.current_turn_id is None:
+                        state.current_turn_id = next(
+                            (turn["id"] for turn in turns if turn.get("status") == "inProgress"),
+                            None,
+                        )
                 # A turn event can arrive before this response is processed.
                 # Let the consumer apply that event even if the snapshot is idle.
                 state.resumed_with_live_turn = active or state.current_turn_id is not None
