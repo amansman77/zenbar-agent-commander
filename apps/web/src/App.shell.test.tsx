@@ -188,8 +188,48 @@ describe("App", () => {
     expect(await screen.findByText("마지막 응답 2025년 3월 4일 오후 9:05")).toBeInTheDocument();
     expect(screen.getAllByText(/^마지막 응답/)).toHaveLength(1);
   });
-  describe("conversation model picker", () => {
-    function openConversationWithoutTask(messages: Record<string, unknown>[] = []) {
+  it("delivers a scheduled result once when the dashboard reopens", async () => {
+    const show = vi.fn();
+    const original = Object.getOwnPropertyDescriptor(window, "Notification");
+    class TestNotification {
+      static permission = "granted";
+      constructor(title: string, options: NotificationOptions) {
+        show(title, options);
+      }
+    }
+    Object.defineProperty(window, "Notification", { configurable: true, value: TestNotification });
+    try {
+      const now = Date.now();
+      window.localStorage.setItem("zenbar:taskNotificationsEnabled", "true");
+      window.localStorage.setItem("zenbar:scheduledNotificationsStart", String(now - 60_000));
+      fixtures.conversations = [{
+        id: "scheduled-conversation",
+        title: "Listing check",
+        task_status: "completed",
+        last_message: "Listing is live.",
+        last_scheduled_update_at: new Date(now - 10_000).toISOString(),
+        updated_at: new Date(now - 10_000).toISOString(),
+        is_unread: true,
+      }];
+      const first = renderApp();
+      await waitFor(() => expect(show).toHaveBeenCalledWith(
+        "[예약 작업 결과] Listing check",
+        expect.objectContaining({ body: "Listing is live." }),
+      ));
+      first.unmount();
+
+      window.localStorage.removeItem("zenbar:lastView");
+      renderApp();
+      expect(await screen.findByText("Listing check")).toBeInTheDocument();
+      expect(show).toHaveBeenCalledTimes(1);
+    } finally {
+      if (original) Object.defineProperty(window, "Notification", original);
+      else Reflect.deleteProperty(window, "Notification");
+    }
+  });
+
+  describe("conversation detail", () => {
+    function openConversation(messages: Record<string, unknown>[] = [], taskId: string | null = null) {
       // jsdom has no scrollIntoView; the conversation screen calls it on mount.
       Element.prototype.scrollIntoView = vi.fn();
       window.localStorage.setItem(
@@ -208,8 +248,8 @@ describe("App", () => {
         title: "New conversation",
         project_id: "project-1",
         project_name: "agent-commander",
-        task_id: null,
-        task_status: null,
+        task_id: taskId,
+        task_status: taskId ? "completed" : null,
         task_workspace_ref: null,
         task_base_branch: null,
         task_model: null,
@@ -222,8 +262,28 @@ describe("App", () => {
       renderApp();
     }
 
+    it("saves a scheduled instruction from the conversation composer", async () => {
+      openConversation([], "task-1");
+      fireEvent.change(await screen.findByPlaceholderText("메시지를 입력하세요..."), {
+        target: { value: "Check the published listing" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "작업 예약" }));
+      expect(screen.getByLabelText("실행할 작업")).toHaveValue("Check the published listing");
+      const localTime = `${new Date().getFullYear() + 1}-01-10T09:30`;
+      fireEvent.change(screen.getByLabelText(/실행 시각/), { target: { value: localTime } });
+      fireEvent.click(screen.getByRole("button", { name: "예약 확정" }));
+
+      expect(await screen.findByText("예약 작업 (1)")).toBeInTheDocument();
+      const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/conv-1/scheduled-actions"));
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+        content: "Check the published listing",
+        run_at: new Date(localTime).toISOString(),
+      });
+      expect(screen.getByPlaceholderText("메시지를 입력하세요...")).toHaveValue("");
+    });
+
     it("offers the runtime's models when no profile is selected", async () => {
-      openConversationWithoutTask();
+      openConversation();
 
       expect(await screen.findByRole("option", { name: "GPT-5.4" })).toBeInTheDocument();
       expect(screen.queryByText(/모델 목록을 불러오지 못함/)).not.toBeInTheDocument();
@@ -235,7 +295,7 @@ describe("App", () => {
       // to disappear without a word (2026-09-30, App Server down after a
       // reboot), which looked like a Codex update had removed it.
       fixtures.runtimeModels = { source: "fallback", models: [{ id: "default" }] };
-      openConversationWithoutTask();
+      openConversation();
 
       expect(await screen.findByText(/모델 목록을 불러오지 못함/)).toBeInTheDocument();
       expect(screen.queryByRole("option", { name: "default" })).not.toBeInTheDocument();
@@ -262,7 +322,7 @@ describe("App", () => {
         "",
         "[악성](javascript:alert(1))"
       ].join("\n");
-      openConversationWithoutTask([
+      openConversation([
         { id: "m1", conversation_id: "conv-1", role: "user", content: "**그대로** 보여야 함", created_at: now },
         { id: "m2", conversation_id: "conv-1", role: "assistant", content: reply, created_at: now }
       ]);
@@ -285,7 +345,7 @@ describe("App", () => {
     });
 
     it("renames the conversation from its header", async () => {
-      openConversationWithoutTask();
+      openConversation();
       const patchCalls = () =>
         fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/conversations/conv-1") && init?.method === "PATCH");
 
@@ -320,7 +380,7 @@ describe("App", () => {
       const earlier = new Date(sent);
       earlier.setDate(earlier.getDate() - 1);
       earlier.setHours(21, 40, 0, 0);
-      openConversationWithoutTask([
+      openConversation([
         { id: "m1", conversation_id: "conv-1", role: "user", content: "질문", created_at: earlier.toISOString() },
         { id: "m2", conversation_id: "conv-1", role: "assistant", content: "답변", created_at: sent.toISOString() }
       ]);
@@ -336,7 +396,7 @@ describe("App", () => {
     it("copies a message's original text, markdown source included", async () => {
       const now = new Date().toISOString();
       const reply = "## 결과\n\n- **완료**\n- `npm test` 통과";
-      openConversationWithoutTask([
+      openConversation([
         { id: "m1", conversation_id: "conv-1", role: "user", content: "요청\n두 줄", created_at: now },
         { id: "m2", conversation_id: "conv-1", role: "assistant", content: reply, created_at: now }
       ]);

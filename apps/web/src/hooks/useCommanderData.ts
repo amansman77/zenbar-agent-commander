@@ -15,7 +15,11 @@ import { CONVERSATION_GROUP_PREVIEW_COUNT, USAGE_SUPPORTED_ENGINES } from "../li
 import { extractLatestPlan } from "../lib/taskEvents";
 import { useTaskStream } from "./useTaskStream";
 
-export function useCommanderData(selectedProjectId: string | null, selectedTaskId: string | null) {
+export function useCommanderData(
+  selectedProjectId: string | null,
+  selectedTaskId: string | null,
+  taskNotificationsEnabled: boolean,
+) {
 const projectsQuery = useQuery({
   queryKey: ["projects"],
   queryFn: api.listProjects
@@ -135,6 +139,7 @@ const conversationsQuery = useQuery({
   // live, this cuts what was a 35KB/poll response down to ~7-8KB for the
   // account this was built against.
   refetchInterval: 8000,
+  refetchIntervalInBackground: taskNotificationsEnabled,
 });
 const conversationCountsQuery = useQuery({
   queryKey: ["conversation-counts"],

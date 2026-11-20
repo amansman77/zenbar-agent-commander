@@ -12,8 +12,8 @@ import json
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, query_expression, relationship
 
 from .db import Base
 
@@ -212,6 +212,10 @@ class Conversation(Base):
     # opened", i.e. unread as soon as any assistant message exists.
     last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    last_scheduled_update_at: Mapped[datetime | None] = query_expression()
+    scheduled_actions: Mapped[list["ScheduledAction"]] = relationship(
+        cascade="all, delete-orphan", order_by="ScheduledAction.run_at"
+    )
     project: Mapped["Project | None"] = relationship(foreign_keys="[Conversation.project_id]")
     task: Mapped["Task | None"] = relationship(foreign_keys="[Conversation.task_id]")
     messages: Mapped[list["ConversationMessage"]] = relationship(
@@ -219,6 +223,22 @@ class Conversation(Base):
         cascade="all, delete-orphan",
         order_by="ConversationMessage.created_at",
     )
+
+
+class ScheduledAction(Base):
+    __tablename__ = "scheduled_actions"
+    __table_args__ = (
+        Index("idx_scheduled_actions_due", "status", "run_at"),
+        UniqueConstraint("conversation_id", "run_at", "content"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    content: Mapped[str] = mapped_column(Text)
+    run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ConversationPrReview(Base):

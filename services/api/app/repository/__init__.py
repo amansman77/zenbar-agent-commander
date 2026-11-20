@@ -37,6 +37,16 @@ from .prompts import (
     update_project_pipeline,
     update_project_prompt,
 )
+from .scheduled_actions import (
+    cancel_scheduled_action,
+    claim_scheduled_action,
+    create_scheduled_action,
+    fail_scheduled_action,
+    has_running_scheduled_action,
+    list_due_scheduled_actions,
+    list_running_scheduled_sessions,
+    recover_interrupted_scheduled_actions,
+)
 from .tasks import (
     attach_pipeline,
     can_approve,
@@ -103,6 +113,14 @@ from .serializers import (
 )
 
 __all__ = [
+    "cancel_scheduled_action",
+    "claim_scheduled_action",
+    "create_scheduled_action",
+    "fail_scheduled_action",
+    "has_running_scheduled_action",
+    "list_due_scheduled_actions",
+    "list_running_scheduled_sessions",
+    "recover_interrupted_scheduled_actions",
     "build_workspace_ref",
     "slugify",
     "create_project",

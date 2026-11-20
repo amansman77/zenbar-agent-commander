@@ -373,6 +373,17 @@ export interface ConversationSummary {
   // True when the latest message is from the assistant and arrived after
   // this conversation was last opened.
   is_unread: boolean;
+  last_scheduled_update_at?: string | null;
+}
+
+export interface CreateScheduledActionRequest {
+  content: string;
+  run_at: string;
+}
+
+export interface ScheduledActionItem extends CreateScheduledActionRequest {
+  id: string;
+  status: "pending" | "running" | "completed" | "failed" | "stopped";
 }
 
 export interface ConversationDetail {
@@ -392,6 +403,7 @@ export interface ConversationDetail {
   task_pipeline_step_index?: number | null;
   task_pipeline_total_steps?: number | null;
   messages: ConversationMessageItem[];
+  scheduled_actions?: ScheduledActionItem[];
   created_at: string;
   updated_at: string;
 }

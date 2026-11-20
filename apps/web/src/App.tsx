@@ -59,6 +59,7 @@ export function App() {
   const [gitActionMessage, setGitActionMessage] = useState<string | null>(null);
   const [followupDraft, setFollowupDraft] = useState("");
   const isMobile = useIsMobileBreakpoint();
+  const [taskNotificationsEnabled, setTaskNotificationsEnabled] = useState(loadTaskNotificationsEnabled);
 
   const { mobileScreen, setMobileScreen } = useMobileNavigation({
     isMobile,
@@ -90,9 +91,8 @@ export function App() {
     conversations,
     conversationsLoading,
     conversationCounts
-  } = useCommanderData(selectedProjectId, selectedTaskId);
+  } = useCommanderData(selectedProjectId, selectedTaskId, taskNotificationsEnabled);
 
-  const [taskNotificationsEnabled, setTaskNotificationsEnabled] = useState(loadTaskNotificationsEnabled);
   useTaskCompletionNotifications(conversations, taskNotificationsEnabled);
 
   // The stored flag only ever gets set true right after the browser grants

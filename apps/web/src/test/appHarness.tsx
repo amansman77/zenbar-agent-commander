@@ -189,6 +189,12 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
   if (url.endsWith("/conversations")) {
     return new Response(JSON.stringify(fixtures.conversations), { status: 200 });
   }
+  const scheduleMatch = url.match(/\/conversations\/([^/?]+)\/scheduled-actions$/);
+  if (scheduleMatch && init?.method === "POST" && fixtures.conversationDetail?.id === scheduleMatch[1]) {
+    const action = { ...JSON.parse(String(init.body)), id: "schedule-1", status: "pending" };
+    fixtures.conversationDetail = { ...fixtures.conversationDetail, scheduled_actions: [action] };
+    return new Response(JSON.stringify(fixtures.conversationDetail), { status: 201 });
+  }
   const conversationMatch = url.match(/\/conversations\/([^/?]+)$/);
   if (conversationMatch && fixtures.conversationDetail?.id === conversationMatch[1]) {
     if (init?.method === "PATCH") {

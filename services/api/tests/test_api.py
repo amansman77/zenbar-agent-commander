@@ -3840,3 +3840,62 @@ def test_session_restart_is_mirrored_into_the_conversation():
             message["role"] == "assistant" and "새 Codex 세션으로 다시 시작했습니다" in message["content"]
             for message in detail["messages"]
         )
+
+
+def test_scheduled_conversation_followup_runs_once_and_reports_its_status(tmp_path, monkeypatch):
+    from datetime import timedelta, timezone
+
+    from app import scheduled_actions
+    from app.main import orchestrator
+    from app.repository import scheduled_actions as schedule_repo
+
+    repo = init_repo(str(tmp_path))
+    project = client.post("/projects", json={"name": "Scheduled QA", "repo_path": str(repo)}).json()
+    conversation_id = client.post("/conversations", json={"project_id": project["id"]}).json()["id"]
+    conversation_url = f"/conversations/{conversation_id}"
+    task = client.post(f"{conversation_url}/messages", json={"content": "Initial request"}).json()
+    task_id = task["task_id"]
+    assert task["task_status"] == "waiting_result_approval"
+
+    now = datetime.now(timezone.utc)
+    url = f"{conversation_url}/scheduled-actions"
+    assert client.post(url, json={"content": "Past", "run_at": now.isoformat()}).status_code == 422
+    assert client.post(url, json={"content": "Naive", "run_at": "2030-01-01T09:00:00"}).status_code == 422
+    run_at = (now + timedelta(hours=1)).isoformat()
+    scheduled = client.post(url, json={"content": "Inspect published listing", "run_at": run_at})
+    assert scheduled.status_code == 201
+    assert len(scheduled.json()["messages"]) == len(task["messages"])
+    assert scheduled.json()["scheduled_actions"][0]["status"] == "pending"
+
+    duplicate = client.post(url, json={"content": "Inspect published listing", "run_at": run_at})
+    assert duplicate.status_code == 201
+    assert len(duplicate.json()["scheduled_actions"]) == 1
+
+    cancellable = client.post(url, json={"content": "Cancelled instruction", "run_at": run_at})
+    cancel_id = next(a["id"] for a in cancellable.json()["scheduled_actions"] if a["content"].startswith("Cancelled"))
+    assert client.delete(f"{url}/{cancel_id}").status_code == 204
+    asyncio.run(scheduled_actions.run_due_scheduled_actions(orchestrator))
+    assert client.get(conversation_url).json()["scheduled_actions"][0]["status"] == "pending"
+
+    monkeypatch.setattr(schedule_repo, "utcnow", lambda: now + timedelta(hours=2))
+    asyncio.run(scheduled_actions.run_due_scheduled_actions(orchestrator))
+    assert client.get(conversation_url).json()["scheduled_actions"][0]["status"] == "pending"
+
+    assert client.post(f"/tasks/{task_id}/approve", json={"actor": "user"}).status_code == 200
+    asyncio.run(scheduled_actions.run_due_scheduled_actions(orchestrator))
+    running = client.get(conversation_url).json()
+    assert running["task_status"] == "waiting_result_approval"
+    assert running["scheduled_actions"][0]["status"] == "running"
+    assert client.delete(f"{url}/{running['scheduled_actions'][0]['id']}").status_code == 409
+    assert client.post(f"/tasks/{task_id}/approve", json={"actor": "user"}).status_code == 200
+
+    asyncio.run(scheduled_actions.run_due_scheduled_actions(orchestrator))
+    detail = client.get(conversation_url).json()
+    assert detail["task_id"] == task_id
+    assert [a["status"] for a in detail["scheduled_actions"]] == ["completed"]
+    contents = [message["content"] for message in detail["messages"]]
+    assert sum("Inspect published listing" in content for content in contents) == 1
+    assert all("Cancelled instruction" not in content for content in contents)
+    summary = next(c for c in client.get("/conversations?preview_count=1").json() if c["id"] == conversation_id)
+    assert summary["last_scheduled_update_at"] is not None
+    assert summary["is_unread"]

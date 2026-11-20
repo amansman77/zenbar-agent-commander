@@ -3,6 +3,7 @@ import type {
   ApproveTaskRequest,
   CommitTaskRequest,
   ConversationDetail,
+  CreateScheduledActionRequest,
   ConversationSummary,
   CreateConversationRequest,
   UpdateConversationRequest,
@@ -130,6 +131,13 @@ export const api = {
     request<ConversationDetail>(`/conversations/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteConversation: (id: string) =>
     request<void>(`/conversations/${id}`, { method: "DELETE" }),
+  createScheduledAction: (id: string, payload: CreateScheduledActionRequest) =>
+    request<ConversationDetail>(`/conversations/${id}/scheduled-actions`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  cancelScheduledAction: (id: string, actionId: string) =>
+    request<void>(`/conversations/${id}/scheduled-actions/${actionId}`, { method: "DELETE" }),
   addConversationMessage: (id: string, payload: AddConversationMessageRequest) =>
     request<ConversationDetail>(`/conversations/${id}/messages`, {
       method: "POST",

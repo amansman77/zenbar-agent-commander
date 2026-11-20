@@ -76,6 +76,12 @@ This means:
 * pre-approval changes remain isolated workspace state
 * only approved results are accepted as final
 
+## Scheduled Conversation Follow-ups
+
+Use **작업 예약** in an existing task conversation to set a one-time instruction and local execution time. The API stores the schedule and submits it to the same conversation when due. If the task is busy or waiting for approval, the scheduled instruction waits for it to finish.
+
+Results and requests for input appear in the conversation. Enable the dashboard bell for browser notifications, which the dashboard delivers when open or when it next loads. The Agent Host must be available to run the work. Pending schedules survive an API restart and can be cancelled before they start.
+
 ## Task Workspace
 
 Each task runs inside an isolated workspace (branch or worktree).
