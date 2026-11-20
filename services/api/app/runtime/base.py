@@ -22,6 +22,10 @@ from ..schemas import (
     TaskDiff,
 )
 
+class RuntimeSessionReattachError(RuntimeError):
+    """The runtime could not confirm whether an existing session can be resumed."""
+
+
 class RuntimeAdapter(ABC):
     stream_in_background = True
 

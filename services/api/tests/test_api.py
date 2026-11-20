@@ -1297,6 +1297,76 @@ def test_reconcile_active_tasks_marks_stale_sessions_failed():
         assert detail.json()["runtime_session_id"] is None
 
 
+def test_startup_reattaches_active_codex_turn_and_consumes_its_events(monkeypatch, tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app import service
+    from app.repository import create_project, create_task, set_task_status, set_task_workspace
+    from app.runtime import AppServerWebSocketAdapter
+    from app.schemas import CreateProjectRequest, CreateTaskRequest
+
+    test_engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=test_engine)
+    session_factory = sessionmaker(bind=test_engine)
+    monkeypatch.setattr(service, "SessionLocal", session_factory)
+
+    session_id = "thread-1"
+    with session_factory() as db:
+        project = create_project(db, CreateProjectRequest(name="Codex Reattach", repo_path=str(tmp_path)))
+        task = create_task(db, CreateTaskRequest(project_id=project.id, title="Resume", prompt="Start", model="default"))
+        task_id = task.id
+        set_task_workspace(db, task, str(tmp_path))
+        set_task_status(db, task, "running", runtime_session_id=session_id)
+
+    adapter = AppServerWebSocketAdapter("ws://127.0.0.1:0")
+    orchestrator = service.TaskOrchestrator({"codex": adapter})
+    app_server_ready = False
+
+    async def rpc(method, params):
+        assert method == "thread/resume"
+        assert params["threadId"] == session_id
+        if not app_server_ready:
+            raise ConnectionRefusedError("App Server offline")
+        await adapter._handle_server_request({
+            "id": 99,
+            "method": "item/tool/requestUserInput",
+            "params": {"threadId": session_id, "turnId": "turn-1", "questions": []},
+        })
+        return {"thread": {
+            "id": session_id,
+            "status": {"type": "active"},
+            "turns": [{"id": "turn-1", "status": "inProgress"}],
+        }}
+
+    monkeypatch.setattr(adapter, "_rpc", rpc)
+
+    async def scenario():
+        nonlocal app_server_ready
+        await orchestrator.reconcile_active_tasks()
+        with session_factory() as db:
+            current = get_task(db, task_id)
+            assert current.status == "running"
+            assert current.runtime_session_id == session_id
+
+        app_server_ready = True
+        await orchestrator.reconcile_active_tasks()
+        async with asyncio.timeout(2):
+            while True:
+                with session_factory() as db:
+                    current = get_task(db, task_id)
+                    if current.status == "waiting_user_input":
+                        assert current.runtime_session_id == session_id
+                        assert current.pending_request_id == "99"
+                        break
+                await asyncio.sleep(0.01)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        test_engine.dispose()
+
+
 def _fake_claude_cli(tmp: Path) -> tuple[Path, Path]:
     """A stand-in `claude` that records its argv and prints one result line."""
     log = tmp / "claude-argv.log"

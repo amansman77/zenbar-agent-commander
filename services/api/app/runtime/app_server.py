@@ -10,13 +10,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import websockets
-
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from itertools import count
 from typing import Any
+
+import websockets
 from websockets.asyncio.client import ClientConnection
+from websockets.exceptions import WebSocketException
 
 from ..codex_profiles import RuntimeProfile, get_profile
 from ..schemas import (
@@ -27,7 +28,7 @@ from ..schemas import (
     RuntimeUsageInfo,
     TaskDiff,
 )
-from .base import RuntimeAdapter, _prompt_with_workspace, is_default_model_alias
+from .base import RuntimeAdapter, RuntimeSessionReattachError, _prompt_with_workspace, is_default_model_alias
 from .diffs import _build_diff_payload, _coerce_diff_text, _extract_diff_payload
 from .usage import _classify_rate_limit_windows
 
@@ -108,6 +109,8 @@ class SessionState:
     pending_requests: dict[int | str, PendingRequest] = field(default_factory=dict)
     start_request: RuntimeStartRequest | None = None
     agent_message_buffer: str = ""
+    reattaching: bool = False
+    resumed_with_live_turn: bool = False
 
 
 class AppServerWebSocketAdapter(RuntimeAdapter):
@@ -118,9 +121,63 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         self._request_ids = count(1)
         self._pending_responses: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._sessions: dict[str, SessionState] = {}
+        self._reattach_lock = asyncio.Lock()
         self._reader_task: asyncio.Task[None] | None = None
         self._initialized = False
         self._idle_event_heartbeat_seconds = float(os.getenv("ZENBAR_RUNTIME_IDLE_HEARTBEAT_SECONDS", "30"))
+
+    def knows_session(self, session_id: str) -> bool:
+        state = self._sessions.get(session_id)
+        return state is not None and not state.reattaching
+
+    async def reattach_session(self, session_id: str, request: RuntimeStartRequest) -> bool:
+        async with self._reattach_lock:
+            if self.knows_session(session_id):
+                return True
+            # Resume subscribes this connection to the thread. Register the
+            # state first so live notifications and replayed approvals can
+            # reach the queue as soon as the server sends them.
+            state = SessionState(thread_id=session_id, start_request=request, reattaching=True)
+            self._sessions[session_id] = state
+            attached = False
+            try:
+                params = {"threadId": session_id, "cwd": request.working_directory}
+                profile = get_profile(request.profile)
+                if profile and profile.model_provider:
+                    params["modelProvider"] = profile.model_provider
+                result = await asyncio.wait_for(self._rpc("thread/resume", params), timeout=10)
+                thread = result.get("thread")
+                if not isinstance(thread, dict) or thread.get("id") != session_id:
+                    raise RuntimeError("Codex App Server did not return the requested thread")
+                active = thread.get("status", {}).get("type") == "active"
+                if active and state.current_turn_id is None:
+                    state.current_turn_id = next(
+                        (
+                            turn["id"] for turn in reversed(thread.get("turns") or [])
+                            if turn.get("status") == "inProgress"
+                        ),
+                        None,
+                    )
+                # A turn event can arrive before this response is processed.
+                # Let the consumer apply that event even if the snapshot is idle.
+                state.resumed_with_live_turn = active or state.current_turn_id is not None
+                state.reattaching = False
+                attached = True
+                return True
+            except (OSError, RuntimeError, WebSocketException) as exc:
+                if str(exc) in {
+                    f"thread not found: {session_id}",
+                    f"no rollout found for thread id {session_id}",
+                    f"no rollout found for conversation id {session_id}",
+                }:
+                    return False
+                raise RuntimeSessionReattachError(f"Could not resume Codex thread {session_id}: {exc}") from exc
+            finally:
+                if not attached:
+                    self._sessions.pop(session_id, None)
+
+    def has_running_turn(self, session_id: str) -> bool:
+        return self._require_session(session_id).resumed_with_live_turn
 
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
         await self._ensure_connection()
@@ -305,15 +362,19 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
 
     async def retry_task(self, session_id: str) -> RuntimeSession:
         state = self._require_session(session_id)
-        if state.start_request is None:
+        request = state.start_request
+        if request is None:
             raise RuntimeError("Retry unavailable because original task request is missing")
-        turn = await self._rpc("turn/start", self._build_turn_start_params(session_id, state.start_request))
+        if not request.prompt:
+            # A reattached thread still has the conversation in Codex. The
+            # reconstructed request has settings but no original prompt.
+            request = request.model_copy(update={"prompt": "Please continue with my most recent request."})
+        turn = await self._rpc("turn/start", self._build_turn_start_params(session_id, request))
         state.current_turn_id = turn["turn"]["id"]
         state.pending_requests.clear()
         state.latest_diff = TaskDiff()
         await state.queue.put(RuntimeEvent(type="agent_status", message="Retry turn started in Codex App Server"))
-        requested = state.start_request.model if state.start_request else None
-        return RuntimeSession(session_id=session_id, effective_model=requested)
+        return RuntimeSession(session_id=session_id, effective_model=request.model)
 
     async def followup_task(
         self, session_id: str, message: str, selected_skill: str | None = None, model: str | None = None
@@ -403,25 +464,32 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
 
     async def _ensure_connection(self) -> None:
         async with self._connection_lock:
-            if self._connection is not None and self._connection.state.name == "OPEN" and self._initialized:
-                return
+            if self._connection is not None and self._connection.state.name == "OPEN":
+                if self._initialized:
+                    return
+                # A timed-out initialize can leave an open, unusable socket.
+                await self._connection.close()
             self._connection = await websockets.connect(self._url)
+            self._initialized = False
             self._reader_task = asyncio.create_task(self._reader_loop())
             request_id = next(self._request_ids)
             future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
             self._pending_responses[request_id] = future
-            await self._send_json(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "method": "initialize",
-                    "params": {
-                        "clientInfo": {"name": "zenbar-agent-commander", "version": "0.1.0"},
-                        "capabilities": {"experimentalApi": True},
-                    },
-                }
-            )
-            response = await future
+            try:
+                await self._send_json(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "initialize",
+                        "params": {
+                            "clientInfo": {"name": "zenbar-agent-commander", "version": "0.1.0"},
+                            "capabilities": {"experimentalApi": True},
+                        },
+                    }
+                )
+                response = await future
+            finally:
+                self._pending_responses.pop(request_id, None)
             if "error" in response:
                 raise RuntimeError(response["error"].get("message", "Failed to initialize Codex App Server"))
             self._initialized = True
@@ -431,8 +499,11 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         request_id = next(self._request_ids)
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending_responses[request_id] = future
-        await self._send_json({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
-        response = await future
+        try:
+            await self._send_json({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+            response = await future
+        finally:
+            self._pending_responses.pop(request_id, None)
         if "error" in response:
             raise RuntimeError(response["error"].get("message", "Unknown Codex App Server error"))
         return response["result"]

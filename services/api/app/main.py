@@ -36,9 +36,9 @@ from .runtime_registry import model_catalog, model_catalogs  # noqa: F401  isort
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     ensure_schema()
-    await orchestrator.reconcile_active_tasks()
-    await managed_app_server.start()
     try:
+        await managed_app_server.start()
+        await orchestrator.reconcile_active_tasks()
         yield
     finally:
         await managed_app_server.stop()
