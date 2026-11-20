@@ -140,6 +140,43 @@ def test_reattached_idle_thread_retries_latest_request_in_same_thread(monkeypatc
     assert params["input"][0]["text"].endswith("Please continue with my most recent request.")
 
 
+@pytest.mark.parametrize("followup", [False, True])
+def test_unloaded_thread_resumes_before_next_turn(monkeypatch, tmp_path, followup):
+    adapter, state = _adapter_with_session()
+    state.start_request = _resume_request(tmp_path).model_copy(update={"prompt": "Original request"})
+    state.current_turn_id = "old-turn"
+    rpc = AsyncMock(side_effect=[
+        {"thread": {"id": "thread-1", "status": {"type": "idle"}}},
+        {"turn": {"id": "new-turn"}},
+    ])
+    monkeypatch.setattr(adapter, "_rpc", rpc)
+
+    async def scenario():
+        await adapter._handle_notification({
+            "method": "thread/status/changed",
+            "params": {"threadId": "thread-1", "status": {"type": "notLoaded"}},
+        })
+        stream = adapter.subscribe_events("thread-1")
+        assert (await anext(stream)).type == "failed"
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+
+        if followup:
+            await adapter.followup_task("thread-1", "New question")
+        else:
+            await adapter.retry_task("thread-1")
+
+    asyncio.run(scenario())
+    resume, start = rpc.await_args_list
+    assert resume.args == ("thread/resume", {"threadId": "thread-1", "cwd": str(tmp_path)})
+    method, params = start.args
+    assert method == "turn/start"
+    assert params["threadId"] == "thread-1"
+    expected = "New question" if followup else "Please continue with my most recent request."
+    assert params["input"][0]["text"].endswith(expected)
+    assert "Original request" not in params["input"][0]["text"]
+
+
 def test_only_missing_transcript_is_treated_as_stale(monkeypatch, tmp_path):
     adapter = AppServerWebSocketAdapter("ws://127.0.0.1:0")
     rpc = AsyncMock(side_effect=[

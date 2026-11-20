@@ -1776,7 +1776,8 @@ def test_stale_runtime_session_after_completion_keeps_completed_status(monkeypat
         assert body["status"] == "completed"
 
 
-def test_consume_events_stops_after_a_failed_event_instead_of_reconnecting(monkeypatch):
+@pytest.mark.parametrize("initial_status", ["running", "completed"])
+def test_consume_events_stops_after_a_failed_event_instead_of_reconnecting(monkeypatch, initial_status):
     # Regression: a "failed" event delivered as a normal item on the stream
     # (exactly what the notLoaded handler in runtime/app_server.py does --
     # not an exception) already moved task.status to "failed" via
@@ -1788,7 +1789,11 @@ def test_consume_events_stops_after_a_failed_event_instead_of_reconnecting(monke
     from app.main import orchestrator
 
     async def one_failed_event_then_clean_end(_session_id: str):
-        yield RuntimeEvent(type="failed", message="Codex App Server reports this session as 'notLoaded'")
+        yield RuntimeEvent(
+            type="failed",
+            message="Codex App Server reports this session as 'notLoaded'",
+            payload={"reason": "thread_status_notLoaded"},
+        )
 
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
@@ -1809,7 +1814,7 @@ def test_consume_events_stops_after_a_failed_event_instead_of_reconnecting(monke
         with SessionLocal() as db:
             current = get_task(db, task["id"])
             assert current is not None
-            current.status = "running"
+            current.status = initial_status
             current.runtime_session_id = "some-session"
             db.add(current)
             db.commit()
@@ -1825,7 +1830,7 @@ def test_consume_events_stops_after_a_failed_event_instead_of_reconnecting(monke
 
         detail = client.get(f"/tasks/{task['id']}")
         assert detail.status_code == 200
-        assert detail.json()["status"] == "failed"
+        assert detail.json()["status"] == ("failed" if initial_status == "running" else initial_status)
 
 
 def test_consume_events_auto_recovers_from_stuck_heartbeat_only_session(monkeypatch):

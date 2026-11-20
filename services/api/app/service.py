@@ -1116,6 +1116,12 @@ class TaskOrchestrator:
             task = get_task(db, task_id)
             if task is None:
                 return
+            if (
+                (event.payload or {}).get("reason") == "thread_status_notLoaded"
+                and task.status not in self.ACTIVE_TASK_STATUSES
+            ):
+                # App Server can unload a thread after the turn has finished.
+                return
             append_event(db, task, event)
             task = get_task(db, task_id)
             if task is None:

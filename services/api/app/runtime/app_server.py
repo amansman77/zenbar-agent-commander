@@ -111,6 +111,7 @@ class SessionState:
     agent_message_buffer: str = ""
     reattaching: bool = False
     resumed_with_live_turn: bool = False
+    unloaded: bool = False
 
 
 class AppServerWebSocketAdapter(RuntimeAdapter):
@@ -132,12 +133,21 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
 
     async def reattach_session(self, session_id: str, request: RuntimeStartRequest) -> bool:
         async with self._reattach_lock:
-            if self.knows_session(session_id):
+            state = self._sessions.get(session_id)
+            if state is not None and not state.unloaded:
                 return True
             # Resume subscribes this connection to the thread. Register the
             # state first so live notifications and replayed approvals can
             # reach the queue as soon as the server sends them.
-            state = SessionState(thread_id=session_id, start_request=request, reattaching=True)
+            if state is None:
+                state = SessionState(thread_id=session_id, start_request=request)
+            else:
+                # A consumer may still be waiting on this queue. Keep it so
+                # it can receive events from the newly loaded thread.
+                while not state.queue.empty():
+                    state.queue.get_nowait()
+                state.agent_message_buffer = ""
+            state.reattaching = True
             self._sessions[session_id] = state
             attached = False
             try:
@@ -161,6 +171,8 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                 # A turn event can arrive before this response is processed.
                 # Let the consumer apply that event even if the snapshot is idle.
                 state.resumed_with_live_turn = active or state.current_turn_id is not None
+                state.start_request = request
+                state.unloaded = False
                 state.reattaching = False
                 attached = True
                 return True
@@ -360,8 +372,18 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             )
         )
 
-    async def retry_task(self, session_id: str) -> RuntimeSession:
+    async def _session_for_next_turn(self, session_id: str) -> SessionState:
         state = self._require_session(session_id)
+        if state.unloaded and state.start_request is not None:
+            # Loading the transcript is safe here because the user requested
+            # another turn. An unload notification does not replay its input.
+            request = state.start_request.model_copy(update={"prompt": ""})
+            await self.reattach_session(session_id, request)
+            state = self._require_session(session_id)
+        return state
+
+    async def retry_task(self, session_id: str) -> RuntimeSession:
+        state = await self._session_for_next_turn(session_id)
         request = state.start_request
         if request is None:
             raise RuntimeError("Retry unavailable because original task request is missing")
@@ -379,7 +401,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
     async def followup_task(
         self, session_id: str, message: str, selected_skill: str | None = None, model: str | None = None
     ) -> RuntimeSession:
-        state = self._require_session(session_id)
+        state = await self._session_for_next_turn(session_id)
         request = state.start_request
         if request is None:
             raise RuntimeError("Follow-up unavailable because original task request is missing")
@@ -448,7 +470,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         state = self._require_session(session_id)
         while True:
             try:
-                yield await asyncio.wait_for(state.queue.get(), timeout=self._idle_event_heartbeat_seconds)
+                event = await asyncio.wait_for(state.queue.get(), timeout=self._idle_event_heartbeat_seconds)
             except asyncio.TimeoutError:
                 reader = self._reader_task
                 if reader is not None and reader.done():
@@ -461,6 +483,14 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                     message="Runtime is still running (no new output yet).",
                     payload={"reason": "idle_heartbeat"},
                 )
+                continue
+            if (event.payload or {}).get("reason") == "thread_status_notLoaded":
+                if state.unloaded:
+                    yield event
+                    if state.unloaded and not state.reattaching:
+                        return
+                continue
+            yield event
 
     async def _ensure_connection(self) -> None:
         async with self._connection_lock:
@@ -625,6 +655,13 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             status = params.get("status", {})
             status_type = status.get("type", "unknown")
             if status_type in ("notLoaded", "systemError"):
+                if status_type == "notLoaded":
+                    if state.unloaded:
+                        return
+                    state.unloaded = True
+                    state.current_turn_id = None
+                    state.resumed_with_live_turn = False
+                    state.pending_requests.clear()
                 # The App Server's own definitive signal that this thread
                 # has stopped being processed -- not a time-based guess
                 # (which would risk false-positiving on a single
