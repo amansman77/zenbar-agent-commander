@@ -78,7 +78,9 @@ This means:
 
 ## Scheduled Conversation Follow-ups
 
-Use **작업 예약** in an existing task conversation to set a one-time instruction and local execution time. The API stores the schedule and submits it to the same conversation when due. If the task is busy or waiting for approval, the scheduled instruction waits for it to finish.
+Ask Codex in a task conversation to do something at a specific time. Once the instruction and time are clear, Codex registers the one-time follow-up and confirms it in the conversation. Codex threads opened before this tool was enabled gain it when Zenbar starts a new thread. **작업 예약** also accepts a one-time instruction and local execution time directly.
+
+The API stores the schedule and submits it to the same conversation when due. If the task is busy or waiting for approval, the scheduled instruction waits for it to finish.
 
 Results and requests for input appear in the conversation. Enable the dashboard bell for browser notifications, which the dashboard delivers when open or when it next loads. The Agent Host must be available to run the work. Pending schedules survive an API restart and can be cancelled before they start.
 

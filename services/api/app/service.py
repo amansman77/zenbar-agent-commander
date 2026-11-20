@@ -21,15 +21,18 @@ from sqlalchemy.orm import Session
 
 from .github_pr import MergeResult, merge_pull_request_for_branch
 from .db import SessionLocal
-from .models import Project, Task
+from .models import Project, Task, utcnow
 from .repository import (
     add_conversation_message_for_task,
     append_event,
     clear_runtime_session,
     create_run,
+    create_scheduled_action,
     create_turn,
     delete_task as db_delete_task,
     get_latest_run,
+    get_conversation_for_task,
+    get_project,
     get_task,
     has_running_scheduled_action,
     replace_diff,
@@ -45,8 +48,9 @@ from .repository import (
 )
 from .resume_context import RECENT_MESSAGE_LIMIT, ResumeMessage, build_resume_prompt
 from . import workspace_git
-from .runtime import RuntimeAdapter
+from .runtime import AppServerWebSocketAdapter, RuntimeAdapter
 from .schemas import (
+    CreateScheduledActionRequest,
     RespondTaskRequest,
     RuntimeEvent,
     RuntimeStartRequest,
@@ -93,6 +97,19 @@ class TaskOrchestrator:
         self._stuck_session_idle_seconds = float(
             os.getenv("ZENBAR_STUCK_SESSION_IDLE_SECONDS", str(15 * 60))
         )
+        for adapter in adapters.values():
+            if isinstance(adapter, AppServerWebSocketAdapter):
+                adapter.schedule_followup = self.schedule_followup
+
+    def schedule_followup(self, task_id: str, request: CreateScheduledActionRequest) -> None:
+        """Save a Codex tool's follow-up in the conversation that owns its task."""
+        if request.run_at <= utcnow():
+            raise ValueError("The scheduled time must be in the future.")
+        with SessionLocal() as db:
+            conversation = get_conversation_for_task(db, task_id)
+            if conversation is None or conversation.project_id is None or get_project(db, conversation.project_id) is None:
+                raise ValueError("This turn does not have an active Zenbar project conversation.")
+            create_scheduled_action(db, conversation.id, request)
 
     def _adapter_for(self, task: Task | None) -> RuntimeAdapter:
         engine = (task.engine if task is not None else None) or self.default_engine

@@ -116,14 +116,13 @@ as an assistant message — `agent_status` would be filtered out of the timeline
 and the conversation is where the seam actually needs to be visible.
 
 **Every server request the App Server sends must get an answer.** A JSON-RPC
-*request* (as opposed to a notification) blocks the turn until it is replied
-to, so a method missing from `runtime/app_server.py::_handle_server_request`
-wedges the session outright — it logs "Unhandled server request" and nothing
-else ever happens. The handled set is the two `requestApproval` methods plus
-`mcpServer/elicitation/request`, which is how a Codex connector (Computer Use,
-for instance) asks permission to run one of its tools; note it is answered with
-`{"action": ...}` while the others take `{"decision": ...}`. Adding a connector
-can therefore introduce a new method that has to be handled here.
+*request* blocks its turn until it is replied to. An unsupported method in
+`runtime/app_server.py::_handle_server_request` can wedge the session. Connector
+permission requests (`mcpServer/elicitation/request`) are answered with
+`{"action": ...}`. The two `requestApproval` methods take `{"decision": ...}`.
+`item/tool/requestUserInput` handles questions and `item/tool/call` handles the
+conversation scheduling tool. The scheduling tool replies after the orchestrator
+saves the requested follow-up on the conversation that owns the runtime's task.
 
 **The stuck-session watchdog must not fire on a task waiting for a person.** A
 turn blocked on an approval emits nothing but idle heartbeats, which is exactly

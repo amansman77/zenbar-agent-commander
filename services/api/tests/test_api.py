@@ -3899,3 +3899,62 @@ def test_scheduled_conversation_followup_runs_once_and_reports_its_status(tmp_pa
     summary = next(c for c in client.get("/conversations?preview_count=1").json() if c["id"] == conversation_id)
     assert summary["last_scheduled_update_at"] is not None
     assert summary["is_unread"]
+
+
+def test_codex_tool_registers_a_followup_in_its_conversation(tmp_path, monkeypatch):
+    from datetime import timedelta, timezone
+    from unittest.mock import AsyncMock
+
+    from app.runtime import AppServerWebSocketAdapter
+    from app.schemas import RuntimeStartRequest
+    from app.service import TaskOrchestrator
+
+    repo = init_repo(str(tmp_path))
+    project = client.post("/projects", json={"name": "Codex scheduling", "repo_path": str(repo)}).json()
+    conversation_id = client.post("/conversations", json={"project_id": project["id"]}).json()["id"]
+    other_id = client.post("/conversations", json={"project_id": project["id"]}).json()["id"]
+    url = f"/conversations/{conversation_id}"
+    task_id = client.post(f"{url}/messages", json={"content": "Check the release tomorrow at 9 AM KST"}).json()["task_id"]
+    adapter = AppServerWebSocketAdapter("ws://127.0.0.1:0")
+    TaskOrchestrator({"codex": adapter})
+    rpc = AsyncMock(side_effect=[{"thread": {"id": "thread-1"}}, {"turn": {"id": "turn-1"}}])
+    send = AsyncMock()
+    monkeypatch.setattr(adapter, "_ensure_connection", AsyncMock())
+    monkeypatch.setattr(adapter, "_rpc", rpc)
+    monkeypatch.setattr(adapter, "_send_json", send)
+    asyncio.run(adapter.start_task(RuntimeStartRequest(
+        task_id=task_id, title="Check release", prompt="Check the release tomorrow at 9 AM KST",
+        model="default", repo_path=str(repo), working_directory=str(repo), default_branch="main",
+        workspace_type="worktree", workspace_ref="task/release",
+    )))
+    tool = rpc.await_args_list[0].args[1]["dynamicTools"][0]
+    assert tool["name"] == "schedule_conversation_followup"
+
+    def call_tool(run_at: str, *, thread: str = "thread-1", turn: str = "turn-1") -> dict:
+        asyncio.run(adapter._handle_server_request({
+            "id": 9, "method": "item/tool/call", "params": {
+                "threadId": thread, "turnId": turn, "tool": tool["name"],
+                "arguments": {"content": "Check the release", "run_at": run_at},
+            },
+        }))
+        response = send.await_args.args[0]
+        assert response["id"] == 9
+        return response["result"]
+
+    now = datetime.now(timezone(timedelta(hours=9)))
+    run_at = (now + timedelta(days=1)).isoformat()
+    assert not call_tool(now.isoformat())["success"]
+    assert not call_tool((now + timedelta(days=1)).replace(tzinfo=None).isoformat())["success"]
+    assert not call_tool(run_at, thread="missing")["success"]
+    assert not call_tool(run_at, turn="old-turn")["success"]
+    assert client.get(url).json()["scheduled_actions"] == []
+
+    result = call_tool(run_at)
+    assert result["success"] and run_at in result["contentItems"][0]["text"]
+    assert call_tool(run_at)["success"]
+    saved = client.get(url).json()["scheduled_actions"]
+    assert len(saved) == 1
+    assert saved[0]["content"] == "Check the release"
+    assert saved[0]["status"] == "pending"
+    assert datetime.fromisoformat(saved[0]["run_at"]) == datetime.fromisoformat(run_at)
+    assert client.get(f"/conversations/{other_id}").json()["scheduled_actions"] == []
