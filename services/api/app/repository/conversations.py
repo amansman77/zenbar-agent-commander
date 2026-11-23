@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.orm import Session, selectinload
 
 from ..models import Conversation, ConversationMessage, ConversationPrReview, Task, utcnow
@@ -59,12 +59,11 @@ def count_conversations_by_project(db: Session) -> dict[str | None, int]:
     return dict(db.execute(stmt).all())
 
 
-def get_conversation(db: Session, conversation_id: str) -> Conversation | None:
+def get_conversation(db: Session, conversation_id: str, *, include_messages: bool = True) -> Conversation | None:
     stmt = (
         select(Conversation)
         .where(Conversation.id == conversation_id)
         .options(
-            selectinload(Conversation.messages),
             selectinload(Conversation.project),
             selectinload(Conversation.task).selectinload(Task.project),
         )
@@ -76,7 +75,40 @@ def get_conversation(db: Session, conversation_id: str) -> Conversation | None:
         # later call in the same Session.
         .execution_options(populate_existing=True)
     )
+    if include_messages:
+        stmt = stmt.options(selectinload(Conversation.messages))
     return db.scalars(stmt).first()
+
+
+def list_conversation_message_page(
+    db: Session, conversation_id: str, limit: int, *, before: str | None, after: str | None
+) -> tuple[list[ConversationMessage], bool]:
+    message = ConversationMessage
+    stmt = select(message).where(message.conversation_id == conversation_id)
+    position = tuple_(message.created_at, message.id)
+    cursor_id = after if after is not None else before
+    if cursor_id:
+        boundary = db.execute(
+            select(message.created_at, message.id)
+            .where(message.id == cursor_id, message.conversation_id == conversation_id)
+        ).one_or_none()
+        if boundary is None:
+            raise ValueError("Invalid message cursor")
+        key = (boundary.created_at, boundary.id)
+        stmt = stmt.where(position > key if after is not None else position < key)
+
+    # Forward pages start at the cursor so bursts larger than a page cannot
+    # leave a gap. Return each page in display order in both directions.
+    if after is not None:
+        stmt = stmt.order_by(message.created_at, message.id)
+    else:
+        stmt = stmt.order_by(message.created_at.desc(), message.id.desc())
+    rows = list(db.scalars(stmt.limit(limit + 1)))
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    if after is None:
+        rows.reverse()
+    return rows, has_more
 
 
 def get_conversation_for_task(db: Session, task_id: str) -> Conversation | None:
@@ -166,8 +198,14 @@ def add_conversation_message(
     db.add(msg)
     conv = db.get(Conversation, conversation_id)
     if conv:
-        if not conv.messages and conv.title == "New Conversation":
-            conv.title = payload.content[:50].strip() or "New Conversation"
+        if conv.title == "New Conversation":
+            existing_message_id = db.scalar(
+                select(ConversationMessage.id)
+                .where(ConversationMessage.conversation_id == conversation_id)
+                .limit(1)
+            )
+            if existing_message_id is None:
+                conv.title = payload.content[:50].strip() or "New Conversation"
         db.execute(
             update(Conversation)
             .where(Conversation.id == conversation_id)

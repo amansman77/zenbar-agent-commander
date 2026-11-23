@@ -208,7 +208,9 @@ def serialize_conversation_summary(conv: Conversation) -> ConversationSummary:
     )
 
 
-def serialize_conversation_detail(conv: Conversation) -> ConversationDetail:
+def serialize_conversation_detail(
+    conv: Conversation, *, messages: list[ConversationMessage] | None = None, has_more_messages: bool = False
+) -> ConversationDetail:
     task = conv.task
     return ConversationDetail(
         id=conv.id,
@@ -226,7 +228,8 @@ def serialize_conversation_detail(conv: Conversation) -> ConversationDetail:
         task_pipeline_name=task.pipeline_name if task else None,
         task_pipeline_step_index=task.pipeline_step_index if task else None,
         task_pipeline_total_steps=task.pipeline_total_steps if task else None,
-        messages=[serialize_conversation_message(msg) for msg in conv.messages],
+        messages=[serialize_conversation_message(msg) for msg in (conv.messages if messages is None else messages)],
+        has_more_messages=has_more_messages,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
     )

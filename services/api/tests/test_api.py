@@ -3323,6 +3323,68 @@ def test_conversation_read_endpoint_clears_is_unread():
         assert next(c for c in listed if c["id"] == conversation["id"])["is_unread"] is True
 
 
+def test_conversation_message_pages_keep_order_across_timestamp_ties():
+    from app.models import ConversationMessage
+
+    conversation = client.post("/conversations", json={"title": "History"}).json()
+    conversation_id = conversation["id"]
+    path = f"/conversations/{conversation_id}"
+    timestamp = datetime.fromisoformat("2026-10-01T12:00:00+00:00")
+
+    def seed_messages(start, stop):
+        with SessionLocal() as db:
+            db.add_all(
+                ConversationMessage(
+                    id=f"{conversation_id}-{i:02}",
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=str(i),
+                    created_at=timestamp,
+                )
+                for i in reversed(range(start, stop))
+            )
+            db.commit()
+
+    seed_messages(0, 9)
+    latest = client.get(path, params={"limit": 5}).json()
+    assert [m["content"] for m in latest["messages"]] == ["4", "5", "6", "7", "8"]
+    assert latest["has_more_messages"] is True
+    before = latest["messages"][0]["id"]
+    after = latest["messages"][-1]["id"]
+
+    idle = client.get(path, params={"limit": 2, "after": after}).json()
+    assert idle["messages"] == []
+    assert idle["has_more_messages"] is False
+
+    seed_messages(9, 12)
+    older = client.get(path, params={"limit": 5, "before": before}).json()
+    assert [m["content"] for m in older["messages"]] == ["0", "1", "2", "3"]
+    assert older["has_more_messages"] is False
+
+    newer = client.get(path, params={"limit": 2, "after": after}).json()
+    assert [m["content"] for m in newer["messages"]] == ["9", "10"]
+    assert newer["has_more_messages"] is True
+    remaining = client.get(path, params={"limit": 2, "after": newer["messages"][-1]["id"]}).json()
+    assert [m["content"] for m in remaining["messages"]] == ["11"]
+    assert remaining["has_more_messages"] is False
+
+    from_empty = client.get(path, params={"limit": 2, "after": ""}).json()
+    assert [m["content"] for m in from_empty["messages"]] == ["0", "1"]
+
+    other = client.post("/conversations", json={"title": "Other"}).json()
+    assert client.get(f"/conversations/{other['id']}", params={"limit": 5, "before": before}).status_code == 422
+
+    renamed = client.patch(path, params={"metadata_only": "true"}, json={"title": "Renamed"})
+    assert renamed.json()["title"] == "Renamed"
+    assert renamed.json()["messages"] == []
+    sent = client.post(
+        f"{path}/messages", params={"metadata_only": "true"}, json={"role": "assistant", "content": "New"}
+    )
+    assert sent.status_code == 201
+    assert sent.json()["messages"] == []
+    assert len(client.get(path).json()["messages"]) == 13
+
+
 def test_rename_conversation_keeps_its_place_in_the_list():
     from app.repository import add_conversation_message
     from app.schemas import AddConversationMessageRequest

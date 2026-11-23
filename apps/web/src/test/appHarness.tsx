@@ -189,12 +189,24 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
   if (url.endsWith("/conversations")) {
     return new Response(JSON.stringify(fixtures.conversations), { status: 200 });
   }
-  const conversationMatch = url.match(/\/conversations\/([^/?]+)$/);
-  if (conversationMatch && fixtures.conversationDetail?.id === conversationMatch[1]) {
-    if (init?.method === "PATCH") {
-      fixtures.conversationDetail = { ...fixtures.conversationDetail, ...JSON.parse(String(init.body)) };
-    }
-    return new Response(JSON.stringify(fixtures.conversationDetail), { status: 200 });
+  const conversationMatch = new URL(url).pathname.match(/\/conversations\/([^/]+)$/);
+  const currentConversation = fixtures.conversationDetail;
+  if (conversationMatch && currentConversation?.id === conversationMatch[1]) {
+    const params = new URL(url).searchParams;
+    const detail = init?.method === "PATCH"
+      ? (fixtures.conversationDetail = { ...currentConversation, ...JSON.parse(String(init.body)) })
+      : currentConversation;
+    const history = detail.messages as Row[];
+    const limit = Number(params.get("limit"));
+    const after = params.get("after");
+    const before = params.get("before");
+    const index = history.findIndex((message) => message.id === (after ?? before));
+    const candidates = after !== null ? history.slice(index + 1) : before ? history.slice(0, index) : history;
+    const messages = params.has("metadata_only") ? [] :
+      limit ? (after !== null ? candidates.slice(0, limit) : candidates.slice(-limit)) : candidates;
+    return new Response(JSON.stringify({
+      ...detail, messages, has_more_messages: limit > 0 && candidates.length > limit,
+    }), { status: 200 });
   }
   if (url.endsWith("/tasks/task-1/diff")) {
     return new Response(JSON.stringify(fixtures.taskDiff), { status: 200 });

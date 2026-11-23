@@ -468,6 +468,7 @@ class ConversationDetail(BaseModel):
     task_pipeline_step_index: int | None = None
     task_pipeline_total_steps: int | None = None
     messages: list[ConversationMessageItem]
+    has_more_messages: bool = False
     created_at: UtcDatetime
     updated_at: UtcDatetime
 

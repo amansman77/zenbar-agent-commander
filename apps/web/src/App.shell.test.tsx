@@ -190,8 +190,6 @@ describe("App", () => {
   });
   describe("conversation model picker", () => {
     function openConversationWithoutTask(messages: Record<string, unknown>[] = []) {
-      // jsdom has no scrollIntoView; the conversation screen calls it on mount.
-      Element.prototype.scrollIntoView = vi.fn();
       window.localStorage.setItem(
         "zenbar:lastView",
         JSON.stringify({
@@ -227,6 +225,27 @@ describe("App", () => {
 
       expect(await screen.findByRole("option", { name: "GPT-5.4" })).toBeInTheDocument();
       expect(screen.queryByText(/모델 목록을 불러오지 못함/)).not.toBeInTheDocument();
+    });
+
+    it("opens with five messages and prepends earlier history", async () => {
+      const messages = Array.from({ length: 7 }, (_, index) => ({
+        id: `message-${index}`,
+        conversation_id: "conv-1",
+        role: "user",
+        content: `Message ${index}`,
+        created_at: new Date().toISOString(),
+      }));
+      openConversationWithoutTask(messages);
+
+      expect(await screen.findByText("Message 6")).toBeInTheDocument();
+      expect(screen.queryByText("Message 1")).not.toBeInTheDocument();
+      expect(screen.getAllByText(/^Message \d$/)).toHaveLength(5);
+      fireEvent.click(screen.getByRole("button", { name: "이전 메시지 불러오기" }));
+
+      expect(await screen.findByText("Message 0")).toBeInTheDocument();
+      expect(screen.getAllByText(/^Message \d$/).map((element) => element.textContent))
+        .toEqual(messages.map((message) => message.content));
+      expect(screen.queryByRole("button", { name: "이전 메시지 불러오기" })).not.toBeInTheDocument();
     });
 
     it("says the model list is unavailable instead of hiding the picker", async () => {
@@ -287,7 +306,7 @@ describe("App", () => {
     it("renames the conversation from its header", async () => {
       openConversationWithoutTask();
       const patchCalls = () =>
-        fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/conversations/conv-1") && init?.method === "PATCH");
+        fetchMock.mock.calls.filter(([url, init]) => new URL(String(url)).pathname.endsWith("/conversations/conv-1") && init?.method === "PATCH");
 
       fireEvent.click(await screen.findByRole("button", { name: "제목 변경" }));
       const input = screen.getByRole("textbox", { name: "대화 제목" });

@@ -211,7 +211,7 @@ function MessageCopyButton({ content }: { content: string }) {
 export function ChatBubble({ message, taskId = null, muted = false }: { message: ConversationMessageItem; taskId?: string | null; muted?: boolean }) {
   const isUser = message.role === "user";
   return (
-    <div className={`chat-message${isUser ? " chat-message-user" : ""}`}>
+    <div data-message-id={message.id} className={`chat-message${isUser ? " chat-message-user" : ""}`}>
       <div
         style={{
           maxWidth: "100%",

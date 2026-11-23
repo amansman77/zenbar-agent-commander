@@ -392,6 +392,7 @@ export interface ConversationDetail {
   task_pipeline_step_index?: number | null;
   task_pipeline_total_steps?: number | null;
   messages: ConversationMessageItem[];
+  has_more_messages: boolean;
   created_at: string;
   updated_at: string;
 }
