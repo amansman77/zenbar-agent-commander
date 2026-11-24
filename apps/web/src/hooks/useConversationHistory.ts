@@ -4,8 +4,8 @@ import type { ConversationDetail, ConversationMessageItem } from "@zenbar/shared
 import { api } from "../api";
 import { ACTIVE_TASK_STATUSES } from "../lib/notifications";
 
-const INITIAL_LIMIT = 5;
-const PAGE_LIMIT = 30;
+const HISTORY_PAGE_LIMIT = 5;
+const NEW_MESSAGES_LIMIT = 30;
 
 export function useConversationHistory(conversationId: string) {
   const queryClient = useQueryClient();
@@ -19,14 +19,14 @@ export function useConversationHistory(conversationId: string) {
     queryFn: async ({ signal }) => {
       const previous = queryClient.getQueryData<ConversationDetail>(queryKey);
       if (!previous) {
-        return api.getConversation(conversationId, { limit: INITIAL_LIMIT }, signal);
+        return api.getConversation(conversationId, { limit: HISTORY_PAGE_LIMIT }, signal);
       }
 
       // An empty cursor represents an already-open conversation that was
       // empty. Its first poll must start at the beginning even after a burst.
       const page = await api.getConversation(conversationId, {
         after: previous.messages[previous.messages.length - 1]?.id ?? "",
-        limit: PAGE_LIMIT,
+        limit: NEW_MESSAGES_LIMIT,
       }, signal);
       return {
         ...page,
@@ -42,7 +42,7 @@ export function useConversationHistory(conversationId: string) {
 
   const olderMutation = useMutation({
     mutationFn: ({ before }: { before: string; beforePrepend: () => void }) =>
-      api.getConversation(conversationId, { before, limit: PAGE_LIMIT }),
+      api.getConversation(conversationId, { before, limit: HISTORY_PAGE_LIMIT }),
     onSuccess: (page, { beforePrepend }) => {
       if (page.messages.length) beforePrepend();
       setOlder((previous) => ({

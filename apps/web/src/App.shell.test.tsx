@@ -227,8 +227,8 @@ describe("App", () => {
       expect(screen.queryByText(/모델 목록을 불러오지 못함/)).not.toBeInTheDocument();
     });
 
-    it("opens with five messages and prepends earlier history", async () => {
-      const messages = Array.from({ length: 7 }, (_, index) => ({
+    it("opens with five messages and prepends earlier history five at a time", async () => {
+      const messages = Array.from({ length: 12 }, (_, index) => ({
         id: `message-${index}`,
         conversation_id: "conv-1",
         role: "user",
@@ -237,13 +237,18 @@ describe("App", () => {
       }));
       openConversationWithoutTask(messages);
 
-      expect(await screen.findByText("Message 6")).toBeInTheDocument();
+      expect(await screen.findByText("Message 11")).toBeInTheDocument();
+      expect(screen.queryByText("Message 6")).not.toBeInTheDocument();
+      expect(screen.getAllByText(/^Message \d+$/)).toHaveLength(5);
+      fireEvent.click(screen.getByRole("button", { name: "이전 메시지 불러오기" }));
+
+      expect(await screen.findByText("Message 2")).toBeInTheDocument();
       expect(screen.queryByText("Message 1")).not.toBeInTheDocument();
-      expect(screen.getAllByText(/^Message \d$/)).toHaveLength(5);
+      expect(screen.getAllByText(/^Message \d+$/)).toHaveLength(10);
       fireEvent.click(screen.getByRole("button", { name: "이전 메시지 불러오기" }));
 
       expect(await screen.findByText("Message 0")).toBeInTheDocument();
-      expect(screen.getAllByText(/^Message \d$/).map((element) => element.textContent))
+      expect(screen.getAllByText(/^Message \d+$/).map((element) => element.textContent))
         .toEqual(messages.map((message) => message.content));
       expect(screen.queryByRole("button", { name: "이전 메시지 불러오기" })).not.toBeInTheDocument();
     });
