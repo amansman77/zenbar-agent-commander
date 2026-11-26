@@ -81,7 +81,7 @@ def get_conversation(db: Session, conversation_id: str, *, include_messages: boo
 
 
 def list_conversation_message_page(
-    db: Session, conversation_id: str, limit: int, *, before: str | None, after: str | None
+    db: Session, conversation_id: str, limit: int, *, before: str | None, after: str | None, user_turns: bool = False
 ) -> tuple[list[ConversationMessage], bool]:
     message = ConversationMessage
     stmt = select(message).where(message.conversation_id == conversation_id)
@@ -96,6 +96,25 @@ def list_conversation_message_page(
             raise ValueError("Invalid message cursor")
         key = (boundary.created_at, boundary.id)
         stmt = stmt.where(position > key if after is not None else position < key)
+
+    if user_turns:
+        # Find the start of the page among user messages, then fetch the full
+        # range so replies stay with the user message that precedes them.
+        turns = (
+            stmt.with_only_columns(message.created_at, message.id)
+            .where(message.role == "user")
+            .order_by(message.created_at.desc(), message.id.desc())
+            .limit(limit)
+        ).subquery()
+        start_of_page = select(turns.c.created_at, turns.c.id).order_by(turns.c.created_at, turns.c.id).limit(1)
+        rows = list(db.scalars(
+            stmt.where(position >= start_of_page.scalar_subquery()).order_by(message.created_at, message.id)
+        ))
+        if rows:
+            start = (rows[0].created_at, rows[0].id)
+            has_more = db.scalar(stmt.with_only_columns(message.id).where(position < start).limit(1)) is not None
+            return rows, has_more
+        # Assistant-only history before the first user message can still be paged.
 
     # Forward pages start at the cursor so bursts larger than a page cannot
     # leave a gap. Return each page in display order in both directions.

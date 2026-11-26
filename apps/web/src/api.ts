@@ -116,12 +116,13 @@ export const api = {
     }),
   getConversation: (
     id: string,
-    page: { limit: number; before?: string; after?: string },
+    page: { limit: number; before?: string; after?: string; userTurns?: boolean },
     signal?: AbortSignal,
   ) => {
     const params = new URLSearchParams({ limit: String(page.limit) });
     if (page.before !== undefined) params.set("before", page.before);
     if (page.after !== undefined) params.set("after", page.after);
+    if (page.userTurns) params.set("user_turns", "true");
     return request<ConversationDetail>(`/conversations/${id}?${params}`, { signal });
   },
   markConversationRead: (id: string) =>

@@ -19,7 +19,7 @@ export function useConversationHistory(conversationId: string) {
     queryFn: async ({ signal }) => {
       const previous = queryClient.getQueryData<ConversationDetail>(queryKey);
       if (!previous) {
-        return api.getConversation(conversationId, { limit: HISTORY_PAGE_LIMIT }, signal);
+        return api.getConversation(conversationId, { limit: HISTORY_PAGE_LIMIT, userTurns: true }, signal);
       }
 
       // An empty cursor represents an already-open conversation that was
@@ -42,7 +42,7 @@ export function useConversationHistory(conversationId: string) {
 
   const olderMutation = useMutation({
     mutationFn: ({ before }: { before: string; beforePrepend: () => void }) =>
-      api.getConversation(conversationId, { before, limit: HISTORY_PAGE_LIMIT }),
+      api.getConversation(conversationId, { before, limit: HISTORY_PAGE_LIMIT, userTurns: true }),
     onSuccess: (page, { beforePrepend }) => {
       if (page.messages.length) beforePrepend();
       setOlder((previous) => ({

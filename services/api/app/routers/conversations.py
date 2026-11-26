@@ -82,17 +82,22 @@ def get_conversation_detail(
     limit: int | None = Query(default=None, ge=1, le=100),
     before: str | None = Query(default=None, min_length=1),
     after: str | None = None,
+    user_turns: bool = False,
     db: Session = Depends(get_db),
 ):
     if (before is not None or after is not None) and (limit is None or (before is not None and after is not None)):
         raise HTTPException(status_code=422, detail="Specify a limit and at most one message cursor")
+    if user_turns and (limit is None or after is not None):
+        raise HTTPException(status_code=422, detail="User-turn pages require a limit and cannot use an after cursor")
     conv = get_conversation(db, conversation_id, include_messages=limit is None)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     if limit is None:
         return serialize_conversation_detail(conv)
     try:
-        messages, has_more = list_conversation_message_page(db, conversation_id, limit, before=before, after=after)
+        messages, has_more = list_conversation_message_page(
+            db, conversation_id, limit, before=before, after=after, user_turns=user_turns
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return serialize_conversation_detail(conv, messages=messages, has_more_messages=has_more)

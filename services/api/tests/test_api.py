@@ -3385,6 +3385,42 @@ def test_conversation_message_pages_keep_order_across_timestamp_ties():
     assert len(client.get(path).json()["messages"]) == 13
 
 
+def test_conversation_history_can_count_user_turns_instead_of_messages():
+    from app.models import ConversationMessage
+
+    conversation = client.post("/conversations", json={"title": "User-turn history"}).json()
+    conversation_id = conversation["id"]
+    path = f"/conversations/{conversation_id}"
+    timestamp = datetime.fromisoformat("2026-10-01T12:00:00+00:00")
+    messages = [("assistant", "Preamble")]
+    for index in range(12):
+        messages.extend([("user", f"Prompt {index}"), ("assistant", "Progress"), ("assistant", "Final")])
+    messages.pop()  # The last user turn is still in progress.
+    with SessionLocal() as db:
+        db.add_all(
+            ConversationMessage(
+                id=f"{conversation_id}-{index:02}",
+                conversation_id=conversation_id,
+                role=role,
+                content=content,
+                created_at=timestamp,
+            )
+            for index, (role, content) in enumerate(messages)
+        )
+        db.commit()
+
+    query = {"limit": 5, "user_turns": True}
+    cursor = {}
+    for expected in (messages[22:], messages[7:22], messages[1:7], messages[:1]):
+        response = client.get(path, params={**query, **cursor})
+        assert response.status_code == 200
+        page = response.json()
+        assert [(row["role"], row["content"]) for row in page["messages"]] == expected
+        assert page["has_more_messages"] is (expected != messages[:1])
+        cursor = {"before": page["messages"][0]["id"]}
+    assert client.get(path, params={**query, "after": ""}).status_code == 422
+
+
 def test_rename_conversation_keeps_its_place_in_the_list():
     from app.repository import add_conversation_message
     from app.schemas import AddConversationMessageRequest

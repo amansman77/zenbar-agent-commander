@@ -202,10 +202,18 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
     const before = params.get("before");
     const index = history.findIndex((message) => message.id === (after ?? before));
     const candidates = after !== null ? history.slice(index + 1) : before ? history.slice(0, index) : history;
-    const messages = params.has("metadata_only") ? [] :
-      limit ? (after !== null ? candidates.slice(0, limit) : candidates.slice(-limit)) : candidates;
+    let messages = candidates;
+    if (params.has("metadata_only")) {
+      messages = [];
+    } else if (params.has("user_turns")) {
+      const users = candidates.filter((message) => message.role === "user");
+      const firstUser = users[Math.max(0, users.length - limit)];
+      messages = firstUser ? candidates.slice(candidates.indexOf(firstUser)) : candidates.slice(-limit);
+    } else if (limit) {
+      messages = after !== null ? candidates.slice(0, limit) : candidates.slice(-limit);
+    }
     return new Response(JSON.stringify({
-      ...detail, messages, has_more_messages: limit > 0 && candidates.length > limit,
+      ...detail, messages, has_more_messages: limit > 0 && candidates.length > messages.length,
     }), { status: 200 });
   }
   if (url.endsWith("/tasks/task-1/diff")) {
