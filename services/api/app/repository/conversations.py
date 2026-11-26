@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.orm import Session, selectinload
 
@@ -80,6 +82,33 @@ def get_conversation(db: Session, conversation_id: str, *, include_messages: boo
     return db.scalars(stmt).first()
 
 
+def _message_position(db: Session, conversation_id: str, message_id: str) -> tuple[datetime, str]:
+    message = ConversationMessage
+    boundary = db.execute(
+        select(message.created_at, message.id)
+        .where(message.id == message_id, message.conversation_id == conversation_id)
+    ).one_or_none()
+    if boundary is None:
+        raise ValueError("Invalid message cursor")
+    return (boundary.created_at, boundary.id)
+
+
+def list_conversation_assistant_messages(
+    db: Session, conversation_id: str, first_id: str, last_id: str
+) -> list[ConversationMessage]:
+    message = ConversationMessage
+    first = _message_position(db, conversation_id, first_id)
+    last = _message_position(db, conversation_id, last_id)
+    if first > last:
+        raise ValueError("Invalid message range")
+    position = tuple_(message.created_at, message.id)
+    return list(db.scalars(
+        select(message)
+        .where(message.conversation_id == conversation_id, message.role == "assistant", position >= first, position <= last)
+        .order_by(message.created_at, message.id)
+    ))
+
+
 def list_conversation_message_page(
     db: Session, conversation_id: str, limit: int, *, before: str | None, after: str | None, user_turns: bool = False
 ) -> tuple[list[ConversationMessage], bool]:
@@ -88,13 +117,7 @@ def list_conversation_message_page(
     position = tuple_(message.created_at, message.id)
     cursor_id = after if after is not None else before
     if cursor_id:
-        boundary = db.execute(
-            select(message.created_at, message.id)
-            .where(message.id == cursor_id, message.conversation_id == conversation_id)
-        ).one_or_none()
-        if boundary is None:
-            raise ValueError("Invalid message cursor")
-        key = (boundary.created_at, boundary.id)
+        key = _message_position(db, conversation_id, cursor_id)
         stmt = stmt.where(position > key if after is not None else position < key)
 
     if user_turns:

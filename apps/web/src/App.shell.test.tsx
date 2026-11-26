@@ -247,6 +247,17 @@ describe("App", () => {
       expect(screen.getAllByText(/^Message \d+$/)).toHaveLength(5);
       expect(screen.getAllByText(/^Reply \d+$/)).toHaveLength(5);
       expect(screen.getAllByRole("button", { name: /중간 응답 1개 보기/ })).toHaveLength(5);
+      const intermediateRequests = () => fetchMock.mock.calls.filter(([url]) =>
+        new URL(String(url)).pathname.endsWith("/intermediate-messages"));
+      expect(intermediateRequests()).toHaveLength(0);
+      fireEvent.click(screen.getAllByRole("button", { name: /중간 응답 1개 보기/ })[0]);
+      await screen.findByText("Progress 7");
+      expect(intermediateRequests()).toHaveLength(1);
+      expect(screen.queryByText("Progress 8")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /중간 응답 1개 접기/ }));
+      fireEvent.click(screen.getAllByRole("button", { name: /중간 응답 1개 보기/ })[0]);
+      await screen.findByText("Progress 7");
+      expect(intermediateRequests()).toHaveLength(1);
       fireEvent.click(screen.getByRole("button", { name: "이전 메시지 불러오기" }));
 
       await screen.findByText("Message 2");

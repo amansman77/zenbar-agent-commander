@@ -23,6 +23,7 @@ from ..repository import (
     get_conversation,
     get_project,
     get_task,
+    list_conversation_assistant_messages,
     list_conversation_message_page,
     list_conversations,
     list_reviewed_pr_urls,
@@ -30,6 +31,7 @@ from ..repository import (
     rename_conversation,
     resolve_pipeline_steps,
     serialize_conversation_detail,
+    serialize_conversation_message,
     serialize_conversation_summary,
     set_conversation_task_id,
     set_pr_reviewed,
@@ -39,6 +41,7 @@ from ..runtime_registry import model_catalog_for, orchestrator
 from ..schemas import (
     AddConversationMessageRequest,
     ConversationDetail,
+    ConversationMessageItem,
     ConversationSummary,
     CreateConversationRequest,
     CreateTaskRequest,
@@ -83,6 +86,7 @@ def get_conversation_detail(
     before: str | None = Query(default=None, min_length=1),
     after: str | None = None,
     user_turns: bool = False,
+    defer_intermediates: bool = False,
     db: Session = Depends(get_db),
 ):
     if (before is not None or after is not None) and (limit is None or (before is not None and after is not None)):
@@ -100,7 +104,23 @@ def get_conversation_detail(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return serialize_conversation_detail(conv, messages=messages, has_more_messages=has_more)
+    return serialize_conversation_detail(
+        conv, messages=messages, has_more_messages=has_more, defer_intermediates=defer_intermediates
+    )
+
+
+@router.get("/conversations/{conversation_id}/intermediate-messages", response_model=list[ConversationMessageItem])
+def get_intermediate_messages(
+    conversation_id: str,
+    first_id: str = Query(min_length=1),
+    last_id: str = Query(min_length=1),
+    db: Session = Depends(get_db),
+):
+    try:
+        rows = list_conversation_assistant_messages(db, conversation_id, first_id, last_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return [serialize_conversation_message(row) for row in rows]
 
 
 @router.patch("/conversations/{conversation_id}", response_model=ConversationDetail)

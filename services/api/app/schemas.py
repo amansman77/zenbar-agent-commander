@@ -431,6 +431,7 @@ class ConversationMessageItem(BaseModel):
     role: str
     content: str
     created_at: UtcDatetime
+    is_deferred: bool = False
 
 
 class ConversationSummary(BaseModel):

@@ -356,6 +356,7 @@ export interface ConversationMessageItem {
   role: string;
   content: string;
   created_at: string;
+  is_deferred?: boolean;
 }
 
 export interface ConversationSummary {

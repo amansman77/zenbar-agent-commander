@@ -3,6 +3,7 @@ import type {
   ApproveTaskRequest,
   CommitTaskRequest,
   ConversationDetail,
+  ConversationMessageItem,
   ConversationSummary,
   CreateConversationRequest,
   UpdateConversationRequest,
@@ -123,7 +124,12 @@ export const api = {
     if (page.before !== undefined) params.set("before", page.before);
     if (page.after !== undefined) params.set("after", page.after);
     if (page.userTurns) params.set("user_turns", "true");
+    params.set("defer_intermediates", "true");
     return request<ConversationDetail>(`/conversations/${id}?${params}`, { signal });
+  },
+  getIntermediateMessages: (id: string, firstId: string, lastId: string, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ first_id: firstId, last_id: lastId });
+    return request<ConversationMessageItem[]>(`/conversations/${id}/intermediate-messages?${params}`, { signal });
   },
   markConversationRead: (id: string) =>
     request<void>(`/conversations/${id}/read`, { method: "POST" }),

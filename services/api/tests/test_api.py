@@ -3420,6 +3420,24 @@ def test_conversation_history_can_count_user_turns_instead_of_messages():
         cursor = {"before": page["messages"][0]["id"]}
     assert client.get(path, params={**query, "after": ""}).status_code == 422
 
+    page = client.get(path, params={**query, "defer_intermediates": True}).json()
+    assert len(page["messages"]) == len(messages[22:])
+    deferred = [row for row in page["messages"] if row["is_deferred"]]
+    assert len(deferred) == 4
+    assert all(row["role"] == "assistant" and row["content"] == "" for row in deferred)
+    assert page["messages"][2]["content"] == "Final"
+    assert page["messages"][-1]["content"] == "Progress"
+    first_id = deferred[0]["id"]
+    full = client.get(f"{path}/intermediate-messages", params={"first_id": first_id, "last_id": first_id})
+    assert [row["content"] for row in full.json()] == ["Progress"]
+    assert not full.json()[0]["is_deferred"]
+    another = client.post("/conversations", json={"title": "Other"}).json()
+    scoped = client.get(
+        f"/conversations/{another['id']}/intermediate-messages",
+        params={"first_id": first_id, "last_id": first_id},
+    )
+    assert scoped.status_code == 422
+
 
 def test_rename_conversation_keeps_its_place_in_the_list():
     from app.repository import add_conversation_message

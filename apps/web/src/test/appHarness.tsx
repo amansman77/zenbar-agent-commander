@@ -189,6 +189,14 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
   if (url.endsWith("/conversations")) {
     return new Response(JSON.stringify(fixtures.conversations), { status: 200 });
   }
+  const intermediateMatch = new URL(url).pathname.match(/\/conversations\/([^/]+)\/intermediate-messages$/);
+  if (intermediateMatch && fixtures.conversationDetail?.id === intermediateMatch[1]) {
+    const params = new URL(url).searchParams;
+    const messages = fixtures.conversationDetail.messages as Row[];
+    const first = messages.findIndex((message) => message.id === params.get("first_id"));
+    const last = messages.findIndex((message) => message.id === params.get("last_id"));
+    return new Response(JSON.stringify(messages.slice(first, last + 1).filter((message) => message.role === "assistant")));
+  }
   const conversationMatch = new URL(url).pathname.match(/\/conversations\/([^/]+)$/);
   const currentConversation = fixtures.conversationDetail;
   if (conversationMatch && currentConversation?.id === conversationMatch[1]) {
@@ -211,6 +219,12 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
       messages = firstUser ? candidates.slice(candidates.indexOf(firstUser)) : candidates.slice(-limit);
     } else if (limit) {
       messages = after !== null ? candidates.slice(0, limit) : candidates.slice(-limit);
+    }
+    if (params.has("defer_intermediates")) {
+      messages = messages.map((message, i) =>
+        message.role === "assistant" && messages[i + 1]?.role === "assistant"
+          ? { ...message, content: "", is_deferred: true }
+          : message);
     }
     return new Response(JSON.stringify({
       ...detail, messages, has_more_messages: limit > 0 && candidates.length > messages.length,
