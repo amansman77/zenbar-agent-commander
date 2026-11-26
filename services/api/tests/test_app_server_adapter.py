@@ -157,6 +157,7 @@ def test_unloaded_thread_resumes_before_next_turn(monkeypatch, tmp_path, followu
     state.start_request = _resume_request(tmp_path).model_copy(update={"prompt": "Original request"})
     state.current_turn_id = "old-turn"
     rpc = AsyncMock(side_effect=[
+        {"data": [{"id": "old-turn", "status": "interrupted"}]},
         {"thread": {"id": "thread-1", "status": {"type": "idle"}}},
         {"turn": {"id": "new-turn"}},
     ])
@@ -178,7 +179,8 @@ def test_unloaded_thread_resumes_before_next_turn(monkeypatch, tmp_path, followu
             await adapter.retry_task("thread-1")
 
     asyncio.run(scenario())
-    resume, start = rpc.await_args_list
+    lookup, resume, start = rpc.await_args_list
+    assert lookup.args[0] == "thread/turns/list"
     assert resume.args == (
         "thread/resume", {"threadId": "thread-1", "cwd": str(tmp_path), "excludeTurns": True},
     )
@@ -188,6 +190,35 @@ def test_unloaded_thread_resumes_before_next_turn(monkeypatch, tmp_path, followu
     expected = "New question" if followup else "Please continue with my most recent request."
     assert params["input"][0]["text"].endswith(expected)
     assert "Original request" not in params["input"][0]["text"]
+
+
+@pytest.mark.parametrize(
+    ("recorded_turn", "expected_type"),
+    [
+        ({"id": "turn-1", "status": "completed"}, "completed"),
+        ({"id": "older-turn", "status": "completed"}, "failed"),
+    ],
+)
+def test_unload_checks_the_recorded_outcome_of_the_current_turn(monkeypatch, recorded_turn, expected_type):
+    adapter, state = _adapter_with_session()
+    state.current_turn_id = "turn-1"
+    rpc = AsyncMock(return_value={"data": [recorded_turn]})
+    monkeypatch.setattr(adapter, "_rpc", rpc)
+
+    async def scenario():
+        await adapter._handle_notification({
+            "method": "thread/status/changed",
+            "params": {"threadId": "thread-1", "status": {"type": "notLoaded"}},
+        })
+        stream = adapter.subscribe_events("thread-1")
+        assert (await anext(stream)).type == expected_type
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+
+    asyncio.run(scenario())
+    rpc.assert_awaited_once_with("thread/turns/list", {
+        "threadId": "thread-1", "limit": 1, "sortDirection": "desc", "itemsView": "notLoaded",
+    })
 
 
 def test_only_missing_transcript_is_treated_as_stale(monkeypatch, tmp_path):

@@ -112,6 +112,7 @@ class SessionState:
     reattaching: bool = False
     resumed_with_live_turn: bool = False
     unloaded: bool = False
+    last_terminal_turn_id: str | None = None
 
 
 class AppServerWebSocketAdapter(RuntimeAdapter):
@@ -165,16 +166,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                 if active and state.current_turn_id is None:
                     turns = list(reversed(thread.get("turns") or []))
                     if not turns:
-                        page = await asyncio.wait_for(
-                            self._rpc("thread/turns/list", {
-                                "threadId": session_id,
-                                "limit": 1,
-                                "sortDirection": "desc",
-                                "itemsView": "notLoaded",
-                            }),
-                            timeout=10,
-                        )
-                        turns = page.get("data") or []
+                        turns = await self._latest_thread_turns(session_id)
                     # A live notification can set the ID while the page is loading.
                     if state.current_turn_id is None:
                         state.current_turn_id = next(
@@ -203,6 +195,18 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
 
     def has_running_turn(self, session_id: str) -> bool:
         return self._require_session(session_id).resumed_with_live_turn
+
+    async def _latest_thread_turns(self, session_id: str) -> list[dict[str, Any]]:
+        page = await asyncio.wait_for(
+            self._rpc("thread/turns/list", {
+                "threadId": session_id,
+                "limit": 1,
+                "sortDirection": "desc",
+                "itemsView": "notLoaded",
+            }),
+            timeout=10,
+        )
+        return page.get("data") or []
 
     async def start_task(self, request: RuntimeStartRequest) -> RuntimeSession:
         await self._ensure_connection()
@@ -498,7 +502,17 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                 )
                 continue
             if (event.payload or {}).get("reason") == "thread_status_notLoaded":
-                if state.unloaded:
+                turn_id = (event.payload or {}).get("turnId")
+                if state.unloaded and turn_id:
+                    # A socket can lose the completion notification even
+                    # though Codex saved the result before unloading.
+                    try:
+                        turns = await self._latest_thread_turns(session_id)
+                    except (OSError, RuntimeError, WebSocketException):
+                        turns = []
+                    if any(turn.get("id") == turn_id and turn.get("status") == "completed" for turn in turns):
+                        event = RuntimeEvent(type="completed", message="Turn completed", payload=event.payload)
+                if state.unloaded and not state.reattaching:
                     yield event
                     if state.unloaded and not state.reattaching:
                         return
@@ -668,9 +682,12 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             status = params.get("status", {})
             status_type = status.get("type", "unknown")
             if status_type in ("notLoaded", "systemError"):
+                event_payload = {"reason": f"thread_status_{status_type}"}
                 if status_type == "notLoaded":
                     if state.unloaded:
                         return
+                    if state.current_turn_id and state.current_turn_id != state.last_terminal_turn_id:
+                        event_payload["turnId"] = state.current_turn_id
                     state.unloaded = True
                     state.current_turn_id = None
                     state.resumed_with_live_turn = False
@@ -695,7 +712,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
                             f"Codex App Server reports this session as '{status_type}' -- "
                             "it has stopped processing this turn. Retry the task to continue."
                         ),
-                        payload={"reason": f"thread_status_{status_type}"},
+                        payload=event_payload,
                     )
                 )
                 return
@@ -717,6 +734,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         if method == "turn/completed":
             turn = params.get("turn", {})
             state.current_turn_id = turn.get("id", state.current_turn_id)
+            state.last_terminal_turn_id = state.current_turn_id
             if turn.get("error"):
                 await state.queue.put(RuntimeEvent(type="failed", message=json.dumps(turn["error"])))
             else:
