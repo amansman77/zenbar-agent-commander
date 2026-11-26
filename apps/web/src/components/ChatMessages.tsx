@@ -1,6 +1,7 @@
 // Conversation message bubbles and assistant message grouping.
 
 import { Children, useEffect, useRef, useState, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
@@ -211,7 +212,7 @@ function MessageCopyButton({ content }: { content: string }) {
 export function ChatBubble({ message, taskId = null, muted = false }: { message: ConversationMessageItem; taskId?: string | null; muted?: boolean }) {
   const isUser = message.role === "user";
   return (
-    <div className={`chat-message${isUser ? " chat-message-user" : ""}`}>
+    <div data-message-id={message.id} className={`chat-message${isUser ? " chat-message-user" : ""}`}>
       <div
         style={{
           maxWidth: "100%",
@@ -258,6 +259,16 @@ export function AssistantMessageGroup({
   taskId?: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const deferred = intermediates.filter((message) => message.is_deferred);
+  const firstId = deferred[0]?.id;
+  const lastId = deferred[deferred.length - 1]?.id;
+  const { data, isFetching, isError, refetch } = useQuery({
+    queryKey: ["conversation-intermediate-messages", final.conversation_id, firstId, lastId],
+    enabled: expanded && Boolean(firstId),
+    queryFn: ({ signal }) => api.getIntermediateMessages(final.conversation_id, firstId!, lastId!, signal),
+    staleTime: Infinity,
+  });
+  const loaded = new Map(data?.map((message) => [message.id, message]));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
@@ -281,7 +292,14 @@ export function AssistantMessageGroup({
             <span>{expanded ? "▾" : "▸"}</span>
             <span>중간 응답 {intermediates.length}개 {expanded ? "접기" : "보기"}</span>
           </button>
-          {expanded && intermediates.map((message) => <ChatBubble key={message.id} message={message} taskId={taskId} muted />)}
+          {expanded && isFetching && <span role="status">중간 응답을 불러오는 중…</span>}
+          {expanded && isError && (
+            <button type="button" className="secondary" onClick={() => void refetch()}>중간 응답 다시 불러오기</button>
+          )}
+          {expanded && intermediates.map((message) => {
+            const fullMessage = message.is_deferred ? loaded.get(message.id) : message;
+            return fullMessage && <ChatBubble key={message.id} message={fullMessage} taskId={taskId} muted />;
+          })}
         </div>
       )}
       <ChatBubble message={final} taskId={taskId} />

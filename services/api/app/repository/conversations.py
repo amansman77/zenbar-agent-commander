@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from sqlalchemy import delete, func, select, update
+from datetime import datetime
+
+from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.orm import Session, selectinload
 
 from ..models import Conversation, ConversationMessage, ConversationPrReview, Task, utcnow
@@ -59,12 +61,11 @@ def count_conversations_by_project(db: Session) -> dict[str | None, int]:
     return dict(db.execute(stmt).all())
 
 
-def get_conversation(db: Session, conversation_id: str) -> Conversation | None:
+def get_conversation(db: Session, conversation_id: str, *, include_messages: bool = True) -> Conversation | None:
     stmt = (
         select(Conversation)
         .where(Conversation.id == conversation_id)
         .options(
-            selectinload(Conversation.messages),
             selectinload(Conversation.project),
             selectinload(Conversation.task).selectinload(Task.project),
         )
@@ -76,7 +77,80 @@ def get_conversation(db: Session, conversation_id: str) -> Conversation | None:
         # later call in the same Session.
         .execution_options(populate_existing=True)
     )
+    if include_messages:
+        stmt = stmt.options(selectinload(Conversation.messages))
     return db.scalars(stmt).first()
+
+
+def _message_position(db: Session, conversation_id: str, message_id: str) -> tuple[datetime, str]:
+    message = ConversationMessage
+    boundary = db.execute(
+        select(message.created_at, message.id)
+        .where(message.id == message_id, message.conversation_id == conversation_id)
+    ).one_or_none()
+    if boundary is None:
+        raise ValueError("Invalid message cursor")
+    return (boundary.created_at, boundary.id)
+
+
+def list_conversation_assistant_messages(
+    db: Session, conversation_id: str, first_id: str, last_id: str
+) -> list[ConversationMessage]:
+    message = ConversationMessage
+    first = _message_position(db, conversation_id, first_id)
+    last = _message_position(db, conversation_id, last_id)
+    if first > last:
+        raise ValueError("Invalid message range")
+    position = tuple_(message.created_at, message.id)
+    return list(db.scalars(
+        select(message)
+        .where(message.conversation_id == conversation_id, message.role == "assistant", position >= first, position <= last)
+        .order_by(message.created_at, message.id)
+    ))
+
+
+def list_conversation_message_page(
+    db: Session, conversation_id: str, limit: int, *, before: str | None, after: str | None, user_turns: bool = False
+) -> tuple[list[ConversationMessage], bool]:
+    message = ConversationMessage
+    stmt = select(message).where(message.conversation_id == conversation_id)
+    position = tuple_(message.created_at, message.id)
+    cursor_id = after if after is not None else before
+    if cursor_id:
+        key = _message_position(db, conversation_id, cursor_id)
+        stmt = stmt.where(position > key if after is not None else position < key)
+
+    if user_turns:
+        # Find the start of the page among user messages, then fetch the full
+        # range so replies stay with the user message that precedes them.
+        turns = (
+            stmt.with_only_columns(message.created_at, message.id)
+            .where(message.role == "user")
+            .order_by(message.created_at.desc(), message.id.desc())
+            .limit(limit)
+        ).subquery()
+        start_of_page = select(turns.c.created_at, turns.c.id).order_by(turns.c.created_at, turns.c.id).limit(1)
+        rows = list(db.scalars(
+            stmt.where(position >= start_of_page.scalar_subquery()).order_by(message.created_at, message.id)
+        ))
+        if rows:
+            start = (rows[0].created_at, rows[0].id)
+            has_more = db.scalar(stmt.with_only_columns(message.id).where(position < start).limit(1)) is not None
+            return rows, has_more
+        # Assistant-only history before the first user message can still be paged.
+
+    # Forward pages start at the cursor so bursts larger than a page cannot
+    # leave a gap. Return each page in display order in both directions.
+    if after is not None:
+        stmt = stmt.order_by(message.created_at, message.id)
+    else:
+        stmt = stmt.order_by(message.created_at.desc(), message.id.desc())
+    rows = list(db.scalars(stmt.limit(limit + 1)))
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    if after is None:
+        rows.reverse()
+    return rows, has_more
 
 
 def get_conversation_for_task(db: Session, task_id: str) -> Conversation | None:
@@ -166,8 +240,14 @@ def add_conversation_message(
     db.add(msg)
     conv = db.get(Conversation, conversation_id)
     if conv:
-        if not conv.messages and conv.title == "New Conversation":
-            conv.title = payload.content[:50].strip() or "New Conversation"
+        if conv.title == "New Conversation":
+            existing_message_id = db.scalar(
+                select(ConversationMessage.id)
+                .where(ConversationMessage.conversation_id == conversation_id)
+                .limit(1)
+            )
+            if existing_message_id is None:
+                conv.title = payload.content[:50].strip() or "New Conversation"
         db.execute(
             update(Conversation)
             .where(Conversation.id == conversation_id)

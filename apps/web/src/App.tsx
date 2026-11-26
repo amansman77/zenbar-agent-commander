@@ -411,6 +411,7 @@ export function App() {
 
           {mobileScreen === "conversation-detail" && selectedConversationId ? (
             <ConversationDetailScreen
+              key={selectedConversationId}
               conversationId={selectedConversationId}
               onBack={() => setMobileScreen("conversations")}
             />

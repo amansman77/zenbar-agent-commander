@@ -2,7 +2,7 @@
 // it, and the task-state affordances that sit inline with the messages
 // (approve/stop while a task runs, retry after it fails).
 
-import type { Dispatch, RefObject, SetStateAction } from "react";
+import { useMemo, type Dispatch, type SetStateAction } from "react";
 import type {
   ConversationDetail,
   ConversationMessageItem,
@@ -11,11 +11,30 @@ import type {
 } from "@zenbar/shared";
 import { AssistantMessageGroup, ChatBubble } from "./ChatMessages";
 import { GroupedDiff, PrDiffSection } from "./DiffView";
+import { useTranscriptScroll } from "../hooks/useTranscriptScroll";
 
 /** One user message, or a run of assistant messages ending in the final one. */
-export type MessageGroup =
+type MessageGroup =
   | { kind: "user"; message: ConversationMessageItem }
   | { kind: "assistant"; intermediates: ConversationMessageItem[]; final: ConversationMessageItem };
+
+function groupMessages(messages: ConversationMessageItem[], seenThrough: string | null): MessageGroup[] {
+  const groups: MessageGroup[] = [];
+  for (const message of messages) {
+    const previous = groups[groups.length - 1];
+    // A run of assistant messages keeps its earlier responses collapsed.
+    if (message.role === "assistant" && previous?.kind === "assistant") {
+      previous.intermediates.push(previous.final);
+      previous.final = message;
+    } else if (message.role === "assistant") {
+      groups.push({ kind: "assistant", intermediates: [], final: message });
+    } else {
+      groups.push({ kind: "user", message });
+    }
+    if (message.id === seenThrough) break;
+  }
+  return groups;
+}
 
 type TaskActionMutation = { mutate: () => void; isPending: boolean };
 
@@ -23,8 +42,11 @@ export type ConversationTranscriptProps = {
   conversationId: string;
   conversation: ConversationDetail | undefined;
   isLoading: boolean;
-  messageGroups: MessageGroup[];
-  messagesEndRef: RefObject<HTMLDivElement | null>;
+  messages: ConversationMessageItem[];
+  hasOlder: boolean;
+  isLoadingOlder: boolean;
+  olderLoadFailed: boolean;
+  loadOlder: (beforePrepend: () => void) => void;
 
   // "chat" shows the messages; "diff" shows the task's changes instead.
   activeTab: "chat" | "diff";
@@ -48,8 +70,11 @@ export function ConversationTranscript({
   conversationId,
   conversation,
   isLoading,
-  messageGroups,
-  messagesEndRef,
+  messages,
+  hasOlder,
+  isLoadingOlder,
+  olderLoadFailed,
+  loadOlder,
   activeTab,
   diffData,
   diffExpanded,
@@ -65,13 +90,27 @@ export function ConversationTranscript({
   stopTaskMutation,
   retryTaskMutation,
 }: ConversationTranscriptProps) {
+  const scroll = useTranscriptScroll(
+    activeTab, Boolean(conversation), messages[0]?.id, messages[messages.length - 1]?.id,
+    conversation?.task_status, loadOlder, olderLoadFailed,
+  );
+  // Keep the last visible assistant response in place while the reader is
+  // away from the bottom, even if the next response would collapse it.
+  const messageGroups = useMemo(() => groupMessages(messages, scroll.seenThrough), [messages, scroll.seenThrough]);
+
   return (
-  <div style={{ flex: 1, overflowY: "auto", padding: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
+  <div className="conversation-transcript">
+  <div key={activeTab} ref={scroll.scrollRef} onScroll={scroll.handleScroll} className="conversation-transcript-scroll">
     {isLoading && <p className="empty-state">Loading...</p>}
-    {!isLoading && conversation?.messages.length === 0 && activeTab === "chat" && (
+    {!isLoading && conversation && messages.length === 0 && activeTab === "chat" && (
       <p className="empty-state" style={{ textAlign: "center", marginTop: "2rem" }}>
         Start typing below to begin the conversation.
       </p>
+    )}
+    {activeTab === "chat" && hasOlder && (
+      <button type="button" className="secondary conversation-history-button" onClick={scroll.requestOlder} disabled={isLoadingOlder}>
+        {isLoadingOlder ? "이전 메시지 불러오는 중…" : olderLoadFailed ? "이전 메시지 다시 불러오기" : "이전 메시지 불러오기"}
+      </button>
     )}
     {activeTab === "diff" &&
       prInfos?.map((prInfo) => (
@@ -229,7 +268,10 @@ export function ConversationTranscript({
         </div>
       </div>
     )}
-    <div ref={messagesEndRef} />
+  </div>
+    {activeTab === "chat" && scroll.hasNewMessages && (
+      <button type="button" className="conversation-new-messages" onClick={scroll.showLatest}>새 메시지 ↓</button>
+    )}
   </div>
   );
 }

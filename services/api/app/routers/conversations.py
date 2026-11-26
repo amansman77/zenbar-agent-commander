@@ -23,12 +23,15 @@ from ..repository import (
     get_conversation,
     get_project,
     get_task,
+    list_conversation_assistant_messages,
+    list_conversation_message_page,
     list_conversations,
     list_reviewed_pr_urls,
     mark_conversation_read,
     rename_conversation,
     resolve_pipeline_steps,
     serialize_conversation_detail,
+    serialize_conversation_message,
     serialize_conversation_summary,
     set_conversation_task_id,
     set_pr_reviewed,
@@ -38,6 +41,7 @@ from ..runtime_registry import model_catalog_for, orchestrator
 from ..schemas import (
     AddConversationMessageRequest,
     ConversationDetail,
+    ConversationMessageItem,
     ConversationSummary,
     CreateConversationRequest,
     CreateTaskRequest,
@@ -76,24 +80,63 @@ def post_conversation(payload: CreateConversationRequest = CreateConversationReq
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetail)
-def get_conversation_detail(conversation_id: str, db: Session = Depends(get_db)):
-    conv = get_conversation(db, conversation_id)
+def get_conversation_detail(
+    conversation_id: str,
+    limit: int | None = Query(default=None, ge=1, le=100),
+    before: str | None = Query(default=None, min_length=1),
+    after: str | None = None,
+    user_turns: bool = False,
+    defer_intermediates: bool = False,
+    db: Session = Depends(get_db),
+):
+    if (before is not None or after is not None) and (limit is None or (before is not None and after is not None)):
+        raise HTTPException(status_code=422, detail="Specify a limit and at most one message cursor")
+    if user_turns and (limit is None or after is not None):
+        raise HTTPException(status_code=422, detail="User-turn pages require a limit and cannot use an after cursor")
+    conv = get_conversation(db, conversation_id, include_messages=limit is None)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return serialize_conversation_detail(conv)
+    if limit is None:
+        return serialize_conversation_detail(conv)
+    try:
+        messages, has_more = list_conversation_message_page(
+            db, conversation_id, limit, before=before, after=after, user_turns=user_turns
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return serialize_conversation_detail(
+        conv, messages=messages, has_more_messages=has_more, defer_intermediates=defer_intermediates
+    )
+
+
+@router.get("/conversations/{conversation_id}/intermediate-messages", response_model=list[ConversationMessageItem])
+def get_intermediate_messages(
+    conversation_id: str,
+    first_id: str = Query(min_length=1),
+    last_id: str = Query(min_length=1),
+    db: Session = Depends(get_db),
+):
+    try:
+        rows = list_conversation_assistant_messages(db, conversation_id, first_id, last_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return [serialize_conversation_message(row) for row in rows]
 
 
 @router.patch("/conversations/{conversation_id}", response_model=ConversationDetail)
-def patch_conversation(conversation_id: str, payload: UpdateConversationRequest, db: Session = Depends(get_db)):
-    if get_conversation(db, conversation_id) is None:
+def patch_conversation(
+    conversation_id: str, payload: UpdateConversationRequest, metadata_only: bool = False, db: Session = Depends(get_db)
+):
+    if get_conversation(db, conversation_id, include_messages=False) is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     rename_conversation(db, conversation_id, payload.title)
-    return serialize_conversation_detail(get_conversation(db, conversation_id))
+    conv = get_conversation(db, conversation_id, include_messages=not metadata_only)
+    return serialize_conversation_detail(conv, messages=[] if metadata_only else None)
 
 
 @router.post("/conversations/{conversation_id}/read", status_code=204)
 def post_conversation_read(conversation_id: str, db: Session = Depends(get_db)):
-    conv = get_conversation(db, conversation_id)
+    conv = get_conversation(db, conversation_id, include_messages=False)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     mark_conversation_read(db, conversation_id)
@@ -189,9 +232,10 @@ def delete_conversation_endpoint(conversation_id: str, db: Session = Depends(get
 async def post_conversation_message(
     conversation_id: str,
     payload: AddConversationMessageRequest,
+    metadata_only: bool = False,
     db: Session = Depends(get_db),
 ):
-    conv = get_conversation(db, conversation_id)
+    conv = get_conversation(db, conversation_id, include_messages=False)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -228,7 +272,7 @@ async def post_conversation_message(
     add_conversation_message(db, conversation_id, payload)
 
     if payload.role == "user":
-        conv = get_conversation(db, conversation_id)
+        conv = get_conversation(db, conversation_id, include_messages=False)
         selected_skill = payload.selected_skill or None
         project = get_project(db, conv.project_id) if conv.project_id else None
         if project is None:
@@ -293,5 +337,5 @@ async def post_conversation_message(
     # stale pre-pipeline snapshot without an explicit commit here to end the
     # transaction and let the next read start a fresh one that can see it.
     db.commit()
-    conv = get_conversation(db, conversation_id)
-    return serialize_conversation_detail(conv)
+    conv = get_conversation(db, conversation_id, include_messages=not metadata_only)
+    return serialize_conversation_detail(conv, messages=[] if metadata_only else None)

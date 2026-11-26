@@ -136,6 +136,40 @@
 /* A chat bubble plus its copy button underneath, on the bubble's own side.
    The 85% cap lives here rather than on the bubble so the button lines up
    with the bubble's edge. */
+.conversation-transcript {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.conversation-transcript-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  gap: 8px;
+}
+
+.conversation-transcript-scroll > * {
+  flex-shrink: 0;
+}
+
+.conversation-history-button {
+  align-self: center;
+}
+
+.conversation-new-messages {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  box-shadow: 0 2px 8px #0002;
+}
+
 .chat-message {
   display: flex;
   flex-direction: column;

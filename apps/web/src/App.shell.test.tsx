@@ -190,8 +190,6 @@ describe("App", () => {
   });
   describe("conversation model picker", () => {
     function openConversationWithoutTask(messages: Record<string, unknown>[] = []) {
-      // jsdom has no scrollIntoView; the conversation screen calls it on mount.
-      Element.prototype.scrollIntoView = vi.fn();
       window.localStorage.setItem(
         "zenbar:lastView",
         JSON.stringify({
@@ -227,6 +225,51 @@ describe("App", () => {
 
       expect(await screen.findByRole("option", { name: "GPT-5.4" })).toBeInTheDocument();
       expect(screen.queryByText(/모델 목록을 불러오지 못함/)).not.toBeInTheDocument();
+    });
+
+    it("opens with five user messages and keeps replies with their prompts when paging", async () => {
+      const turns = Array.from({ length: 12 }, (_, index) => ({
+        id: `user-${index}`,
+        conversation_id: "conv-1",
+        role: "user",
+        content: `Message ${index}`,
+        created_at: new Date().toISOString(),
+      }));
+      const messages = turns.flatMap((user, index) => [
+        user,
+        { ...user, id: `progress-${index}`, role: "assistant", content: `Progress ${index}` },
+        { ...user, id: `reply-${index}`, role: "assistant", content: `Reply ${index}` },
+      ]);
+      openConversationWithoutTask(messages);
+
+      await screen.findByText("Message 11");
+      expect(screen.queryByText("Message 6")).not.toBeInTheDocument();
+      expect(screen.getAllByText(/^Message \d+$/)).toHaveLength(5);
+      expect(screen.getAllByText(/^Reply \d+$/)).toHaveLength(5);
+      expect(screen.getAllByRole("button", { name: /중간 응답 1개 보기/ })).toHaveLength(5);
+      const intermediateRequests = () => fetchMock.mock.calls.filter(([url]) =>
+        new URL(String(url)).pathname.endsWith("/intermediate-messages"));
+      expect(intermediateRequests()).toHaveLength(0);
+      fireEvent.click(screen.getAllByRole("button", { name: /중간 응답 1개 보기/ })[0]);
+      await screen.findByText("Progress 7");
+      expect(intermediateRequests()).toHaveLength(1);
+      expect(screen.queryByText("Progress 8")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /중간 응답 1개 접기/ }));
+      fireEvent.click(screen.getAllByRole("button", { name: /중간 응답 1개 보기/ })[0]);
+      await screen.findByText("Progress 7");
+      expect(intermediateRequests()).toHaveLength(1);
+      fireEvent.click(screen.getByRole("button", { name: "이전 메시지 불러오기" }));
+
+      await screen.findByText("Message 2");
+      expect(screen.getByText("Reply 2")).toBeInTheDocument();
+      expect(screen.queryByText("Message 1")).not.toBeInTheDocument();
+      expect(screen.getAllByText(/^Message \d+$/)).toHaveLength(10);
+      fireEvent.click(screen.getByRole("button", { name: "이전 메시지 불러오기" }));
+
+      expect(await screen.findByText("Message 0")).toBeInTheDocument();
+      expect(screen.getAllByText(/^Message \d+$/).map((element) => element.textContent))
+        .toEqual(turns.map((message) => message.content));
+      expect(screen.queryByRole("button", { name: "이전 메시지 불러오기" })).not.toBeInTheDocument();
     });
 
     it("says the model list is unavailable instead of hiding the picker", async () => {
@@ -287,7 +330,7 @@ describe("App", () => {
     it("renames the conversation from its header", async () => {
       openConversationWithoutTask();
       const patchCalls = () =>
-        fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/conversations/conv-1") && init?.method === "PATCH");
+        fetchMock.mock.calls.filter(([url, init]) => new URL(String(url)).pathname.endsWith("/conversations/conv-1") && init?.method === "PATCH");
 
       fireEvent.click(await screen.findByRole("button", { name: "제목 변경" }));
       const input = screen.getByRole("textbox", { name: "대화 제목" });
