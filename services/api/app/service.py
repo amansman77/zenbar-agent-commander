@@ -54,7 +54,7 @@ from .resume_context import (
 from .attachments import message_runtime_content
 from . import workspace_git
 from .codex_profiles import get_profile
-from .runtime import ENGINE_LABELS, RuntimeAdapter
+from .runtime import ENGINE_LABELS, RuntimeAdapter, RuntimeSessionReattachError
 from .schemas import (
     RespondTaskRequest,
     RuntimeEvent,
@@ -160,8 +160,9 @@ class TaskOrchestrator:
             title=task.title,
             prompt="",
             engine=task.engine,
-            model=task.model or "default",
+            model=task.effective_model or task.model or "default",
             profile=task.profile,
+            reasoning_effort=task.reasoning_effort if task.reasoning_effort in {"low", "medium", "high"} else "medium",
             repo_path=project.repo_path if project else task.workspace_path,
             working_directory=task.workspace_path,
             default_branch=project.default_branch if project else "",
@@ -172,9 +173,10 @@ class TaskOrchestrator:
         return await adapter.reattach_session(session_id, request)
 
     def ensure_runtime_stream(self, task_id: str, session_id: str | None) -> None:
-        if not self._adapter_for_task_id(task_id).stream_in_background:
-            return
         if not session_id:
+            return
+        adapter = self._adapter_for_task_id(task_id)
+        if not adapter.stream_in_background or not adapter.knows_session(session_id):
             return
         try:
             loop = asyncio.get_running_loop()
@@ -306,6 +308,7 @@ class TaskOrchestrator:
             raise RuntimeError("Task has no runtime session")
         adapter = self._adapter_for(task)
         try:
+            await self._reattach_session_if_lost(db, task)
             await adapter.approve_task(task.runtime_session_id)
         except RuntimeError as exc:
             # See _is_stale_session_error's own comment for the two shapes
@@ -383,6 +386,7 @@ class TaskOrchestrator:
             raise RuntimeError("Task is not waiting for user input")
         adapter = self._adapter_for(task)
         try:
+            await self._reattach_session_if_lost(db, task)
             await adapter.respond_task(task.runtime_session_id, task.pending_request_id, payload.answers)
         except RuntimeError as exc:
             # See _is_stale_session_error's own comment for the two shapes
@@ -430,8 +434,8 @@ class TaskOrchestrator:
             refreshed = self._require_task(db, task.id, "stopping a task with no session")
             return set_task_status(db, refreshed, "stopped")
         adapter = self._adapter_for(task)
-        await self._reattach_session_if_lost(db, task)
         try:
+            await self._reattach_session_if_lost(db, task)
             # turn/interrupt usually answers promptly even on a wedged turn,
             # but not always: a turn blocked on a server request nobody
             # answered left this call hanging with no timeout, so the one
@@ -733,9 +737,12 @@ class TaskOrchestrator:
             return task
         runtime_diff: TaskDiff | None = None
         if task.runtime_session_id:
-            await self._reattach_session_if_lost(db, task)
             try:
+                await self._reattach_session_if_lost(db, task)
                 runtime_diff = await self._adapter_for(task).get_diff(task.runtime_session_id)
+            except RuntimeSessionReattachError:
+                # The workspace diff is still available when the runtime is down.
+                pass
             except RuntimeError as exc:
                 # See _is_stale_session_error's own comment for the two
                 # shapes this recognizes.
@@ -756,43 +763,44 @@ class TaskOrchestrator:
     async def reconcile_task_runtime_session(self, db: Session, task: Task) -> Task:
         if task.status not in self.ACTIVE_TASK_STATUSES:
             return task
-        if not task.runtime_session_id:
+        session_id = task.runtime_session_id
+        if not session_id:
             return task
         adapter = self._adapter_for(task)
-        was_known = adapter.knows_session(task.runtime_session_id)
-        reattached = not was_known and await self._reattach_session_if_lost(db, task)
-        if reattached and not adapter.has_running_turn(task.runtime_session_id):
-            # The session is back, but the turn that was running is not: a
-            # CLI engine's turn is a child process of the API, and it died in
-            # the restart. Say so, and keep the session id, so a retry or the
-            # next message resumes the same conversation instead of starting
-            # one from a summary.
+        reattached = False
+        if not adapter.knows_session(session_id):
+            try:
+                reattached = await self._reattach_session_if_lost(db, task)
+            except RuntimeSessionReattachError:
+                # An unavailable App Server must not fail every active task
+                # or block API startup. The next task read can try again.
+                logger.warning("Could not check runtime session for task %s", task.id, exc_info=True)
+                return task
+            db.expire_all()
+            task = self._require_task(db, task.id, "reattaching runtime session")
+            if task.runtime_session_id != session_id or task.status not in self.ACTIVE_TASK_STATUSES:
+                return task
+        if reattached and not adapter.has_running_turn(session_id):
+            # Keep the thread id so the next message or retry has the full
+            # conversation even when the previous turn can no longer be watched.
             append_event(
                 db,
                 task,
                 RuntimeEvent(
                     type="failed",
-                    message="The running turn was interrupted by an API restart. Retry or send a message to continue the same session.",
+                    message="No running turn could be recovered after the API restart. Retry or send a message to continue the same session.",
                     payload={"reason": "turn_interrupted_by_restart"},
                 ),
             )
             db.expire_all()
             return self._require_task(db, task.id, "marking an interrupted turn")
         try:
-            await adapter.get_diff(task.runtime_session_id)
+            await adapter.get_diff(session_id)
             return task
         except RuntimeError as exc:
-            # See _is_stale_session_error's own comment for the two shapes
-            # this recognizes (Codex App Server, Claude, Grok, Antigravity).
-            # Claude/Grok/Antigravity keep session state only in-process
-            # (unlike Codex, which reconnects to the still-running App
-            # Server), so any active task using one of them hits this on
-            # every restart -- and this function runs at startup
-            # (reconcile_active_tasks, in the FastAPI lifespan), so before
-            # this the app couldn't even start with such a task in the
-            # database: the unhandled RuntimeError propagated out of
-            # lifespan and crashed the whole process on boot, not just that
-            # one task's reconciliation.
+            # Some adapters cannot recover their in-process session, and a
+            # Codex thread can lose its transcript. Fail that task during
+            # reconciliation so it can be retried and the API can start.
             if not _is_stale_session_error(exc):
                 raise
         refreshed = self._require_task(db, task.id, "reconciling stale runtime session")
@@ -828,6 +836,8 @@ class TaskOrchestrator:
                 task = await self.reconcile_task_runtime_session(db, task)
                 if status_before != task.status and task.status == "failed":
                     reconciled += 1
+                elif task.status in self.ACTIVE_TASK_STATUSES:
+                    self.ensure_runtime_stream(task.id, task.runtime_session_id)
 
             # Tasks in an active status with NO runtime session at all can't
             # be running: an active status is only ever set alongside opening
@@ -1218,6 +1228,12 @@ class TaskOrchestrator:
         with SessionLocal() as db:
             task = get_task(db, task_id)
             if task is None:
+                return
+            if (
+                (event.payload or {}).get("reason") == "thread_status_notLoaded"
+                and task.status not in self.ACTIVE_TASK_STATUSES
+            ):
+                # App Server can unload a thread after the turn has finished.
                 return
             append_event(db, task, event)
             task = get_task(db, task_id)
