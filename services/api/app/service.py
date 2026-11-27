@@ -116,7 +116,7 @@ class TaskOrchestrator:
         self._stuck_session_idle_seconds = float(
             os.getenv("ZENBAR_STUCK_SESSION_IDLE_SECONDS", str(15 * 60))
         )
-        for adapter in adapters.values():
+        for adapter in (*adapters.values(), *self.codex_provider_adapters.values()):
             if isinstance(adapter, AppServerWebSocketAdapter):
                 adapter.schedule_followup = self.schedule_followup
 

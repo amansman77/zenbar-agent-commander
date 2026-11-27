@@ -64,7 +64,6 @@ from ..schemas import (
     ConversationSummary,
     CreateConversationRequest,
     CreateScheduledActionRequest,
-    CreateTaskRequest,
     PrInfoResponse,
     ScheduledActionListItem,
     SetPrReviewedRequest,
