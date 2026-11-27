@@ -16,6 +16,7 @@ import get_task`), not from these submodules.
 """
 
 from .naming import build_workspace_ref, slugify
+from .attachments import conversation_attachment_bytes, create_attachment, delete_attachment, get_attachment
 from .projects import create_project, get_project, get_project_any, list_projects, soft_delete_project
 from .prompts import (
     create_global_prompt,

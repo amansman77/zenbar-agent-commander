@@ -15,6 +15,7 @@ import websockets
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from itertools import count
+from pathlib import Path
 from typing import Any
 from websockets.asyncio.client import ClientConnection
 
@@ -122,6 +123,7 @@ class SessionState:
     pending_requests: dict[int | str, PendingRequest] = field(default_factory=dict)
     start_request: RuntimeStartRequest | None = None
     agent_message_buffer: str = ""
+    image_view_ids: set[str] = field(default_factory=set)
 
 
 class AppServerWebSocketAdapter(RuntimeAdapter):
@@ -606,6 +608,7 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         if method == "turn/started":
             turn = params.get("turn", {})
             state.current_turn_id = turn.get("id")
+            state.image_view_ids.clear()
             await state.queue.put(RuntimeEvent(type="agent_status", message="Turn started"))
             return
 
@@ -617,6 +620,9 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             else:
                 # Extract assistant text from turn items (for models that don't emit agent_message events)
                 items = turn.get("items") or []
+                for item in items:
+                    if isinstance(item, dict) and item.get("type") == "imageView":
+                        await self._publish_image_view(state, item)
                 assistant_text = _extract_assistant_text_from_items(items)
                 if assistant_text:
                     await state.queue.put(RuntimeEvent(
@@ -691,6 +697,9 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
         if method == "item/completed":
             item = params.get("item", {})
             item_type = item.get("type", "")
+            if item_type == "imageView":
+                await self._publish_image_view(state, item)
+                return
             item_role = item.get("role", "")
             is_assistant = (
                 item_type in {"message", "assistantMessage", "assistant_message", "agentMessage"}
@@ -731,6 +740,23 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
 
         if method.startswith("codex/event/"):
             await self._handle_legacy_event(state, method, params)
+
+    async def _publish_image_view(self, state: SessionState, item: dict[str, Any]) -> None:
+        path = item.get("path")
+        if not isinstance(path, str) or not path or any(char in path for char in "`\n\r"):
+            return
+        if Path(path).suffix.lower() not in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}:
+            return
+        item_id = str(item.get("id") or path)
+        if item_id in state.image_view_ids:
+            return
+        state.image_view_ids.add(item_id)
+        content = f"`{path}`"
+        await state.queue.put(RuntimeEvent(
+            type="agent_status",
+            message=content[:500],
+            payload={"source": "agent_message", "full_content": content, "image_view_id": item_id},
+        ))
 
     async def _handle_legacy_event(self, state: SessionState, method: str, params: dict[str, Any]) -> None:
         event = params.get("msg", {})

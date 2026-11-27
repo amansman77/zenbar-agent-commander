@@ -43,7 +43,7 @@ export function ConversationListScreen({
   // conversation the open detail panel actually belonged to.
   selectedConversationId?: string | null;
   onSelect: (id: string) => void;
-  onCreate: (projectId: string) => void;
+  onCreate: (projectId: string | null) => void;
   onDelete: (id: string) => void;
   // Omitted on desktop, which reaches projects via its own view switcher.
   onManageProjects?: () => void;
@@ -108,7 +108,7 @@ export function ConversationListScreen({
             {onManageProjects ? (
               <button type="button" className="secondary" onClick={onManageProjects} style={{ fontSize: "0.8rem", padding: "4px 10px" }}>Projects</button>
             ) : null}
-            <button type="button" onClick={() => setProjectSheetOpen(true)}>+</button>
+            <button type="button" aria-label="새 대화" onClick={() => setProjectSheetOpen(true)}>+</button>
           </div>
         </div>
       </div>
@@ -139,7 +139,7 @@ export function ConversationListScreen({
                 aria-expanded={!isCollapsed}
               >
                 <span aria-hidden="true">{isCollapsed ? "▸" : "▾"}</span>
-                <span>{group.projectName ?? "프로젝트 없음"}</span>
+                <span>{group.projectName ?? "일반 대화"}</span>
               </button>
               {!isCollapsed && visibleConversations.map((conv) => {
                 // "In progress" = the task hasn't produced a final reply yet
@@ -240,13 +240,22 @@ export function ConversationListScreen({
         <div className="bottom-sheet-backdrop" onClick={() => setProjectSheetOpen(false)}>
           <div className="bottom-sheet" onClick={(e) => e.stopPropagation()}>
             <div className="bottom-sheet-header">
-              <h3>프로젝트 선택</h3>
+              <h3>새 대화</h3>
               <button className="secondary" onClick={() => setProjectSheetOpen(false)}>✕</button>
             </div>
             <div className="bottom-sheet-list">
-              {projects.length === 0 && (
-                <p className="empty-state">No projects yet. Add a project first.</p>
-              )}
+              <button
+                className="bottom-sheet-option"
+                onClick={() => {
+                  setProjectSheetOpen(false);
+                  onCreate(null);
+                }}
+              >
+                <strong>프로젝트 없이 시작</strong>
+                <span style={{ display: "block", fontSize: "0.78rem", opacity: 0.7, marginTop: "2px" }}>
+                  서버 작업 폴더 (기본값: ~/Workspace)
+                </span>
+              </button>
               {projects.map((project) => (
                 <button
                   key={project.id}

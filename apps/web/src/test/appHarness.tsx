@@ -32,6 +32,10 @@ export const fixtures: {
   globalPrompts: Row[];
   conversationDetail: Row | null;
   runtimeModels: Row;
+  conversationAttachments: Row[];
+  attachmentUploadError: boolean;
+  attachmentFailureName: string | null;
+  attachmentDownloadError: boolean;
 } = {
   projects: [],
   tasks: [],
@@ -43,11 +47,18 @@ export const fixtures: {
   projectPrompts: {},
   globalPrompts: [],
   conversationDetail: null,
-  runtimeModels: DEFAULT_RUNTIME_MODELS
+  runtimeModels: DEFAULT_RUNTIME_MODELS,
+  conversationAttachments: [],
+  attachmentUploadError: false,
+  attachmentFailureName: null,
+  attachmentDownloadError: false,
 };
 
 export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = input.toString();
+  if (/\/conversations\/[^/]+\/attachments\/[^/?]+(?:\?.*)?$/.test(url) && !init?.method) {
+    return new Response("image-bytes", { status: fixtures.attachmentDownloadError ? 404 : 200 });
+  }
   if (url.endsWith("/runtime/models?engine=antigravity")) {
     return new Response(
       JSON.stringify({
@@ -186,8 +197,47 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
     });
     return new Response(JSON.stringify(preview), { status: 200 });
   }
+  if (url.endsWith("/conversations") && init?.method === "POST") {
+    const payload = JSON.parse(String(init.body));
+    const conversation = {
+      id: "new-conversation",
+      title: "새 대화",
+      project_id: payload.project_id ?? null,
+      project_name: fixtures.projects.find((project) => project.id === payload.project_id)?.name ?? null,
+      updated_at: new Date().toISOString(),
+      messages: []
+    };
+    fixtures.conversationDetail = conversation;
+    fixtures.conversations = [conversation, ...fixtures.conversations];
+    return new Response(JSON.stringify(conversation), { status: 201 });
+  }
   if (url.endsWith("/conversations")) {
     return new Response(JSON.stringify(fixtures.conversations), { status: 200 });
+  }
+  if (/\/conversations\/[^/]+\/attachments\?name=/.test(url) && init?.method === "POST") {
+    const file = init.body as File;
+    if (fixtures.attachmentUploadError || file.name === fixtures.attachmentFailureName) {
+      return new Response("업로드 실패", { status: 503 });
+    }
+    const attachment = { id: `attachment-${fixtures.conversationAttachments.length + 1}`, name: file.name, size: file.size };
+    fixtures.conversationAttachments.push(attachment);
+    return new Response(JSON.stringify(attachment), { status: 201 });
+  }
+  if (/\/conversations\/[^/]+\/attachments\/[^/]+$/.test(url) && init?.method === "DELETE") {
+    fixtures.conversationAttachments = fixtures.conversationAttachments.filter((item) => !url.endsWith(`/${item.id}`));
+    return new Response(null, { status: 204 });
+  }
+  if (/\/conversations\/[^/]+\/messages$/.test(url) && init?.method === "POST" && fixtures.conversationDetail) {
+    const payload = JSON.parse(String(init.body));
+    const message = {
+      id: "message-uploaded", conversation_id: fixtures.conversationDetail.id,
+      role: "user", content: payload.content, created_at: new Date().toISOString(),
+      attachments: fixtures.conversationAttachments.filter((item) => payload.attachment_ids?.includes(item.id)),
+    };
+    fixtures.conversationDetail = {
+      ...fixtures.conversationDetail, messages: [...(fixtures.conversationDetail.messages as Row[]), message],
+    };
+    return new Response(JSON.stringify(fixtures.conversationDetail), { status: 201 });
   }
   const conversationMatch = url.match(/\/conversations\/([^/?]+)$/);
   if (conversationMatch && fixtures.conversationDetail?.id === conversationMatch[1]) {
@@ -253,6 +303,15 @@ vi.stubGlobal(
  *  desktop viewport seeded onto the workspace view. */
 export function resetAppTest() {
   fetchMock.mockClear();
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+    configurable: true, writable: true,
+    value: function (this: HTMLDialogElement) { this.setAttribute("open", ""); },
+  });
+  Object.defineProperty(HTMLDialogElement.prototype, "close", {
+    configurable: true, writable: true,
+    value: function (this: HTMLDialogElement) { this.removeAttribute("open"); },
+  });
+  Element.prototype.scrollIntoView = vi.fn();
   fixtures.projects = [];
   fixtures.tasks = [];
   fixtures.taskDetail = null;
@@ -263,6 +322,10 @@ export function resetAppTest() {
   fixtures.projectPrompts = {};
   fixtures.globalPrompts = [];
   fixtures.conversationDetail = null;
+  fixtures.conversationAttachments = [];
+  fixtures.attachmentUploadError = false;
+  fixtures.attachmentFailureName = null;
+  fixtures.attachmentDownloadError = false;
   fixtures.runtimeModels = DEFAULT_RUNTIME_MODELS;
   window.localStorage.clear();
   Object.defineProperty(navigator, "clipboard", {

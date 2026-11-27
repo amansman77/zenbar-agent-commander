@@ -5,7 +5,8 @@ from __future__ import annotations
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from ..models import Conversation, ConversationMessage, ConversationPrReview, Task, utcnow
+from ..attachments import message_runtime_content
+from ..models import Conversation, ConversationAttachment, ConversationMessage, ConversationPrReview, Task, utcnow
 from ..schemas import AddConversationMessageRequest, CreateConversationRequest
 
 
@@ -64,7 +65,7 @@ def get_conversation(db: Session, conversation_id: str) -> Conversation | None:
         select(Conversation)
         .where(Conversation.id == conversation_id)
         .options(
-            selectinload(Conversation.messages),
+            selectinload(Conversation.messages).selectinload(ConversationMessage.attachments),
             selectinload(Conversation.project),
             selectinload(Conversation.task).selectinload(Task.project),
         )
@@ -156,18 +157,23 @@ def set_conversation_task_id(db: Session, conversation_id: str, task_id: str) ->
 
 
 def add_conversation_message(
-    db: Session, conversation_id: str, payload: AddConversationMessageRequest
+    db: Session,
+    conversation_id: str,
+    payload: AddConversationMessageRequest,
+    *,
+    attachments: list[ConversationAttachment] | None = None,
 ) -> ConversationMessage:
     msg = ConversationMessage(
         conversation_id=conversation_id,
         role=payload.role,
         content=payload.content,
+        attachments=attachments or [],
     )
     db.add(msg)
     conv = db.get(Conversation, conversation_id)
     if conv:
         if not conv.messages and conv.title == "New Conversation":
-            conv.title = payload.content[:50].strip() or "New Conversation"
+            conv.title = payload.content[:50].strip() or (attachments[0].name if attachments else "New Conversation")
         db.execute(
             update(Conversation)
             .where(Conversation.id == conversation_id)
@@ -217,7 +223,7 @@ def latest_user_message_for_task(db: Session, task_id: str) -> str | None:
         .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
         .limit(1)
     ).first()
-    return row.content if row is not None else None
+    return message_runtime_content(row) if row is not None else None
 
 
 def add_conversation_message_for_task(db: Session, task_id: str, role: str, content: str) -> ConversationMessage | None:

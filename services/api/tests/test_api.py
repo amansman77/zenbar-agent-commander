@@ -29,7 +29,158 @@ Base.metadata.create_all(bind=engine)
 
 client = TestClient(app)
 
+
+@pytest.fixture
+def attachment_conversation(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZENBAR_ATTACHMENT_ROOT", str(tmp_path / "attachments"))
+    monkeypatch.setenv("ZENBAR_WORKSPACE_ROOT", str(tmp_path / "workspaces"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    repo = init_repo(str(tmp_path))
+    project = client.post("/projects", json={"name": "Attachments", "repo_path": str(repo), "default_branch": "main"}).json()
+    conversation = client.post("/conversations", json={"project_id": project["id"]}).json()
+    yield conversation["id"]
+    client.delete(f"/conversations/{conversation['id']}", headers={"X-Zenbar-Token": os.getenv("ZENBAR_API_TOKEN", "")})
+
 ACTIVE_STATUSES_FOR_TEST = {"queued", "starting", "running", "waiting_user_input", "waiting_result_approval"}
+
+
+def upload_attachment(base: str, name: str, content: bytes):
+    return client.post(base, params={"name": name}, content=content, headers={"Content-Type": "application/octet-stream"})
+
+
+def test_attachment_upload_download_and_delete(attachment_conversation, tmp_path):
+    base = f"/conversations/{attachment_conversation}/attachments"
+    uploaded = upload_attachment(base, "요구사항.html", b"<script>alert(1)</script>")
+    assert uploaded.status_code == 201
+    attachment = uploaded.json()
+    assert attachment == {"id": attachment["id"], "name": "요구사항.html", "size": 25}
+    downloaded = client.get(f"{base}/{attachment['id']}")
+    assert downloaded.content == b"<script>alert(1)</script>"
+    assert downloaded.headers["content-type"] == "application/octet-stream"
+    assert downloaded.headers["x-content-type-options"] == "nosniff"
+    assert downloaded.headers["content-disposition"].startswith("attachment;")
+    other = client.post("/conversations", json={}).json()
+    assert client.get(f"/conversations/{other['id']}/attachments/{attachment['id']}").status_code == 404
+    assert client.delete(f"{base}/{attachment['id']}").status_code == 204
+    assert client.get(f"{base}/{attachment['id']}").status_code == 404
+    assert not list((tmp_path / "attachments").rglob("*.html"))
+    assert not (tmp_path / "attachments" / attachment_conversation).exists()
+
+
+@pytest.mark.parametrize("name", ["../secret.txt", "folder/file.txt", "folder\\file.txt", ".", "..", " ", "bad\nname.txt"])
+def test_attachment_rejects_unsafe_names(attachment_conversation, name):
+    response = upload_attachment(f"/conversations/{attachment_conversation}/attachments", name, b"data")
+    assert response.status_code == 400
+
+
+def test_attachment_limits_and_empty_file_cleanup(attachment_conversation, monkeypatch, tmp_path):
+    from app.routers import conversations as router
+
+    monkeypatch.setattr(router, "MAX_ATTACHMENT_BYTES", 4)
+    monkeypatch.setattr(router, "MAX_CONVERSATION_ATTACHMENT_BYTES", 6)
+    base = f"/conversations/{attachment_conversation}/attachments"
+    assert upload_attachment(base, "empty.txt", b"").status_code == 400
+    assert upload_attachment(base, "large.txt", b"12345").status_code == 413
+    assert upload_attachment(base, "first.txt", b"1234").status_code == 201
+    assert upload_attachment(base, "second.txt", b"123").status_code == 413
+    monkeypatch.setattr(router, "conversation_attachment_bytes", lambda *args: 0)
+    assert upload_attachment(base, "stale-quota.txt", b"123").status_code == 413
+    assert [path.name for path in (tmp_path / "attachments").rglob("*.txt")] == ["first.txt"]
+
+
+def test_attachment_authorization(attachment_conversation, monkeypatch):
+    base = f"/conversations/{attachment_conversation}/attachments"
+    attachment = upload_attachment(base, "private.txt", b"private").json()
+    monkeypatch.setenv("ZENBAR_API_TOKEN", "attachment-test-only")
+    assert client.get(f"{base}/{attachment['id']}").status_code == 401
+    assert upload_attachment(base, "new.txt", b"private").status_code == 401
+    assert client.delete(f"{base}/{attachment['id']}").status_code == 401
+    assert client.get(f"{base}/{attachment['id']}", params={"token": "attachment-test-only"}).status_code == 200
+
+
+def test_attachment_message_validation(attachment_conversation):
+    base = f"/conversations/{attachment_conversation}"
+    attachment = upload_attachment(f"{base}/attachments", "notes.txt", b"notes").json()
+    other = client.post("/conversations", json={}).json()
+    foreign = upload_attachment(f"/conversations/{other['id']}/attachments", "other.txt", b"other").json()
+    for ids, role, expected in [
+        ([attachment["id"], attachment["id"]], "user", 400),
+        ([foreign["id"]], "user", 404),
+        (["unknown"], "user", 404),
+        ([attachment["id"]], "assistant", 400),
+        ([attachment["id"]] * 11, "user", 422),
+    ]:
+        response = client.post(f"{base}/messages", json={"content": "check", "role": role, "attachment_ids": ids})
+        assert response.status_code == expected
+    assert client.get(base).json()["messages"] == []
+
+
+def test_attachment_only_message_followup_and_restart(attachment_conversation, monkeypatch, tmp_path):
+    from app.main import orchestrator
+    from app.repository import latest_user_message_for_task
+
+    base = f"/conversations/{attachment_conversation}"
+    first = upload_attachment(f"{base}/attachments", "first.txt", b"first").json()
+    started = client.post(f"{base}/messages", json={"attachment_ids": [first["id"]]})
+    assert started.status_code == 201
+    body = started.json()
+    task_id = body["task_id"]
+    user = next(message for message in body["messages"] if message["role"] == "user")
+    assert user["content"] == ""
+    assert user["attachments"] == [first]
+    assert body["title"] == "first.txt"
+    assert client.delete(f"{base}/attachments/{first['id']}").status_code == 409
+    path = next((tmp_path / "attachments").rglob("first.txt"))
+    with SessionLocal() as db:
+        assert str(path) in get_task(db, task_id).prompt
+
+    second = upload_attachment(f"{base}/attachments", "second.txt", b"second").json()
+    assert client.post(f"{base}/messages", json={"attachment_ids": [second["id"]]}).status_code == 409
+    assert client.post(f"/tasks/{task_id}/approve", json={"actor": "pytest"}).status_code == 200
+    followed = client.post(f"{base}/messages", json={"content": "두 번째 파일을 확인해줘", "attachment_ids": [second["id"]]})
+    assert followed.status_code == 201
+    users = [message for message in followed.json()["messages"] if message["role"] == "user"]
+    assert users[0]["attachments"] == [first]
+    assert users[1]["attachments"] == [second]
+    latest_path = next((tmp_path / "attachments").rglob("second.txt"))
+    with SessionLocal() as db:
+        assert str(latest_path) in latest_user_message_for_task(db, task_id)
+        task = get_task(db, task_id)
+        task.status = "failed"
+        task.runtime_session_id = None
+        db.commit()
+    captured = []
+    original_start = orchestrator.adapter.start_task
+
+    async def capture_start(request):
+        captured.append(request.prompt)
+        return await original_start(request)
+
+    monkeypatch.setattr(orchestrator.adapter, "start_task", capture_start)
+    assert client.post(f"/tasks/{task_id}/retry", json={"actor": "pytest"}).status_code == 200
+    current_request = captured[-1].split("[현재 요청]", 1)[1]
+    assert "두 번째 파일을 확인해줘" in current_request
+    assert str(latest_path) in current_request
+    assert client.delete(base).status_code == 204
+    assert not list((tmp_path / "attachments").rglob("*.txt"))
+
+
+def test_attachment_can_be_referenced_again_without_losing_history(attachment_conversation):
+    base = f"/conversations/{attachment_conversation}"
+    attachment = upload_attachment(f"{base}/attachments", "notes.txt", b"notes").json()
+    first = client.post(f"{base}/messages", json={"content": "first", "attachment_ids": [attachment["id"]]}).json()
+    assert client.post(f"/tasks/{first['task_id']}/approve", json={"actor": "pytest"}).status_code == 200
+    second = client.post(f"{base}/messages", json={"content": "again", "attachment_ids": [attachment["id"]]})
+    assert second.status_code == 201
+    users = [message for message in second.json()["messages"] if message["role"] == "user"]
+    assert [message["attachments"] for message in users] == [[attachment], [attachment]]
+
+
+def test_attachment_rejects_simple_form_uploads(attachment_conversation, tmp_path):
+    base = f"/conversations/{attachment_conversation}/attachments"
+    response = client.post(base, params={"name": "file.txt"}, content=b"data", headers={"Content-Type": "text/plain"})
+    assert response.status_code == 415
+    assert not (tmp_path / "attachments").exists()
 
 
 def init_repo(tmpdir: str) -> Path:
@@ -384,7 +535,7 @@ def test_workspace_file_rejects_path_escaping_the_workspace():
         assert response.status_code == 400
 
 
-def test_workspace_file_rejects_non_image_extensions():
+def test_workspace_file_serves_text_only_inside_the_workspace():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
         project = client.post(
@@ -397,7 +548,15 @@ def test_workspace_file_rejects_non_image_extensions():
         ).json()
 
         response = client.get(f"/tasks/{task['id']}/workspace-file", params={"path": "README.md"})
-        assert response.status_code == 400
+        assert response.status_code == 200
+        assert response.text == "hello\n"
+        assert response.headers["content-type"].startswith("text/plain")
+        assert response.headers["x-content-type-options"] == "nosniff"
+
+        outside = Path(tmpdir) / "outside.md"
+        outside.write_text("outside the workspace")
+        rejected = client.get(f"/tasks/{task['id']}/workspace-file", params={"path": str(outside)})
+        assert rejected.status_code == 400
 
 
 def test_workspace_file_serves_html_preview_with_sandbox_headers():
@@ -1904,6 +2063,106 @@ def test_ensure_schema_migrates_waiting_approval_to_waiting_result_approval():
         task = get_task(db, "task-migrate")
         assert task is not None
         assert task.status == "waiting_result_approval"
+
+
+def test_general_conversation_uses_shared_directory_and_leaves_it_intact(tmp_path, monkeypatch):
+    from app.runtime_registry import orchestrator
+    from app.schemas import RuntimeStartRequest
+
+    workspace = tmp_path / "Workspace"
+    workspace.mkdir()
+    existing_file = workspace / "notes.txt"
+    existing_file.write_text("keep me")
+    monkeypatch.setenv("ZENBAR_GENERAL_WORKSPACE", str(workspace))
+    monkeypatch.setenv("ZENBAR_ATTACHMENT_ROOT", str(tmp_path / "attachments"))
+    requests: list[RuntimeStartRequest] = []
+    original_start = orchestrator.adapter.start_task
+
+    async def capture_start(request):
+        requests.append(request)
+        return await original_start(request)
+
+    monkeypatch.setattr(orchestrator.adapter, "start_task", capture_start)
+    created = client.post("/conversations", json={"project_id": None})
+    assert created.status_code == 201
+    conversation = created.json()
+    assert conversation["project_id"] is None
+    conversation_url = f"/conversations/{conversation['id']}"
+    upload = upload_attachment(f"{conversation_url}/attachments", "question.txt", b"What is in this folder?")
+    assert upload.status_code == 201, upload.text
+    started = client.post(f"{conversation_url}/messages", json={"attachment_ids": [upload.json()["id"]]})
+    assert started.status_code == 201, started.text
+    assert started.json()["task_workspace_ref"] is None
+    task_id = started.json()["task_id"]
+    task_url = f"/tasks/{task_id}"
+    task = client.get(task_url).json()
+    assert task["project"] is None
+    assert task["workspace_type"] == "directory"
+    assert task["workspace_path"] == str(workspace.resolve())
+    assert requests[0].working_directory == task["workspace_path"]
+    assert "question.txt" in requests[0].prompt
+    assert started.json()["messages"][0]["attachments"] == [upload.json()]
+    assert list(workspace.iterdir()) == [existing_file]
+    assert client.post(f"{task_url}/commit", json={"message": "test"}).status_code == 409
+    assert client.post(f"{task_url}/approve", json={}).status_code == 200
+    followed_up = client.post(f"{conversation_url}/messages", json={"content": "Tell me more"})
+    assert followed_up.status_code == 201, followed_up.text
+    assert followed_up.json()["task_id"] == task_id
+    assert len(requests) == 1
+
+    with SessionLocal() as db:
+        stored_task = get_task(db, task_id)
+        stored_task.status = "failed"
+        stored_task.runtime_session_id = None
+        db.commit()
+    monkeypatch.setenv("ZENBAR_GENERAL_WORKSPACE", str(tmp_path))
+    retried = client.post(f"{task_url}/retry", json={})
+    assert retried.status_code == 200, retried.text
+    assert requests[-1].working_directory == requests[0].working_directory
+    assert "[현재 요청]\nTell me more" in requests[-1].prompt
+
+    assert client.delete(conversation_url).status_code == 204
+    assert client.get(task_url).status_code == 404
+    assert existing_file.read_text() == "keep me"
+    assert not list((tmp_path / "attachments").rglob("*.txt"))
+
+
+def test_schema_migration_keeps_existing_tasks_and_conversation_links(tmp_path, monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app import db as app_db
+    from app.models import Conversation, Project, Task
+
+    database_url = f"sqlite:///{tmp_path / 'legacy.db'}"
+    legacy_engine = create_engine(database_url)
+    monkeypatch.setattr(app_db, "engine", legacy_engine)
+    monkeypatch.setattr(app_db, "DATABASE_URL", database_url)
+    Base.metadata.create_all(legacy_engine)
+    with legacy_engine.begin() as connection:
+        ddl = connection.exec_driver_sql("SELECT sql FROM sqlite_master WHERE name = 'tasks'").scalar_one()
+        connection.exec_driver_sql("DROP TABLE tasks")
+        connection.exec_driver_sql(ddl.replace("project_id VARCHAR", "project_id VARCHAR NOT NULL", 1))
+        connection.exec_driver_sql("CREATE INDEX legacy_tasks_project ON tasks(project_id)")
+    with Session(legacy_engine) as db:
+        project = Project(name="Legacy", repo_path="/tmp/repo", default_branch="main")
+        task = Task(project=project, title="Legacy", prompt="Original", workspace_ref="task/legacy")
+        db.add(Conversation(id="legacy-conversation", project=project, task=task))
+        db.commit()
+
+    ensure_schema()
+    ensure_schema()
+
+    with Session(legacy_engine) as db:
+        conversation = db.get(Conversation, "legacy-conversation")
+        assert conversation.task.prompt == "Original"
+        assert conversation.task.project.name == "Legacy"
+        db.add(Task(title="General", prompt="New", workspace_ref="general", workspace_type="directory"))
+        db.commit()
+    with legacy_engine.connect() as connection:
+        assert not connection.exec_driver_sql("PRAGMA foreign_key_check").all()
+        assert "legacy_tasks_project" in [row[1] for row in connection.exec_driver_sql("PRAGMA index_list(tasks)")]
+    legacy_engine.dispose()
 
 
 def test_get_runtime_profiles_reads_codex_home_config_profiles(tmp_path, monkeypatch):

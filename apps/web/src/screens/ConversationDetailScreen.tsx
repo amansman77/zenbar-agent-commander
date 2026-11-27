@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AddConversationMessageRequest,
   ConversationDetail,
+  ConversationAttachmentItem,
   ConversationMessageItem,
   PrInfo,
   ProjectPipeline,
@@ -25,6 +26,7 @@ import { useSavedPrompts } from "../hooks/useSavedPrompts";
 import { USAGE_SUPPORTED_ENGINES, actor } from "../lib/constants";
 import { ACTIVE_TASK_STATUSES } from "../lib/notifications";
 import { extractFailureReason } from "../lib/taskEvents";
+import { attachmentSelectionError, attachmentSize } from "../lib/attachments";
 
 export function ConversationDetailScreen({
   conversationId,
@@ -45,6 +47,11 @@ export function ConversationDetailScreen({
   const [activeTab, setActiveTab] = useState<"chat" | "diff">("chat");
   const [diffExpanded, setDiffExpanded] = useState<Record<string, boolean>>({});
   const [input, setInput] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [isRemovingAttachment, setIsRemovingAttachment] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadedFiles = useRef(new Map<File, ConversationAttachmentItem>());
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [skillSearch, setSkillSearch] = useState("");
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
@@ -250,10 +257,24 @@ export function ConversationDetailScreen({
   });
 
   const addMessageMutation = useMutation({
-    mutationFn: (payload: AddConversationMessageRequest) =>
-      api.addConversationMessage(conversationId, payload),
+    mutationFn: async (payload: AddConversationMessageRequest) => {
+      const attachmentIds: string[] = [];
+      for (const file of files) {
+        let attachment = uploadedFiles.current.get(file);
+        if (!attachment) {
+          attachment = await api.uploadConversationAttachment(conversationId, file);
+          uploadedFiles.current.set(file, attachment);
+        }
+        attachmentIds.push(attachment.id);
+      }
+      return api.addConversationMessage(conversationId, { ...payload, attachment_ids: attachmentIds });
+    },
     onSuccess: (updated) => {
       setInput("");
+      setFiles([]);
+      uploadedFiles.current.clear();
+      setAttachmentError(null);
+      setSelectedPipelineId(null);
       setSelectedSkill(null);
       // A model switch is only meant to apply once (this and every turn
       // after it, per the backend) -- not keep resending the same explicit
@@ -339,7 +360,8 @@ export function ConversationDetailScreen({
   // before the first message.
   const canSendPipeline = Boolean(selectedPipelineId && !taskStarted);
   const selectedPipelineName = availablePipelines.find((p) => p.id === selectedPipelineId)?.name ?? null;
-  const isSendDisabled = (!input.trim() && !canSendPipeline) || addMessageMutation.isPending || isTaskActive;
+  const isSendDisabled = (!input.trim() && !canSendPipeline && files.length === 0)
+    || addMessageMutation.isPending || isTaskActive || isRemovingAttachment;
 
   const handleSend = () => {
     if (isSendDisabled) return;
@@ -378,12 +400,9 @@ export function ConversationDetailScreen({
         profile: profileToUse,
         pipeline_id: selectedPipelineId,
       });
-      setSelectedPipelineId(null);
-      setInput("");
       return;
     }
     const trimmed = input.trim();
-    if (!trimmed) return;
     addMessageMutation.mutate({ content: trimmed, selected_skill: selectedSkill, engine: engineToUse, model: modelToUse, profile: profileToUse });
   };
 
@@ -407,8 +426,10 @@ export function ConversationDetailScreen({
             ) : (
               <strong className="truncate" style={{ display: "block" }}>Conversation</strong>
             )}
-            {conversation?.project_name && (
-              <span style={{ fontSize: "0.75rem", color: "var(--text-soft)" }}>{conversation.project_name}</span>
+            {conversation && (
+              <span style={{ fontSize: "0.75rem", color: "var(--text-soft)" }}>
+                {conversation.project_id === null ? "일반 대화" : conversation.project_name}
+              </span>
             )}
           </div>
           <button
@@ -716,6 +737,62 @@ export function ConversationDetailScreen({
             🔗 "{selectedPipelineName}" 파이프라인이 선택됨 — 보내기를 누르면 전체 단계가 자동으로 순서대로 실행돼요. 아래에 이슈 번호 등을 적으면 1단계 프롬프트 앞에 함께 전달돼요.
           </p>
         )}
+        <div className="compose-attachments">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            hidden
+            aria-label="첨부파일 선택"
+            disabled={isTaskActive || addMessageMutation.isPending || isRemovingAttachment}
+            onChange={(event) => {
+              const selected = [...files, ...Array.from(event.target.files ?? [])];
+              const error = attachmentSelectionError(selected);
+              setAttachmentError(error);
+              if (!error) setFiles(selected);
+              event.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            className="compose-pill"
+            disabled={isTaskActive || addMessageMutation.isPending || isRemovingAttachment}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            📎 파일 첨부
+          </button>
+          <span className="item-secondary">최대 10개 · 파일당 10MB</span>
+          {files.length > 0 && (
+            <ul className="compose-file-list" aria-label="전송할 첨부파일">
+              {files.map((file, index) => (
+                <li key={index}>
+                  <span>{file.name} ({attachmentSize(file.size)})</span>
+                  <button
+                    type="button"
+                    className="icon-button attachment-remove"
+                    aria-label={`${file.name} 첨부 취소`}
+                    disabled={addMessageMutation.isPending || isRemovingAttachment}
+                    onClick={async () => {
+                      setIsRemovingAttachment(true);
+                      const uploaded = uploadedFiles.current.get(file);
+                      try {
+                        if (uploaded) await api.deleteConversationAttachment(conversationId, uploaded.id);
+                        uploadedFiles.current.delete(file);
+                        setFiles((current) => current.filter((currentFile) => currentFile !== file));
+                        setAttachmentError(null);
+                      } catch {
+                        setAttachmentError("첨부파일 취소에 실패했습니다. 다시 시도하세요.");
+                      } finally {
+                        setIsRemovingAttachment(false);
+                      }
+                    }}
+                  >×</button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {attachmentError && <p className="compose-attachment-error" role="alert">{attachmentError}</p>}
+        </div>
         <div className="compose-input-row">
           <textarea
             value={input}
@@ -727,7 +804,7 @@ export function ConversationDetailScreen({
                   ? "예: 이슈 #123 (1단계 프롬프트 앞에 함께 전달돼요, 비워둬도 돼요)"
                   : "메시지를 입력하세요..."
             }
-            disabled={isTaskActive}
+            disabled={isTaskActive || addMessageMutation.isPending}
             className="compose-textarea"
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !isMobile) {
@@ -747,7 +824,7 @@ export function ConversationDetailScreen({
             disabled={isSendDisabled}
             className="compose-send-button"
           >
-            {addMessageMutation.isPending ? "..." : "Send"}
+            {addMessageMutation.isPending ? "전송 중..." : "Send"}
           </button>
         </div>
       </div>

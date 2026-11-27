@@ -9,6 +9,133 @@ import { fetchMock, fixtures, renderApp, resetAppTest } from "./test/appHarness"
 describe("App", () => {
   beforeEach(resetAppTest);
 
+  function openAttachmentConversation(messages: unknown[] = []) {
+    fixtures.conversationDetail = {
+      id: "conv-attachments", title: "첨부파일 테스트", project_id: "project-1", task_id: null,
+      task_status: null, messages,
+    };
+    window.localStorage.setItem("zenbar:lastView", JSON.stringify({
+      desktopView: "chat", selectedConversationId: "conv-attachments", mobileScreen: "conversation-detail",
+    }));
+    renderApp();
+  }
+
+  function openImageConversation() {
+    openAttachmentConversation([{
+      id: "image-message", conversation_id: "conv-attachments", role: "user", content: "이미지 확인",
+      created_at: new Date().toISOString(), attachments: [{ id: "image-1", name: "사진.PNG", size: 10 }],
+    }]);
+  }
+
+  it("opens an image viewer, keeps download available and releases its preview on close", async () => {
+    const createObjectURL = vi.fn().mockReturnValue("blob:test-image");
+    const revokeObjectURL = vi.fn();
+    const OriginalURL = URL;
+    vi.stubGlobal("URL", class extends OriginalURL {
+      static createObjectURL = createObjectURL;
+      static revokeObjectURL = revokeObjectURL;
+    });
+    const showModal = vi.spyOn(HTMLDialogElement.prototype, "showModal").mockImplementation(function (this: HTMLDialogElement) { this.setAttribute("open", ""); });
+    const close = vi.spyOn(HTMLDialogElement.prototype, "close").mockImplementation(function (this: HTMLDialogElement) { this.removeAttribute("open"); });
+    try {
+      openImageConversation();
+      const trigger = await screen.findByRole("button", { name: /사진.PNG/ });
+      trigger.focus();
+      fireEvent.click(trigger);
+      const viewer = await screen.findByRole("dialog", { name: "사진.PNG 이미지 미리보기" });
+      expect(await within(viewer).findByRole("img", { name: "사진.PNG" })).toHaveAttribute("src", "blob:test-image");
+      expect(within(viewer).getByRole("link", { name: "다운로드" })).toHaveAttribute("download", "사진.PNG");
+      fireEvent(viewer, new Event("cancel", { bubbles: false, cancelable: true }));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:test-image");
+      expect(trigger).toHaveFocus();
+      fireEvent.click(trigger);
+      fireEvent.click(await screen.findByRole("button", { name: "이미지 미리보기 닫기" }));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    } finally {
+      showModal.mockRestore();
+      close.mockRestore();
+      vi.stubGlobal("URL", OriginalURL);
+    }
+  });
+
+  it("shows a download fallback when an image cannot be fetched", async () => {
+    const showModal = vi.spyOn(HTMLDialogElement.prototype, "showModal").mockImplementation(function (this: HTMLDialogElement) { this.setAttribute("open", ""); });
+    const close = vi.spyOn(HTMLDialogElement.prototype, "close").mockImplementation(function (this: HTMLDialogElement) { this.removeAttribute("open"); });
+    try {
+      fixtures.attachmentDownloadError = true;
+      openImageConversation();
+      fireEvent.click(await screen.findByRole("button", { name: /사진.PNG/ }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("다운로드하여 확인");
+      expect(screen.getByRole("link", { name: "다운로드" })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "이미지 미리보기 닫기" }));
+    } finally {
+      showModal.mockRestore();
+      close.mockRestore();
+    }
+  });
+
+  it("uploads files before sending and displays downloadable attachments", async () => {
+    openAttachmentConversation();
+    const picker = await screen.findByLabelText("첨부파일 선택");
+    const file = new File(["requirements"], "요구사항.txt", { type: "text/plain" });
+    fireEvent.change(picker, { target: { files: [file] } });
+    expect(screen.getByRole("list", { name: "전송할 첨부파일" })).toHaveTextContent("요구사항.txt");
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    const link = await screen.findByRole("link", { name: /요구사항.txt/ });
+    expect(link).toHaveAttribute("download", "요구사항.txt");
+    expect(link).toHaveAttribute("href", expect.stringContaining("/conversations/conv-attachments/attachments/attachment-1"));
+    const messageCall = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/messages") && init?.method === "POST");
+    expect(JSON.parse(String(messageCall?.[1]?.body))).toMatchObject({ content: "", attachment_ids: ["attachment-1"] });
+    expect(screen.queryByRole("list", { name: "전송할 첨부파일" })).not.toBeInTheDocument();
+  });
+
+  it("keeps drafts on upload failure and supports retry and removal", async () => {
+    const alertMock = vi.spyOn(window, "alert").mockImplementation(() => {});
+    openAttachmentConversation();
+    fixtures.attachmentUploadError = true;
+    const picker = await screen.findByLabelText("첨부파일 선택");
+    fireEvent.change(picker, { target: { files: [new File(["data"], "notes.txt")] } });
+    fireEvent.change(screen.getByPlaceholderText("메시지를 입력하세요..."), { target: { value: "확인해주세요" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(alertMock).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+    expect(screen.getByDisplayValue("확인해주세요")).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "전송할 첨부파일" })).toHaveTextContent("notes.txt");
+    fixtures.attachmentUploadError = false;
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByRole("link", { name: /notes.txt/ });
+    fireEvent.change(picker, { target: { files: [new File(["other"], "remove.txt")] } });
+    fireEvent.click(screen.getByRole("button", { name: "remove.txt 첨부 취소" }));
+    await waitFor(() => expect(screen.queryByRole("list", { name: "전송할 첨부파일" })).not.toBeInTheDocument());
+    alertMock.mockRestore();
+  });
+
+  it("rejects empty files without uploading", async () => {
+    openAttachmentConversation();
+    fireEvent.change(await screen.findByLabelText("첨부파일 선택"), { target: { files: [new File([], "empty.txt")] } });
+    expect(screen.getByRole("alert")).toHaveTextContent("빈 파일");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  });
+
+  it("reuses completed uploads when retrying a partially failed batch", async () => {
+    const alertMock = vi.spyOn(window, "alert").mockImplementation(() => {});
+    openAttachmentConversation();
+    fixtures.attachmentFailureName = "second.txt";
+    fireEvent.change(await screen.findByLabelText("첨부파일 선택"), {
+      target: { files: [new File(["first"], "first.txt"), new File(["second"], "second.txt")] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(alertMock).toHaveBeenCalled());
+    expect(fixtures.conversationAttachments).toHaveLength(1);
+    fixtures.attachmentFailureName = null;
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByRole("link", { name: /second.txt/ });
+    expect(fixtures.conversationAttachments).toHaveLength(2);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/attachments?name=first.txt"))).toHaveLength(1);
+    alertMock.mockRestore();
+  });
+
   it("autofills project fields from repository discovery and keeps them editable", async () => {
     renderApp();
 

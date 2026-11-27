@@ -40,7 +40,7 @@ export function useCommanderMutations({
   const queryClient = useQueryClient();
 
   const createConversationMutation = useMutation({
-    mutationFn: (projectId: string) => api.createConversation({ project_id: projectId }),
+    mutationFn: (projectId: string | null) => api.createConversation({ project_id: projectId }),
     onSuccess: (conv) => {
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
       setSelectedConversationId(conv.id);

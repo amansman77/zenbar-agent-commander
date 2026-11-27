@@ -177,3 +177,51 @@
   min-height: 44px;
   padding: 0 16px;
 }
+.compose-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  padding: 6px 12px 0;
+}
+
+.compose-file-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  width: 100%;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.compose-file-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.25rem 0.5rem;
+  border-radius: 8px;
+  background: #f0f4fa;
+}
+
+.compose-file-list li span {
+  overflow-wrap: anywhere;
+}
+
+.attachment-remove {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+}
+
+.compose-attachment-error {
+  width: 100%;
+  color: #b42318;
+  margin: 0;
+}

@@ -136,7 +136,7 @@ def serialize_task_detail(task: Task) -> TaskDetail:
         session_id=session_id_for_task(task),
         turns=[serialize_turn(item) for item in sorted(task.turns, key=lambda turn: turn.created_at)],
         runs=[serialize_run(item) for item in sorted(task.runs, key=lambda run: run.created_at)],
-        project=serialize_project(task.project),
+        project=serialize_project(task.project) if task.project else None,
         approvals=[
             TaskApprovalResponse(action=item.action, actor=item.actor, created_at=item.created_at)
             for item in task.approvals
@@ -177,6 +177,7 @@ def serialize_conversation_message(msg: ConversationMessage) -> ConversationMess
         role=msg.role,
         content=msg.content,
         created_at=msg.created_at,
+        attachments=[{"id": item.id, "name": item.name, "size": item.size} for item in msg.attachments],
     )
 
 
@@ -217,7 +218,7 @@ def serialize_conversation_detail(conv: Conversation) -> ConversationDetail:
         project_name=conv.project.name if conv.project else None,
         task_id=conv.task_id,
         task_status=task.status if task else None,  # type: ignore[arg-type]
-        task_workspace_ref=task.workspace_ref if task else None,
+        task_workspace_ref=task.workspace_ref if task and task.workspace_type != "directory" else None,
         task_base_branch=task.project.default_branch if task and task.project else None,
         task_model=task.effective_model or task.model if task else None,
         task_profile=task.profile if task else None,

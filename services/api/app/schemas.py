@@ -37,7 +37,8 @@ TaskStatus = Literal[
     "failed",
     "completed",
 ]
-WorkspaceType = Literal["branch", "worktree"]
+GitWorkspaceType = Literal["branch", "worktree"]
+WorkspaceType = Literal["branch", "worktree", "directory"]
 ExecutionMode = Literal["execute", "plan"]
 ReasoningEffort = Literal["low", "medium", "high"]
 PendingInteractionType = Literal["user_input", "result_approval"]
@@ -258,8 +259,8 @@ class ProjectSummary(BaseModel):
     created_at: UtcDatetime
 
 
-class CreateTaskRequest(BaseModel):
-    project_id: str
+class TaskCreate(BaseModel):
+    project_id: str | None
     title: str
     prompt: str
     engine: str | None = None
@@ -268,6 +269,11 @@ class CreateTaskRequest(BaseModel):
     reasoning_effort: ReasoningEffort = "medium"
     execution_mode: ExecutionMode = "execute"
     workspace_type: WorkspaceType = "worktree"
+
+
+class CreateTaskRequest(TaskCreate):
+    project_id: str
+    workspace_type: GitWorkspaceType = "worktree"
 
 
 class TaskApprovalRequest(BaseModel):
@@ -326,7 +332,7 @@ class TaskEventResponse(BaseModel):
 
 class TaskSummary(BaseModel):
     id: str
-    project_id: str
+    project_id: str | None
     title: str
     status: TaskStatus
     execution_mode: ExecutionMode
@@ -352,7 +358,7 @@ class TaskDetail(TaskSummary):
     session_id: str
     turns: list["SessionTurn"] = Field(default_factory=list)
     runs: list["SessionRun"] = Field(default_factory=list)
-    project: ProjectSummary
+    project: ProjectSummary | None
     approvals: list[TaskApprovalResponse]
     latest_diff: TaskDiff
     pending_interaction_type: PendingInteractionType | None = None
@@ -425,12 +431,19 @@ class TaskGitActionResponse(BaseModel):
     output: str | None = None
 
 
+class ConversationAttachmentItem(BaseModel):
+    id: str
+    name: str
+    size: int
+
+
 class ConversationMessageItem(BaseModel):
     id: str
     conversation_id: str
     role: str
     content: str
     created_at: UtcDatetime
+    attachments: list[ConversationAttachmentItem] = Field(default_factory=list)
 
 
 class ConversationSummary(BaseModel):
@@ -497,6 +510,7 @@ class AddConversationMessageRequest(BaseModel):
     model: str | None = None
     profile: str | None = None
     pipeline_id: str | None = None
+    attachment_ids: list[str] = Field(default_factory=list, max_length=10)
 
 
 class FsBrowseEntry(BaseModel):

@@ -1,8 +1,7 @@
 #!/bin/sh
 # Runs Zenbar as three launchd user agents on this Mac:
 #
-#   com.zenbar.app-server        Codex App Server   ws://127.0.0.1:18765 (scripts/app-server.sh)
-#   com.zenbar.app-server-azure  the same, pinned to the azure provider, ws://127.0.0.1:18766
+#   com.zenbar.app-server  Codex App Server   ws://127.0.0.1:18765 (scripts/app-server.sh)
 #   com.zenbar.api         Orchestration API  http://127.0.0.1:18001
 #   com.zenbar.dashboard   Web Commander      http://127.0.0.1:8080, proxying /api
 #
@@ -13,7 +12,7 @@
 #
 #   sh scripts/services.sh install       write the plists and start everything
 #   sh scripts/services.sh uninstall     stop everything and remove the plists
-#   sh scripts/services.sh restart [api|dashboard|app-server|app-server-azure]
+#   sh scripts/services.sh restart [api|dashboard|app-server]
 #   sh scripts/services.sh deploy-web    rebuild the dashboard bundle (served live, no restart)
 #   sh scripts/services.sh status
 #
@@ -28,11 +27,7 @@ ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 ZENBAR_HOME="${ZENBAR_HOME:-$HOME/.zenbar}"
 VENV_PYTHON="$ROOT_DIR/.venv/bin/python"
 DOMAIN="gui/$(id -u)"
-LABELS="com.zenbar.app-server com.zenbar.app-server-azure com.zenbar.api com.zenbar.dashboard"
-# Codex profiles whose model_provider has its own App Server (see app-server.sh
-# for why one server cannot serve two providers). The API routes those tasks
-# there; everything else uses com.zenbar.app-server.
-AZURE_APP_SERVER_URL="${ZENBAR_AZURE_APP_SERVER_URL:-ws://127.0.0.1:18766}"
+LABELS="com.zenbar.app-server com.zenbar.api com.zenbar.dashboard"
 
 load_env() {
     for env_file in "$ROOT_DIR/.env.local" "$ROOT_DIR/services/api/.env.local"; do
@@ -49,6 +44,32 @@ load_env() {
 
 plist_path() {
     echo "$HOME/Library/LaunchAgents/$1.plist"
+}
+
+unload_agent() {
+    launchctl bootout "$DOMAIN/$1" 2>/dev/null || true
+    # bootout returns before the job is actually gone. Bootstrapping a
+    # label that is still unloading fails with "5: Input/output error".
+    tries=0
+    while launchctl print "$DOMAIN/$1" >/dev/null 2>&1; do
+        if [ "$tries" -ge 50 ]; then
+            echo "Timed out unloading $1." >&2
+            return 1
+        fi
+        sleep 0.2
+        tries=$((tries + 1))
+    done
+}
+
+retire_azure_app_server() {
+    legacy_label=com.zenbar.app-server-azure
+    if [ -f "$(plist_path "$legacy_label")" ] ||
+        launchctl print "$DOMAIN/$legacy_label" >/dev/null 2>&1; then
+        # Old installations can still have a KeepAlive job which shares the
+        # same Codex store. Only the main App Server should start at login.
+        launchctl disable "$DOMAIN/$legacy_label"
+        unload_agent "$legacy_label"
+    fi
 }
 
 write_plist() {
@@ -84,7 +105,8 @@ case "${1:-}" in
         # launchd agent, and a managed one here would fight it for the port.
         export ZENBAR_DATABASE_URL="sqlite:///$ZENBAR_HOME/zenbar.db"
         export ZENBAR_APP_SERVER_MANAGED=false
-        export ZENBAR_APP_SERVER_PROVIDER_URLS="${ZENBAR_APP_SERVER_PROVIDER_URLS:-azure=$AZURE_APP_SERVER_URL}"
+        # Retire provider-specific routing from older service environments.
+        unset ZENBAR_APP_SERVER_PROVIDER_URLS
         if [ ! -f "$ZENBAR_HOME/zenbar.db" ]; then
             echo "No database at $ZENBAR_HOME/zenbar.db" >&2
             exit 1
@@ -117,21 +139,12 @@ case "${1:-}" in
         if [ ! -f "$ZENBAR_HOME/dashboard/index.html" ]; then
             sh "$ROOT_DIR/scripts/services.sh" deploy-web
         fi
+        retire_azure_app_server
         write_plist com.zenbar.app-server /bin/sh "$ROOT_DIR/scripts/app-server.sh"
-        write_plist com.zenbar.app-server-azure /bin/sh "$ROOT_DIR/scripts/app-server.sh" azure "$AZURE_APP_SERVER_URL"
         write_plist com.zenbar.api /bin/sh "$ROOT_DIR/scripts/services.sh" run-api
         write_plist com.zenbar.dashboard /bin/sh "$ROOT_DIR/scripts/services.sh" run-dashboard
         for label in $LABELS; do
-            launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
-            # bootout returns before the job is actually gone, and bootstrapping
-            # a label that is still unloading fails with "5: Input/output
-            # error". That happened on the first real install, and it left the
-            # already-running App Server stopped.
-            tries=0
-            while launchctl print "$DOMAIN/$label" >/dev/null 2>&1 && [ "$tries" -lt 50 ]; do
-                sleep 0.2
-                tries=$((tries + 1))
-            done
+            unload_agent "$label"
             launchctl bootstrap "$DOMAIN" "$(plist_path "$label")"
         done
         echo "Installed: $LABELS"
@@ -144,7 +157,7 @@ case "${1:-}" in
         echo "Removed: $LABELS"
         ;;
     restart)
-        for label in ${2:-api dashboard app-server app-server-azure}; do
+        for label in ${2:-api dashboard app-server}; do
             launchctl kickstart -k "$DOMAIN/com.zenbar.${label#com.zenbar.}"
         done
         ;;
@@ -155,7 +168,7 @@ case "${1:-}" in
         done
         ;;
     *)
-        echo "usage: $0 install|uninstall|restart [api|dashboard|app-server|app-server-azure]|deploy-web|status" >&2
+        echo "usage: $0 install|uninstall|restart [api|dashboard|app-server]|deploy-web|status" >&2
         exit 1
         ;;
 esac

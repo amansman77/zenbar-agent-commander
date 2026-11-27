@@ -23,6 +23,14 @@ class PreparedWorkspace:
     workspace_type: str
 
 
+def prepare_directory_workspace(workspace_path: str | None, workspace_ref: str) -> PreparedWorkspace:
+    configured = os.getenv("ZENBAR_GENERAL_WORKSPACE") or str(Path.home() / "Workspace")
+    directory = Path(workspace_path or configured).expanduser().resolve()
+    if not directory.is_dir():
+        raise RuntimeError(f"General conversation workspace is not a directory: {directory}")
+    return PreparedWorkspace(str(directory), workspace_ref, "directory")
+
+
 def _run_git(args: list[str], cwd: str) -> None:
     result = subprocess.run(
         ["git", *args],
@@ -191,7 +199,7 @@ def prepare_workspace(repo_path: str, default_branch: str, workspace_type: str, 
 
 
 def cleanup_workspace(workspace_path: str | None, workspace_type: str | None, repo_path: str | None) -> None:
-    if not workspace_path:
+    if workspace_type == "directory" or not workspace_path:
         return
     path = Path(workspace_path)
     if path.exists():

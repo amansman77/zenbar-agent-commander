@@ -144,6 +144,27 @@ Early prototype.
 
 ## Development
 
+### Conversation attachments
+
+Use **📎 파일 첨부** in the conversation compose bar to select files alongside a
+message, or send files without text. Each message supports up to 10 files,
+10 MiB per file, with a 100 MiB storage limit per conversation. Selected files
+can be removed before sending; upload failures keep the draft for retry. Sent
+files remain available in the conversation history. Clicking a raster image
+(PNG, JPEG, GIF, WebP, AVIF, BMP or ICO) opens a preview viewer with a download
+action; close it with the close button, Escape or the backdrop. Other formats,
+including SVG and HTML, remain download-only.
+
+The API stores files privately under `~/.zenbar/attachments` (override with
+`ZENBAR_ATTACHMENT_ROOT`) and records their metadata in SQLite. Downloads use
+the same authentication as the rest of the API and are scoped to their
+conversation; uploaded HTML and other active formats are downloaded rather
+than executed. Deleting a conversation deletes its uploaded files too.
+
+Zenbar passes local file paths to the runtime on initial requests, follow-ups,
+and session restarts. The runtime must be able to read the API host's attachment
+directory; Zenbar does not parse documents or implement agent execution.
+
 ### Running Zenbar as services (launchd)
 
 The day-to-day deployment is three launchd user agents on the Mac, all bound to
@@ -193,6 +214,13 @@ With the macOS GUI install, use
 Open `http://<tailscale-ip>:15173` or `https://<magicdns-name>:8443`. Use TCP
 forwarding for the IP URL; Tailscale's HTTP proxy routes by hostname. Both the UI
 and API requests go through the dashboard's same-origin `/api` proxy.
+
+To chat without registering a project, choose **+ → 프로젝트 없이 시작**.
+The runtime starts in the API user's `~/Workspace` directory by default;
+set `ZENBAR_GENERAL_WORKSPACE` in the API environment to use another existing
+directory (for example `/Workspace`). These conversations share the directory
+directly: edits can affect the original files, and deleting a conversation
+does not delete the directory or undo its changes.
 
 `ZENBAR_WORKSPACE_ROOT` must be a path with no symlink below the top level.
 Codex's sandbox resolves a top-level alias such as `/tmp -> /private/tmp` but rejects a writable root with a symlink
@@ -263,6 +291,24 @@ Notes:
 
 * `dev:web:external` auto-detects a Tailscale IPv4 when available.
 * For iPhone/remote access in a tailnet, open `http://<agent-host-tailscale-ip>:5173`.
+
+### Browser automation for Codex tasks
+
+Zenbar's launchd App Server configures a browser for Codex through Playwright
+MCP by default. Codex can navigate pages, inspect their content, follow links,
+and take screenshots in an isolated headless Chromium session. This browser
+uses a fresh profile without the Mac user's existing tabs or sign-ins.
+
+Install Node.js 22 and prepare the Chromium build on the Mac that runs Zenbar:
+
+```bash
+npx --yes --package @playwright/mcp@0.0.85 playwright install chromium
+```
+
+After updating the deployed checkout and letting active Codex turns finish,
+run `sh scripts/services.sh restart app-server` and start a new Codex task.
+For example, ask it to use Playwright to open the development server, follow a
+link, and report the destination heading.
 
 ## Summary
 

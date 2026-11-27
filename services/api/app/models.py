@@ -12,7 +12,7 @@ import json
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -93,7 +93,7 @@ class Task(Base):
     __tablename__ = "tasks"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"))
     title: Mapped[str] = mapped_column(String(255))
     prompt: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(64), default="queued")
@@ -136,7 +136,7 @@ class Task(Base):
         except (TypeError, ValueError):
             return None
 
-    project: Mapped[Project] = relationship(back_populates="tasks")
+    project: Mapped[Project | None] = relationship(back_populates="tasks")
     events: Mapped[list["TaskEvent"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     approvals: Mapped[list["TaskApproval"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     turns: Mapped[list["TaskTurn"]] = relationship(back_populates="task", cascade="all, delete-orphan")
@@ -219,6 +219,7 @@ class Conversation(Base):
         cascade="all, delete-orphan",
         order_by="ConversationMessage.created_at",
     )
+    attachments: Mapped[list["ConversationAttachment"]] = relationship(cascade="all, delete-orphan")
 
 
 class ConversationPrReview(Base):
@@ -236,6 +237,14 @@ class ConversationPrReview(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+message_attachment_links = Table(
+    "message_attachment_links",
+    Base.metadata,
+    Column("message_id", ForeignKey("conversation_messages.id"), primary_key=True),
+    Column("attachment_id", ForeignKey("conversation_attachments.id"), primary_key=True),
+)
+
+
 class ConversationMessage(Base):
     __tablename__ = "conversation_messages"
 
@@ -246,3 +255,20 @@ class ConversationMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
+    attachments: Mapped[list["ConversationAttachment"]] = relationship(
+        secondary=message_attachment_links, back_populates="messages", order_by="ConversationAttachment.created_at"
+    )
+
+
+class ConversationAttachment(Base):
+    __tablename__ = "conversation_attachments"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    size: Mapped[int] = mapped_column(Integer)
+    path: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    messages: Mapped[list[ConversationMessage]] = relationship(
+        secondary=message_attachment_links, back_populates="attachments"
+    )

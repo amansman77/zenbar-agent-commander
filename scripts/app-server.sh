@@ -28,6 +28,9 @@ for env_file in "$ROOT_DIR/.env.local" "$ROOT_DIR/services/api/.env.local"; do
     fi
 done
 
+# launchd may omit the Node.js installation used by Playwright.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 PROVIDER="${1:-}"
 if [ -n "$PROVIDER" ]; then
     WS_URL="${2:?usage: app-server.sh <provider> <ws-url>}"
@@ -43,8 +46,12 @@ fi
 # log is in one place whichever way the App Server was started.
 LOG_FILE="${ZENBAR_APP_SERVER_LOG_FILE:-${TMPDIR:-/tmp}/zenbar-app-server.log}"
 
+set -- app-server --listen "$WS_URL" \
+    -c 'mcp_servers.zenbar_browser.command="npx"' \
+    -c 'mcp_servers.zenbar_browser.args=["--yes","--prefer-offline","@playwright/mcp@0.0.85","--headless","--isolated","--browser","chromium"]' \
+    -c 'mcp_servers.zenbar_browser.startup_timeout_sec=60'
 if [ -n "$PROVIDER" ]; then
     LOG_FILE="${TMPDIR:-/tmp}/zenbar-app-server-$PROVIDER.log"
-    exec "$COMMAND" -c "model_provider=\"$PROVIDER\"" app-server --listen "$WS_URL" >"$LOG_FILE" 2>&1
+    set -- -c "model_provider=\"$PROVIDER\"" "$@"
 fi
-exec "$COMMAND" app-server --listen "$WS_URL" >"$LOG_FILE" 2>&1
+exec "$COMMAND" "$@" >"$LOG_FILE" 2>&1

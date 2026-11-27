@@ -25,5 +25,6 @@ tmp
 apps/web/.env
 apps/web/.env.local
 apps/web/e2e/screenshots
+.playwright-mcp/
 services/api/.env
 services/api/.env.local

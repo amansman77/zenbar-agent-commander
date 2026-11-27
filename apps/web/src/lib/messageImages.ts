@@ -48,7 +48,7 @@ const HTML_EXTENSION = "html?";
 const REFERENCE_RE = new RegExp(
   [
     "!?\\[[^\\]]*\\]\\(([^)\\s]+\\.(?:" + IMAGE_EXTENSION + "|" + HTML_EXTENSION + "))\\)",
-    "`([^`\\s]+\\.(?:" + IMAGE_EXTENSION + "))`",
+    "`([^`\\n\\r]+\\.(?:" + IMAGE_EXTENSION + "))`",
     '"([^"\\s]+\\.(?:' + IMAGE_EXTENSION + "|" + HTML_EXTENSION + '))"',
     "([^\\s\"'`()\\[\\]]+\\.(?:" + IMAGE_EXTENSION + ")\\b)",
   ].join("|"),
@@ -103,4 +103,19 @@ export function classifyReferencePath(raw: string): { type: "image" | "html"; pa
 
 export function isRemoteImageUrl(path: string): boolean {
   return /^https?:\/\//i.test(path);
+}
+
+// Local markdown links name files on the agent's machine, not dashboard routes.
+// Leave network URLs and document anchors to the browser. Decode once because
+// markdown serializes spaces and Korean filenames as percent-encoded URLs.
+export function messageFilePath(target: string): string | null {
+  const path = target.replace(/^sandbox:/i, "");
+  if (!path || path.startsWith("#") || path.startsWith("?") || path.startsWith("//") || /^[a-z][a-z\d+.-]*:/i.test(path)) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(path.split("#")[0]).replace(/:\d+(?::\d+)?$/, "");
+  } catch {
+    return null;
+  }
 }
