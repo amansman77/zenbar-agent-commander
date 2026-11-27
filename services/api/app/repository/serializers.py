@@ -26,6 +26,7 @@ from ..schemas import (
     ConversationDetail,
     ConversationMessageItem,
     ConversationSummary,
+    ScheduledActionItem,
     GlobalPromptItem,
     PendingInteractionType,
     ProjectPipelineItem,
@@ -196,6 +197,10 @@ def serialize_conversation_summary(conv: Conversation) -> ConversationSummary:
         and last_msg.role == "assistant"
         and (conv.last_read_at is None or last_msg.created_at > conv.last_read_at)
     )
+    scheduled_result = conv.last_scheduled_update_at
+    is_unread = is_unread or (scheduled_result is not None and (
+        conv.last_read_at is None or scheduled_result > conv.last_read_at
+    ))
     return ConversationSummary(
         id=conv.id,
         title=conv.title,
@@ -207,6 +212,7 @@ def serialize_conversation_summary(conv: Conversation) -> ConversationSummary:
         updated_at=conv.updated_at,
         last_response_at=last_response.created_at if last_response else None,
         is_unread=is_unread,
+        last_scheduled_update_at=scheduled_result,
     )
 
 
@@ -248,6 +254,10 @@ def serialize_conversation_detail(
             for index, msg in enumerate(rows)
         ],
         has_more_messages=has_more_messages,
+        scheduled_actions=[
+            ScheduledActionItem(id=action.id, content=action.content, run_at=action.run_at, status=action.status)
+            for action in conv.scheduled_actions
+        ],
         created_at=conv.created_at,
         updated_at=conv.updated_at,
     )

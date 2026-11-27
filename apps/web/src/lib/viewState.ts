@@ -3,9 +3,9 @@
 
 export const LAST_VIEW_KEY = "zenbar:lastView";
 
-export type DesktopView = "chat" | "workspace";
+export type DesktopView = "chat" | "workspace" | "scheduled-actions";
 
-export type MobileScreen = "conversations" | "conversation-detail" | "projects" | "project-prompts" | "tasks" | "detail";
+export type MobileScreen = "conversations" | "conversation-detail" | "projects" | "project-prompts" | "tasks" | "detail" | "scheduled-actions";
 
 export type LastView = {
   mobileScreen: MobileScreen;

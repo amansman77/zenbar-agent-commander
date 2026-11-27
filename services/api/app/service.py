@@ -13,7 +13,8 @@ import json
 import logging
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import select
@@ -21,16 +22,20 @@ from sqlalchemy.orm import Session
 
 from .github_pr import MergeResult, merge_pull_request_for_branch
 from .db import SessionLocal
-from .models import Project, Task
+from .models import Project, Task, utcnow
 from .repository import (
     add_conversation_message_for_task,
     append_event,
     clear_runtime_session,
     create_run,
+    create_scheduled_action,
     create_turn,
     delete_task as db_delete_task,
     get_latest_run,
+    get_conversation_for_task,
+    get_project,
     get_task,
+    has_running_scheduled_action,
     replace_diff,
     list_events,
     latest_user_message_for_task,
@@ -54,8 +59,9 @@ from .resume_context import (
 from .attachments import message_runtime_content
 from . import workspace_git
 from .codex_profiles import get_profile
-from .runtime import ENGINE_LABELS, RuntimeAdapter, RuntimeSessionReattachError
+from .runtime import ENGINE_LABELS, AppServerWebSocketAdapter, RuntimeAdapter, RuntimeSessionReattachError
 from .schemas import (
+    CreateScheduledActionRequest,
     RespondTaskRequest,
     RuntimeEvent,
     RuntimeStartRequest,
@@ -95,6 +101,7 @@ class TaskOrchestrator:
         # it pointed at the default engine's (same object as adapters[...],
         # not a second instance — see create_engine_adapters' docstring).
         self.adapter = adapters[default_engine]
+        self._launching_followups: set[str] = set()
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._stream_tasks: dict[str, asyncio.Task[None]] = {}
         # codex-rs has no watchdog of its own for a backgrounded shell/PTY
@@ -109,6 +116,19 @@ class TaskOrchestrator:
         self._stuck_session_idle_seconds = float(
             os.getenv("ZENBAR_STUCK_SESSION_IDLE_SECONDS", str(15 * 60))
         )
+        for adapter in adapters.values():
+            if isinstance(adapter, AppServerWebSocketAdapter):
+                adapter.schedule_followup = self.schedule_followup
+
+    def schedule_followup(self, task_id: str, request: CreateScheduledActionRequest) -> None:
+        """Save a Codex tool's follow-up in the conversation that owns its task."""
+        if request.run_at <= utcnow():
+            raise ValueError("The scheduled time must be in the future.")
+        with SessionLocal() as db:
+            conversation = get_conversation_for_task(db, task_id)
+            if conversation is None or conversation.project_id is None or get_project(db, conversation.project_id) is None:
+                raise ValueError("This turn does not have an active Zenbar project conversation.")
+            create_scheduled_action(db, conversation.id, request)
 
     def _adapter_for(self, task: Task | None) -> RuntimeAdapter:
         engine = (task.engine if task is not None else None) or self.default_engine
@@ -535,6 +555,27 @@ class TaskOrchestrator:
             await self._consume_events(task.id, session.session_id)
         return refreshed
 
+    def is_launching_followup(self, task_id: str) -> bool:
+        return task_id in self._launching_followups
+
+    @contextmanager
+    def _launch_followup(self, task_id: str) -> Iterator[None]:
+        # The adapter can await session reattachment before it sets the task
+        # running. A scheduled launch and a human follow-up can land in that gap.
+        if self.is_launching_followup(task_id):
+            raise RuntimeError("A follow-up is already starting")
+        self._launching_followups.add(task_id)
+        try:
+            yield
+        finally:
+            self._launching_followups.remove(task_id)
+
+    async def launch_followup_task(
+        self, db: Session, task: Task, content: str, model: str | None = None
+    ) -> Task:
+        with self._launch_followup(task.id):
+            return await self.followup_task(db, task, content, model=model)
+
     async def followup_task(
         self, db: Session, task: Task, content: str, selected_skill: str | None = None, model: str | None = None
     ) -> Task:
@@ -595,6 +636,23 @@ class TaskOrchestrator:
         content: str,
         selected_skill: str | None = None,
         model: str | None = None,
+        engine: str | None = None,
+        profile: str | None = None,
+    ) -> Task:
+        with self._launch_followup(task.id):
+            return await self._followup_or_restart_task(
+                db, task, project, content, selected_skill, model, engine=engine, profile=profile
+            )
+
+    async def _followup_or_restart_task(
+        self,
+        db: Session,
+        task: Task,
+        project: Project | None,
+        content: str,
+        selected_skill: str | None = None,
+        model: str | None = None,
+        *,
         engine: str | None = None,
         profile: str | None = None,
     ) -> Task:
@@ -1127,6 +1185,10 @@ class TaskOrchestrator:
                 # the status rather than pending_request_id, which a task can
                 # still carry from an already-answered earlier turn.
                 return False
+            # A scheduled follow-up can affect an external system. Stopping
+            # is safe to attempt, but starting the same request again can
+            # duplicate an action that had already reached that system.
+            retry = not has_running_scheduled_action(db, task_id)
             append_event(
                 db,
                 task,
@@ -1136,7 +1198,7 @@ class TaskOrchestrator:
                         f"No real output for over {int(idle_seconds // 60)} minute(s) -- "
                         "assuming the runtime session is stuck (likely a backgrounded process "
                         "the App Server spawned that nobody is polling anymore). "
-                        "Stopping and retrying automatically."
+                        + ("Stopping and retrying automatically." if retry else "Stopping the scheduled turn.")
                     ),
                     payload={"reason": "auto_recovered_stuck_session", "idle_seconds": int(idle_seconds)},
                 ),
@@ -1164,6 +1226,16 @@ class TaskOrchestrator:
                     pass
                 task = get_task(db, task_id)
                 if task is None:
+                    return
+                if not retry:
+                    if task.status in self.ACTIVE_TASK_STATUSES:
+                        append_event(
+                            db, task, RuntimeEvent(
+                                type="failed",
+                                message="Scheduled turn stalled. Verify external effects before running it again.",
+                                payload={"reason": "scheduled_turn_stalled"},
+                            ),
+                        )
                     return
                 # stop_task doesn't clear runtime_session_id itself (that
                 # normally only happens once the App Server pushes its own

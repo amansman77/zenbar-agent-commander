@@ -12,6 +12,7 @@ interface UseMobileNavigationOptions {
 
 const BACK_MAP: Partial<Record<MobileScreen, MobileScreen>> = {
   "conversation-detail": "conversations",
+  "scheduled-actions": "conversations",
   "projects": "conversations",
   "project-prompts": "projects",
   "tasks": "projects",

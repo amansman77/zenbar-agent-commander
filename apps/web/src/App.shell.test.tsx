@@ -94,6 +94,10 @@ describe("App", () => {
 
     renderApp();
 
+    fireEvent.click(screen.getByRole("button", { name: "예약 작업" }));
+    expect(await screen.findByText("예약된 작업이 없습니다.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "뒤로" }));
+
     // Mobile opens on Conversations; step into the Projects screen first.
     fireEvent.click(await screen.findByRole("button", { name: "Projects" }));
     fireEvent.click((await screen.findAllByRole("button", { name: "새 프로젝트" }))[1]);
@@ -204,7 +208,47 @@ describe("App", () => {
     expect(await screen.findByText("마지막 응답 2025년 3월 4일 오후 9:05")).toBeInTheDocument();
     expect(screen.getAllByText(/^마지막 응답/)).toHaveLength(1);
   });
-  describe("conversation model picker", () => {
+  it("delivers a scheduled result once when the dashboard reopens", async () => {
+    const show = vi.fn();
+    const original = Object.getOwnPropertyDescriptor(window, "Notification");
+    class TestNotification {
+      static permission = "granted";
+      constructor(title: string, options: NotificationOptions) {
+        show(title, options);
+      }
+    }
+    Object.defineProperty(window, "Notification", { configurable: true, value: TestNotification });
+    try {
+      const now = Date.now();
+      window.localStorage.setItem("zenbar:taskNotificationsEnabled", "true");
+      window.localStorage.setItem("zenbar:scheduledNotificationsStart", String(now - 60_000));
+      fixtures.conversations = [{
+        id: "scheduled-conversation",
+        title: "Listing check",
+        task_status: "completed",
+        last_message: "Listing is live.",
+        last_scheduled_update_at: new Date(now - 10_000).toISOString(),
+        updated_at: new Date(now - 10_000).toISOString(),
+        is_unread: true,
+      }];
+      const first = renderApp();
+      await waitFor(() => expect(show).toHaveBeenCalledWith(
+        "[예약 작업 결과] Listing check",
+        expect.objectContaining({ body: "Listing is live." }),
+      ));
+      first.unmount();
+
+      window.localStorage.removeItem("zenbar:lastView");
+      renderApp();
+      expect(await screen.findByText("Listing check")).toBeInTheDocument();
+      expect(show).toHaveBeenCalledTimes(1);
+    } finally {
+      if (original) Object.defineProperty(window, "Notification", original);
+      else Reflect.deleteProperty(window, "Notification");
+    }
+  });
+
+  describe("conversation detail", () => {
     it("continues a finished Codex conversation on Claude from the compose bar", async () => {
       fixtures.runtimeEngines = {
         engines: [{ id: "codex", label: "Codex" }, { id: "claude", label: "Claude" }],
@@ -214,9 +258,7 @@ describe("App", () => {
         codex: { source: "runtime", models: [{ id: "default" }, { id: "gpt-6.2-sol" }] },
         claude: { source: "runtime", models: [{ id: "default" }, { id: "opus" }, { id: "sonnet" }] }
       };
-      openConversationWithoutTask([], {
-        task_id: "task-1", task_status: "completed", task_engine: "codex", task_model: "gpt-6.2-sol"
-      });
+      openConversation([], "task-1", { task_engine: "codex", task_model: "gpt-6.2-sol" });
 
       const picker = await screen.findByRole("combobox", { name: "엔진" });
       expect(picker).toHaveValue("codex");
@@ -240,12 +282,18 @@ describe("App", () => {
         engines: [{ id: "codex", label: "Codex" }, { id: "claude", label: "Claude" }],
         default_engine: "codex"
       };
-      openConversationWithoutTask([], { task_id: "task-1", task_status: "running", task_engine: "codex" });
+      openConversation([], "task-1", { task_status: "running", task_engine: "codex" });
       expect(await screen.findByText(/🧠 Codex/)).toBeInTheDocument();
       expect(screen.queryByRole("combobox", { name: "엔진" })).not.toBeInTheDocument();
     });
 
-    function openConversationWithoutTask(messages: Record<string, unknown>[] = [], overrides: Record<string, unknown> = {}) {
+    function openConversation(
+      messages: Record<string, unknown>[] = [],
+      taskId: string | null = null,
+      overrides: Record<string, unknown> = {}
+    ) {
+      // jsdom has no scrollIntoView; the conversation screen calls it on mount.
+      Element.prototype.scrollIntoView = vi.fn();
       window.localStorage.setItem(
         "zenbar:lastView",
         JSON.stringify({
@@ -262,8 +310,8 @@ describe("App", () => {
         title: "New conversation",
         project_id: "project-1",
         project_name: "agent-commander",
-        task_id: null,
-        task_status: null,
+        task_id: taskId,
+        task_status: taskId ? "completed" : null,
         task_workspace_ref: null,
         task_base_branch: null,
         task_model: null,
@@ -277,8 +325,38 @@ describe("App", () => {
       renderApp();
     }
 
+    it("shows scheduled work separately and opens the originating conversation", async () => {
+      const action = {
+        id: "schedule-1",
+        content: "Check the published listing",
+        run_at: "2030-01-10T09:30:00Z",
+        status: "pending",
+        conversation_id: "conv-1",
+        conversation_title: "New conversation",
+        project_name: "agent-commander",
+      };
+      fixtures.scheduledActions = [action, {
+        ...action,
+        id: "schedule-2",
+        content: "Review yesterday's report",
+        status: "completed",
+      }];
+      openConversation([], "task-1");
+      await screen.findByPlaceholderText("메시지를 입력하세요...");
+      expect(screen.queryByRole("button", { name: "작업 예약" })).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "예약 작업" }));
+      expect(await screen.findByText(action.content)).toBeInTheDocument();
+      expect(screen.getByText("완료")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "예약 취소" }));
+      await waitFor(() => expect(screen.queryByText(action.content)).not.toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole("button", { name: "agent-commander / New conversation" }));
+      expect(await screen.findByPlaceholderText("메시지를 입력하세요...")).toBeInTheDocument();
+    });
+
     it("offers the runtime's models when no profile is selected", async () => {
-      openConversationWithoutTask();
+      openConversation();
 
       expect(await screen.findByRole("option", { name: "GPT-5.4" })).toBeInTheDocument();
       expect(screen.queryByText(/모델 목록을 불러오지 못함/)).not.toBeInTheDocument();
@@ -297,7 +375,7 @@ describe("App", () => {
         { ...user, id: `progress-${index}`, role: "assistant", content: `Progress ${index}` },
         { ...user, id: `reply-${index}`, role: "assistant", content: `Reply ${index}` },
       ]);
-      openConversationWithoutTask(messages);
+      openConversation(messages);
 
       await screen.findByText("Message 11");
       expect(screen.queryByText("Message 6")).not.toBeInTheDocument();
@@ -335,7 +413,7 @@ describe("App", () => {
       // to disappear without a word (2026-09-30, App Server down after a
       // reboot), which looked like a Codex update had removed it.
       fixtures.runtimeModels = { source: "fallback", models: [{ id: "default" }] };
-      openConversationWithoutTask();
+      openConversation();
 
       expect(await screen.findByText(/모델 목록을 불러오지 못함/)).toBeInTheDocument();
       expect(screen.queryByRole("option", { name: "default" })).not.toBeInTheDocument();
@@ -362,7 +440,7 @@ describe("App", () => {
         "",
         "[악성](javascript:alert(1))"
       ].join("\n");
-      openConversationWithoutTask([
+      openConversation([
         { id: "m1", conversation_id: "conv-1", role: "user", content: "**그대로** 보여야 함", created_at: now },
         { id: "m2", conversation_id: "conv-1", role: "assistant", content: reply, created_at: now }
       ]);
@@ -385,7 +463,7 @@ describe("App", () => {
     });
 
     it("renames the conversation from its header", async () => {
-      openConversationWithoutTask();
+      openConversation();
       const patchCalls = () =>
         fetchMock.mock.calls.filter(([url, init]) => new URL(String(url)).pathname.endsWith("/conversations/conv-1") && init?.method === "PATCH");
 
@@ -420,7 +498,7 @@ describe("App", () => {
       const earlier = new Date(sent);
       earlier.setDate(earlier.getDate() - 1);
       earlier.setHours(21, 40, 0, 0);
-      openConversationWithoutTask([
+      openConversation([
         { id: "m1", conversation_id: "conv-1", role: "user", content: "질문", created_at: earlier.toISOString() },
         { id: "m2", conversation_id: "conv-1", role: "assistant", content: "답변", created_at: sent.toISOString() }
       ]);
@@ -436,7 +514,7 @@ describe("App", () => {
     it("copies a message's original text, markdown source included", async () => {
       const now = new Date().toISOString();
       const reply = "## 결과\n\n- **완료**\n- `npm test` 통과";
-      openConversationWithoutTask([
+      openConversation([
         { id: "m1", conversation_id: "conv-1", role: "user", content: "요청\n두 줄", created_at: now },
         { id: "m2", conversation_id: "conv-1", role: "assistant", content: reply, created_at: now }
       ]);

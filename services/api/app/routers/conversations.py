@@ -22,12 +22,15 @@ from ..attachments import (
     remove_attachment_file,
     validate_attachment_name,
 )
+from ..models import utcnow
 from ..pr_info import fetch_pr_or_mr_diff, fetch_pr_or_mr_info, find_all_pr_or_mr_urls
 from ..repository import (
     add_conversation_message,
     attach_pipeline,
+    cancel_scheduled_action,
     count_conversations_by_project,
     create_conversation,
+    create_scheduled_action,
     create_task,
     conversation_attachment_bytes,
     create_attachment,
@@ -41,6 +44,7 @@ from ..repository import (
     list_conversation_message_page,
     list_conversations,
     list_reviewed_pr_urls,
+    list_scheduled_actions,
     mark_conversation_read,
     rename_conversation,
     resolve_pipeline_steps,
@@ -59,7 +63,10 @@ from ..schemas import (
     ConversationMessageItem,
     ConversationSummary,
     CreateConversationRequest,
+    CreateScheduledActionRequest,
+    CreateTaskRequest,
     PrInfoResponse,
+    ScheduledActionListItem,
     SetPrReviewedRequest,
     TaskCreate,
     TaskDiff,
@@ -159,6 +166,11 @@ def post_conversation(payload: CreateConversationRequest = CreateConversationReq
     conv = create_conversation(db, payload)
     conv_with_messages = get_conversation(db, conv.id)
     return serialize_conversation_detail(conv_with_messages)
+
+
+@router.get("/conversations/scheduled-actions", response_model=list[ScheduledActionListItem])
+def get_scheduled_actions(db: Session = Depends(get_db)):
+    return list_scheduled_actions(db)
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetail)
@@ -311,6 +323,28 @@ def delete_conversation_endpoint(conversation_id: str, db: Session = Depends(get
     return Response(status_code=204)
 
 
+@router.post("/conversations/{conversation_id}/scheduled-actions", response_model=ConversationDetail, status_code=201)
+def post_scheduled_action(
+    conversation_id: str, payload: CreateScheduledActionRequest, db: Session = Depends(get_db)
+):
+    conv = get_conversation(db, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conv.task is None or conv.project_id is None or get_project(db, conv.project_id) is None:
+        raise HTTPException(status_code=409, detail="Start a conversation task before scheduling a follow-up")
+    if payload.run_at <= utcnow():
+        raise HTTPException(status_code=422, detail="Scheduled time must be in the future")
+    create_scheduled_action(db, conversation_id, payload)
+    return serialize_conversation_detail(get_conversation(db, conversation_id))
+
+
+@router.delete("/conversations/{conversation_id}/scheduled-actions/{action_id}", status_code=204)
+def delete_scheduled_action(conversation_id: str, action_id: str, db: Session = Depends(get_db)):
+    if not cancel_scheduled_action(db, conversation_id, action_id):
+        raise HTTPException(status_code=409, detail="Only a pending scheduled action can be cancelled")
+    return Response(status_code=204)
+
+
 @router.post("/conversations/{conversation_id}/messages", response_model=ConversationDetail, status_code=201)
 async def post_conversation_message(
     conversation_id: str,
@@ -322,6 +356,8 @@ async def post_conversation_message(
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    if payload.role == "user" and conv.task_id and orchestrator.is_launching_followup(conv.task_id):
+        raise HTTPException(status_code=409, detail="A follow-up is already starting")
     attachments = []
     if payload.attachment_ids:
         if payload.role != "user" or len(set(payload.attachment_ids)) != len(payload.attachment_ids):

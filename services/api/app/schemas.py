@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, Field, field_validator
+from pydantic import AfterValidator, AwareDatetime, BaseModel, Field, field_validator
 
 
 def as_utc(value: datetime) -> datetime:
@@ -463,6 +463,30 @@ class ConversationSummary(BaseModel):
     # this conversation was last opened (see repository.mark_conversation_read
     # and serialize_conversation_summary for the exact rule).
     is_unread: bool
+    last_scheduled_update_at: UtcDatetime | None = None
+
+
+class CreateScheduledActionRequest(BaseModel):
+    content: str = Field(min_length=1)
+    run_at: AwareDatetime
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _strip_content(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
+class ScheduledActionItem(BaseModel):
+    id: str
+    content: str
+    run_at: UtcDatetime
+    status: Literal["pending", "running", "completed", "failed", "stopped"]
+
+
+class ScheduledActionListItem(ScheduledActionItem):
+    conversation_id: str
+    conversation_title: str
+    project_name: str | None
 
 
 class ConversationDetail(BaseModel):
@@ -483,6 +507,7 @@ class ConversationDetail(BaseModel):
     task_pipeline_total_steps: int | None = None
     messages: list[ConversationMessageItem]
     has_more_messages: bool = False
+    scheduled_actions: list[ScheduledActionItem] = Field(default_factory=list)
     created_at: UtcDatetime
     updated_at: UtcDatetime
 

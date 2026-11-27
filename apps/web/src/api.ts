@@ -31,6 +31,7 @@ import type {
   ReorderGlobalPromptsRequest,
   ReorderProjectPromptsRequest,
   RespondTaskRequest,
+  ScheduledActionListItem,
   SetPrReviewedRequest,
   TaskDetail,
   TaskDiff,
@@ -167,6 +168,9 @@ export const api = {
     request<ConversationDetail>(`/conversations/${id}?metadata_only=true`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteConversation: (id: string) =>
     request<void>(`/conversations/${id}`, { method: "DELETE" }),
+  listScheduledActions: () => request<ScheduledActionListItem[]>("/conversations/scheduled-actions"),
+  cancelScheduledAction: (id: string, actionId: string) =>
+    request<void>(`/conversations/${id}/scheduled-actions/${actionId}`, { method: "DELETE" }),
   addConversationMessage: (id: string, payload: AddConversationMessageRequest) =>
     request<ConversationDetail>(`/conversations/${id}/messages?metadata_only=true`, {
       method: "POST",

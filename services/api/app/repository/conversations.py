@@ -5,10 +5,18 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import delete, func, select, tuple_, update
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, with_expression
 
 from ..attachments import message_runtime_content
-from ..models import Conversation, ConversationAttachment, ConversationMessage, ConversationPrReview, Task, utcnow
+from ..models import (
+    Conversation,
+    ConversationAttachment,
+    ConversationMessage,
+    ConversationPrReview,
+    ScheduledAction,
+    Task,
+    utcnow,
+)
 from ..schemas import AddConversationMessageRequest, CreateConversationRequest
 
 
@@ -30,6 +38,13 @@ def list_conversations(db: Session, preview_count: int | None = None) -> list[Co
             selectinload(Conversation.project),
             selectinload(Conversation.messages),
             selectinload(Conversation.task),
+            with_expression(
+                Conversation.last_scheduled_update_at,
+                select(func.max(ScheduledAction.notified_at))
+                .where(ScheduledAction.conversation_id == Conversation.id)
+                .correlate(Conversation)
+                .scalar_subquery(),
+            ),
         )
         .order_by(Conversation.updated_at.desc())
     )
@@ -51,7 +66,11 @@ def list_conversations(db: Session, preview_count: int | None = None) -> list[Co
         key = conv.project_id
         seen = seen_per_project.get(key, 0)
         is_active = conv.task is not None and conv.task.status in _ACTIVE_TASK_STATUSES
-        if seen < preview_count or is_active:
+        scheduled_result = conv.last_scheduled_update_at
+        has_unread_scheduled_result = scheduled_result is not None and (
+            conv.last_read_at is None or scheduled_result > conv.last_read_at
+        )
+        if seen < preview_count or is_active or has_unread_scheduled_result:
             preview.append(conv)
         seen_per_project[key] = seen + 1
     return preview
@@ -67,6 +86,7 @@ def get_conversation(db: Session, conversation_id: str, *, include_messages: boo
         select(Conversation)
         .where(Conversation.id == conversation_id)
         .options(
+            selectinload(Conversation.scheduled_actions),
             selectinload(Conversation.project),
             selectinload(Conversation.task).selectinload(Task.project),
         )

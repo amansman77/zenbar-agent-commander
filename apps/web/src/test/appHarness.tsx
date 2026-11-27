@@ -31,6 +31,7 @@ export const fixtures: {
   projectPrompts: Record<string, Row[]>;
   globalPrompts: Row[];
   conversationDetail: Row | null;
+  scheduledActions: Row[];
   runtimeModels: Row;
   runtimeEngines: Row | null;
   runtimeModelsByEngine: Record<string, Row>;
@@ -56,6 +57,7 @@ export const fixtures: {
   attachmentUploadError: false,
   attachmentFailureName: null,
   attachmentDownloadError: false,
+  scheduledActions: [],
 };
 
 export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -225,6 +227,16 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
   if (url.endsWith("/conversations")) {
     return new Response(JSON.stringify(fixtures.conversations), { status: 200 });
   }
+  if (url.endsWith("/conversations/scheduled-actions")) {
+    return new Response(JSON.stringify(fixtures.scheduledActions), { status: 200 });
+  }
+  const scheduleMatch = url.match(/\/conversations\/([^/?]+)\/scheduled-actions\/([^/?]+)$/);
+  if (scheduleMatch && init?.method === "DELETE") {
+    fixtures.scheduledActions = fixtures.scheduledActions.filter((action) =>
+      action.conversation_id !== scheduleMatch[1] || action.id !== scheduleMatch[2]
+    );
+    return new Response(null, { status: 204 });
+  }
   if (/\/conversations\/[^/]+\/attachments\?name=/.test(url) && init?.method === "POST") {
     const file = init.body as File;
     if (fixtures.attachmentUploadError || file.name === fixtures.attachmentFailureName) {
@@ -372,6 +384,7 @@ export function resetAppTest() {
   fixtures.attachmentUploadError = false;
   fixtures.attachmentFailureName = null;
   fixtures.attachmentDownloadError = false;
+  fixtures.scheduledActions = [];
   fixtures.runtimeModels = DEFAULT_RUNTIME_MODELS;
   fixtures.runtimeEngines = null;
   fixtures.runtimeModelsByEngine = {};

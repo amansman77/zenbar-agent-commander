@@ -310,3 +310,40 @@ button.conversation-group-header-button:hover {
   background: #e9edf4;
   color: #586576;
 }
+.conversation-list-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.conversation-list-actions button {
+  white-space: nowrap;
+}
+
+.scheduled-actions-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.scheduled-action-row {
+  padding: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+
+.scheduled-action-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-soft);
+  font-size: 0.85rem;
+}
+
+.scheduled-action-content {
+  margin: 0.6rem 0;
+  white-space: pre-wrap;
+}
