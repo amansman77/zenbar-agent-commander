@@ -163,6 +163,10 @@ files remain available in the conversation history. Clicking a raster image
 action; close it with the close button, Escape or the backdrop. Other formats,
 including SVG and HTML, remain download-only.
 
+A screenshot pasted into the message box (Cmd+V / Ctrl+V) is attached the same
+way, under a timestamped name and with a thumbnail before sending. PNG, JPEG,
+GIF and WebP are taken from the clipboard; pasted text still goes into the box.
+
 The API stores files privately under `~/.zenbar/attachments` (override with
 `ZENBAR_ATTACHMENT_ROOT`) and records their metadata in SQLite. Downloads use
 the same authentication as the rest of the API and are scoped to their

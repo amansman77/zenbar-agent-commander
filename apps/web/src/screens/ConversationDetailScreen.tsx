@@ -27,7 +27,20 @@ import { useSavedPrompts } from "../hooks/useSavedPrompts";
 import { USAGE_SUPPORTED_ENGINES, actor } from "../lib/constants";
 import { ACTIVE_TASK_STATUSES } from "../lib/notifications";
 import { extractFailureReason } from "../lib/taskEvents";
-import { attachmentSelectionError, attachmentSize } from "../lib/attachments";
+import { attachmentImageType, attachmentSelectionError, attachmentSize, pastedImageFiles } from "../lib/attachments";
+
+// A pasted screenshot has no name worth reading, so the compose bar shows the
+// picture itself before it is sent.
+function PendingImagePreview({ file }: { file: File }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    if (typeof URL.createObjectURL !== "function") return;
+    const url = URL.createObjectURL(file);
+    setSrc(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  return src ? <img className="compose-file-preview" src={src} alt="" /> : null;
+}
 
 export function ConversationDetailScreen({
   conversationId,
@@ -54,6 +67,14 @@ export function ConversationDetailScreen({
   const [isRemovingAttachment, setIsRemovingAttachment] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadedFiles = useRef(new Map<File, ConversationAttachmentItem>());
+  // The file picker and a clipboard paste both land here, so one limit check
+  // covers the whole batch however its files arrived.
+  const addFiles = (added: File[]) => {
+    const selected = [...files, ...added];
+    const error = attachmentSelectionError(selected);
+    setAttachmentError(error);
+    if (!error) setFiles(selected);
+  };
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [skillSearch, setSkillSearch] = useState("");
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
@@ -764,10 +785,7 @@ export function ConversationDetailScreen({
             aria-label="첨부파일 선택"
             disabled={isTaskActive || addMessageMutation.isPending || isRemovingAttachment}
             onChange={(event) => {
-              const selected = [...files, ...Array.from(event.target.files ?? [])];
-              const error = attachmentSelectionError(selected);
-              setAttachmentError(error);
-              if (!error) setFiles(selected);
+              addFiles(Array.from(event.target.files ?? []));
               event.target.value = "";
             }}
           />
@@ -784,6 +802,7 @@ export function ConversationDetailScreen({
             <ul className="compose-file-list" aria-label="전송할 첨부파일">
               {files.map((file, index) => (
                 <li key={index}>
+                  {attachmentImageType(file.name) && <PendingImagePreview file={file} />}
                   <span>{file.name} ({attachmentSize(file.size)})</span>
                   <button
                     type="button"
@@ -815,6 +834,14 @@ export function ConversationDetailScreen({
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={(event) => {
+              const images = pastedImageFiles(Array.from(event.clipboardData.files), new Date());
+              if (images.length === 0 || isRemovingAttachment) return;
+              // Copying from a document can put text and an image on the
+              // clipboard together; the text still pastes as usual then.
+              if (!event.clipboardData.getData("text/plain")) event.preventDefault();
+              addFiles(images);
+            }}
             placeholder={
               isTaskActive
                 ? "Codex is working..."

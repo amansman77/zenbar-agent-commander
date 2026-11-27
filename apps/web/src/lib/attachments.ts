@@ -10,6 +10,27 @@ export function attachmentImageType(name: string): string | null {
   return extension && typeof types[extension] === "string" ? types[extension] : null;
 }
 
+const PASTED_IMAGE_EXTENSIONS: Record<string, string> = {
+  "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp",
+};
+
+// Every browser hands a pasted screenshot over as a File named "image.png",
+// so two pastes would upload, list and reach the agent under the same name.
+// A timestamped name keeps them apart. Only raster types the transcript can
+// preview are taken; anything else on the clipboard is left to the textarea.
+export function pastedImageFiles(files: File[], now: Date): File[] {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} `
+    + `${pad(now.getHours())}.${pad(now.getMinutes())}.${pad(now.getSeconds())}`;
+  return files
+    .filter((file) => PASTED_IMAGE_EXTENSIONS[file.type])
+    .map((file, index) => new File(
+      [file],
+      `붙여넣은 이미지 ${stamp}${index > 0 ? `-${index + 1}` : ""}.${PASTED_IMAGE_EXTENSIONS[file.type]}`,
+      { type: file.type },
+    ));
+}
+
 export function attachmentSelectionError(files: File[]): string | null {
   if (files.length > MAX_ATTACHMENTS) return "메시지당 최대 10개 파일을 첨부할 수 있습니다.";
   if (files.some((file) => file.size === 0)) return "빈 파일은 첨부할 수 없습니다.";

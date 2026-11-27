@@ -111,6 +111,21 @@ describe("App", () => {
     alertMock.mockRestore();
   });
 
+  it("attaches a pasted screenshot and keeps pasted text in the message box", async () => {
+    openAttachmentConversation();
+    const box = await screen.findByPlaceholderText("메시지를 입력하세요...");
+    const screenshot = new File(["png"], "image.png", { type: "image/png" });
+    const pasted = fireEvent.paste(box, { clipboardData: { files: [screenshot], getData: () => "" } });
+    expect(pasted).toBe(false);
+    expect(screen.getByRole("list", { name: "전송할 첨부파일" })).toHaveTextContent(/붙여넣은 이미지 .*\.png/);
+    expect(fireEvent.paste(box, { clipboardData: { files: [], getData: () => "그냥 텍스트" } })).toBe(true);
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(fixtures.conversationAttachments).toHaveLength(1));
+    expect(fixtures.conversationAttachments[0].name).toMatch(/^붙여넣은 이미지 .*\.png$/);
+  });
+
   it("rejects empty files without uploading", async () => {
     openAttachmentConversation();
     fireEvent.change(await screen.findByLabelText("첨부파일 선택"), { target: { files: [new File([], "empty.txt")] } });
