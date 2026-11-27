@@ -812,7 +812,11 @@ class AppServerWebSocketAdapter(RuntimeAdapter):
             return
 
         if method == "error":
-            await state.queue.put(RuntimeEvent(type="failed", message=params.get("message", "Codex App Server error")))
+            error = params.get("error") or {}
+            message = error.get("message") or params.get("message") or "Codex App Server error"
+            # Codex can report a recoverable error while the same turn is still running.
+            event_type = "agent_status" if params.get("willRetry") is True else "failed"
+            await state.queue.put(RuntimeEvent(type=event_type, message=message))
             return
 
         if method == "serverRequest/resolved":

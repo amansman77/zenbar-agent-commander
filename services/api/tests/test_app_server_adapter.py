@@ -37,6 +37,27 @@ def _adapter_with_session() -> tuple[AppServerWebSocketAdapter, SessionState]:
     return adapter, state
 
 
+@pytest.mark.parametrize(
+    ("error_params", "expected_type", "expected_message"),
+    [
+        ({"willRetry": True, "error": {"message": "Stream disconnected"}}, "agent_status", "Stream disconnected"),
+        ({"willRetry": False, "error": {"message": "Retries exhausted"}}, "failed", "Retries exhausted"),
+        ({"message": "Legacy error"}, "failed", "Legacy error"),
+    ],
+)
+def test_error_notification_respects_runtime_retry(error_params, expected_type, expected_message):
+    adapter, state = _adapter_with_session()
+    asyncio.run(
+        adapter._handle_notification(
+            {"method": "error", "params": {"threadId": "thread-1", "turnId": "turn-1", **error_params}}
+        )
+    )
+
+    event = state.queue.get_nowait()
+    assert event.type == expected_type
+    assert event.message == expected_message
+
+
 def test_mcp_elicitation_becomes_a_pending_approval_not_an_unhandled_log():
     adapter, state = _adapter_with_session()
 
