@@ -27,6 +27,13 @@ from dataclasses import dataclass
 # turning the restart prompt into a transcript dump.
 RECENT_MESSAGE_LIMIT = 3
 
+# Switching engines hands a whole working conversation to an agent that has
+# never seen it, deliberately, so it gets far more of the transcript than a
+# restart does -- bounded by characters, not just turns, since one agent
+# reply can be a long report.
+ENGINE_SWITCH_MESSAGE_LIMIT = 20
+ENGINE_SWITCH_CHAR_BUDGET = 30_000
+
 
 @dataclass(frozen=True)
 class ResumeMessage:
@@ -45,15 +52,40 @@ def _truncate(text: str, limit: int = 2000) -> str:
     return text[:limit].rstrip() + " …(이하 생략)"
 
 
+RESTART_NOTICE = "이전 세션이 만료되어 새 세션으로 이어집니다."
+
+
+def engine_switch_notice(from_label: str, to_label: str) -> str:
+    return (
+        f"이 대화는 지금까지 {from_label}(으)로 진행됐고, 이번 요청부터 {to_label}(으)로 이어집니다. "
+        "같은 작업 폴더와 브랜치에서 작업하며, 이전 에이전트가 만든 파일 변경은 그대로 남아 있습니다."
+    )
+
+
+def fit_to_budget(messages: list[ResumeMessage], budget: int) -> list[ResumeMessage]:
+    """The most recent messages whose (truncated) text fits in `budget`."""
+    kept: list[ResumeMessage] = []
+    used = 0
+    for message in reversed(messages):
+        size = len(_truncate(message.content))
+        if kept and used + size > budget:
+            break
+        kept.append(message)
+        used += size
+    return list(reversed(kept))
+
+
 def build_resume_prompt(
     *,
     original_prompt: str,
     recent_messages: list[ResumeMessage],
     new_message: str,
+    notice: str = RESTART_NOTICE,
 ) -> str:
-    """Assembles the first input for a session that replaces a dead one."""
+    """Assembles the first input for a session that replaces another one:
+    a dead session, or (with `notice`) one on a different engine."""
     sections: list[str] = [
-        "[안내] 이전 세션이 만료되어 새 세션으로 이어집니다. "
+        f"[안내] {notice} "
         "아래 '이전 맥락'과 '최근 대화'는 참고용 이력입니다. "
         "지금 수행할 작업은 맨 아래 '현재 요청' 하나뿐이며, "
         "이전 요청을 다시 실행하지 마세요.",

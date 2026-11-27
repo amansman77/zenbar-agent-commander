@@ -10,7 +10,8 @@ import type {
 import { api } from "../api";
 import { copyToClipboard } from "../lib/clipboard";
 import { formatFullTimestamp, formatMessageTime } from "../lib/format";
-import { classifyReferencePath, extractMessageSegments, isRemoteImageUrl } from "../lib/messageImages";
+import { classifyReferencePath, extractMessageSegments, isRemoteImageUrl, messageFilePath } from "../lib/messageImages";
+import { MessageAttachments } from "./MessageAttachments";
 
 // A screenshot/evidence image an agent mentioned by path, rendered as an
 // actual thumbnail instead of the raw path text. taskId is only available
@@ -136,12 +137,17 @@ function MarkdownMessage({ content, taskId }: { content: string; taskId: string 
         <MessageReference target={src} taskId={taskId} fallback={<code className="inline-code">{alt || src}</code>} />
       ) : null,
     a: ({ href, children }) => {
+      if (!href) return <>{children}</>;
+      const path = messageFilePath(href);
+      // Without a task there is no workspace to resolve this path against.
+      // A dead local link must not navigate back to the dashboard shell.
+      if (path !== null && !taskId) return <code className="inline-code">{children}</code>;
       const link = (
-        <a href={href} target="_blank" rel="noreferrer">
+        <a href={path !== null && taskId ? api.workspaceFileUrl(taskId, path) : href} target="_blank" rel="noreferrer">
           {children}
         </a>
       );
-      return href ? <MessageReference target={href} taskId={taskId} fallback={link} /> : link;
+      return path !== null ? <MessageReference target={path} taskId={taskId} fallback={link} /> : link;
     },
     pre: ({ children }) => <pre className="output-pre">{children}</pre>,
     code: ({ children, className }) => {
@@ -152,9 +158,9 @@ function MarkdownMessage({ content, taskId }: { content: string; taskId: string 
       if (className || text.includes("\n")) {
         return <code className={className}>{children}</code>;
       }
-      const segments = extractMessageSegments(text);
-      if (segments.length === 1 && segments[0].type === "image") {
-        return <MessageImage path={segments[0].path} taskId={taskId} />;
+      const reference = classifyReferencePath(text);
+      if (reference?.type === "image") {
+        return <MessageImage path={reference.path} taskId={taskId} />;
       }
       return <code className="inline-code">{children}</code>;
     },
@@ -234,6 +240,7 @@ export function ChatBubble({ message, taskId = null, muted = false }: { message:
         ) : (
           <MarkdownMessage content={message.content} taskId={taskId} />
         )}
+        <MessageAttachments message={message} />
       </div>
       <div className="chat-message-meta">
         <time className="chat-message-time" dateTime={message.created_at} title={formatFullTimestamp(message.created_at)}>
@@ -269,36 +276,54 @@ export function AssistantMessageGroup({
     staleTime: Infinity,
   });
   const loaded = new Map(data?.map((message) => [message.id, message]));
+  // A deferred intermediate arrives without its content until expanded.
+  const full = (message: ConversationMessageItem) => (message.is_deferred ? loaded.get(message.id) : message);
+  // Intermediates that show an image stay visible even when collapsed. A
+  // deferred one can only be recognised once its content has been loaded.
+  const imageMessageIds = new Set(
+    intermediates
+      .filter((message) => {
+        const content = full(message)?.content;
+        return content ? extractMessageSegments(content).some((segment) => segment.type === "image") : false;
+      })
+      .map((message) => message.id)
+  );
+  const collapsedCount = intermediates.length - imageMessageIds.size;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
       {intermediates.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start", width: "100%" }}>
-          <button
-            type="button"
-            onClick={() => setExpanded((previous) => !previous)}
-            style={{
-              background: "none",
-              border: "none",
-              padding: "2px 4px",
-              color: "var(--text-soft)",
-              fontSize: "0.78rem",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "4px",
-            }}
-          >
-            <span>{expanded ? "▾" : "▸"}</span>
-            <span>중간 응답 {intermediates.length}개 {expanded ? "접기" : "보기"}</span>
-          </button>
+          {collapsedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setExpanded((previous) => !previous)}
+              style={{
+                background: "none",
+                border: "none",
+                padding: "2px 4px",
+                color: "var(--text-soft)",
+                fontSize: "0.78rem",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "4px",
+              }}
+            >
+              <span>{expanded ? "▾" : "▸"}</span>
+              <span>중간 응답 {collapsedCount}개 {expanded ? "접기" : "보기"}</span>
+            </button>
+          )}
           {expanded && isFetching && <span role="status">중간 응답을 불러오는 중…</span>}
           {expanded && isError && (
             <button type="button" className="secondary" onClick={() => void refetch()}>중간 응답 다시 불러오기</button>
           )}
-          {expanded && intermediates.map((message) => {
-            const fullMessage = message.is_deferred ? loaded.get(message.id) : message;
-            return fullMessage && <ChatBubble key={message.id} message={fullMessage} taskId={taskId} muted />;
+          {intermediates.map((message) => {
+            if (!imageMessageIds.has(message.id) && !expanded) return null;
+            const fullMessage = full(message);
+            return fullMessage && (
+              <ChatBubble key={message.id} message={fullMessage} taskId={taskId} muted={!imageMessageIds.has(message.id)} />
+            );
           })}
         </div>
       )}

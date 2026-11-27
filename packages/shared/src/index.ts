@@ -12,7 +12,8 @@ export type TaskStatus =
   | "failed"
   | "completed";
 
-export type WorkspaceType = "branch" | "worktree";
+export type GitWorkspaceType = "branch" | "worktree";
+export type WorkspaceType = GitWorkspaceType | "directory";
 export type ExecutionMode = "execute" | "plan";
 export type ReasoningEffort = "low" | "medium" | "high";
 
@@ -145,7 +146,7 @@ export interface SetPrReviewedRequest {
 
 export interface TaskSummary {
   id: string;
-  project_id: string;
+  project_id: string | null;
   title: string;
   status: TaskStatus;
   execution_mode: ExecutionMode;
@@ -224,7 +225,7 @@ export interface TaskDetail extends TaskSummary {
   session_id: string;
   turns: SessionTurn[];
   runs: SessionRun[];
-  project: ProjectSummary;
+  project: ProjectSummary | null;
   approvals: TaskApproval[];
   latest_diff: TaskDiff;
   pending_interaction_type: PendingInteractionType | null;
@@ -317,7 +318,7 @@ export interface CreateTaskRequest {
   profile?: string | null;
   reasoning_effort?: ReasoningEffort;
   execution_mode?: ExecutionMode;
-  workspace_type?: WorkspaceType;
+  workspace_type?: GitWorkspaceType;
 }
 
 export interface ApproveTaskRequest {
@@ -350,12 +351,19 @@ export interface PushTaskRequest {
   set_upstream?: boolean;
 }
 
+export interface ConversationAttachmentItem {
+  id: string;
+  name: string;
+  size: number;
+}
+
 export interface ConversationMessageItem {
   id: string;
   conversation_id: string;
   role: string;
   content: string;
   created_at: string;
+  attachments?: ConversationAttachmentItem[];
   is_deferred?: boolean;
 }
 
@@ -374,6 +382,23 @@ export interface ConversationSummary {
   // True when the latest message is from the assistant and arrived after
   // this conversation was last opened.
   is_unread: boolean;
+  last_scheduled_update_at?: string | null;
+}
+
+export interface CreateScheduledActionRequest {
+  content: string;
+  run_at: string;
+}
+
+export interface ScheduledActionItem extends CreateScheduledActionRequest {
+  id: string;
+  status: "pending" | "running" | "completed" | "failed" | "stopped";
+}
+
+export interface ScheduledActionListItem extends ScheduledActionItem {
+  conversation_id: string;
+  conversation_title: string;
+  project_name: string | null;
 }
 
 export interface ConversationDetail {
@@ -394,13 +419,14 @@ export interface ConversationDetail {
   task_pipeline_total_steps?: number | null;
   messages: ConversationMessageItem[];
   has_more_messages: boolean;
+  scheduled_actions?: ScheduledActionItem[];
   created_at: string;
   updated_at: string;
 }
 
 export interface CreateConversationRequest {
   title?: string;
-  project_id?: string;
+  project_id?: string | null;
 }
 
 export interface UpdateConversationRequest {
@@ -415,6 +441,7 @@ export interface AddConversationMessageRequest {
   model?: string | null;
   profile?: string | null;
   pipeline_id?: string | null;
+  attachment_ids?: string[];
 }
 
 export interface FsBrowseEntry {

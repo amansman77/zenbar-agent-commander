@@ -6,6 +6,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AddConversationMessageRequest,
   ConversationDetail,
+  ConversationAttachmentItem,
+  ConversationMessageItem,
   PrInfo,
   ProjectPipeline,
   RuntimeEngineOption,
@@ -13,6 +15,7 @@ import type {
   RuntimeSkill
 } from "@zenbar/shared";
 import { api } from "../api";
+import { DeleteConversationDialog } from "../components/DeleteConversationDialog";
 import { UsageBadge } from "../components/Badges";
 import { ConversationTitleEditor } from "../components/ConversationTitleEditor";
 import { ConversationTranscript } from "../components/ConversationTranscript";
@@ -24,6 +27,20 @@ import { useSavedPrompts } from "../hooks/useSavedPrompts";
 import { USAGE_SUPPORTED_ENGINES, actor } from "../lib/constants";
 import { ACTIVE_TASK_STATUSES } from "../lib/notifications";
 import { extractFailureReason } from "../lib/taskEvents";
+import { attachmentImageType, attachmentSelectionError, attachmentSize, pastedImageFiles } from "../lib/attachments";
+
+// A pasted screenshot has no name worth reading, so the compose bar shows the
+// picture itself before it is sent.
+function PendingImagePreview({ file }: { file: File }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    if (typeof URL.createObjectURL !== "function") return;
+    const url = URL.createObjectURL(file);
+    setSrc(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  return src ? <img className="compose-file-preview" src={src} alt="" /> : null;
+}
 
 export function ConversationDetailScreen({
   conversationId,
@@ -40,10 +57,24 @@ export function ConversationDetailScreen({
   showBackButton?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const isMobile = useIsMobileBreakpoint();
   const [activeTab, setActiveTab] = useState<"chat" | "diff">("chat");
   const [diffExpanded, setDiffExpanded] = useState<Record<string, boolean>>({});
   const [input, setInput] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [isRemovingAttachment, setIsRemovingAttachment] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadedFiles = useRef(new Map<File, ConversationAttachmentItem>());
+  // The file picker and a clipboard paste both land here, so one limit check
+  // covers the whole batch however its files arrived.
+  const addFiles = (added: File[]) => {
+    const selected = [...files, ...added];
+    const error = attachmentSelectionError(selected);
+    setAttachmentError(error);
+    if (!error) setFiles(selected);
+  };
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [skillSearch, setSkillSearch] = useState("");
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
@@ -168,7 +199,14 @@ export function ConversationDetailScreen({
   // Shared by usage, the model picker, and the profiles gate below, all of
   // which need the task's *real* engine once one exists, not just
   // whatever's left over in the (by then hidden) pre-task engine picker.
-  const activeEngine = taskStarted ? conversation?.task_engine || defaultEngine : effectiveEngine;
+  const taskEngine = conversation?.task_engine || defaultEngine;
+  // An engine picked for the next follow-up of an existing task. The backend
+  // continues the conversation on that engine in the same worktree, handing
+  // it the transcript (TaskOrchestrator.switch_engine); null keeps the
+  // task's own engine.
+  const [switchEngine, setSwitchEngine] = useState<string | null>(null);
+  const switchingEngine = taskStarted && switchEngine != null && switchEngine !== taskEngine;
+  const activeEngine = taskStarted ? (switchingEngine ? switchEngine : taskEngine) : effectiveEngine;
   // Profiles read ~/.codex/*.config.toml — a Codex-only concept, meaningless for other engines.
   const engineSupportsProfiles = activeEngine == null || activeEngine === "codex";
 
@@ -198,10 +236,14 @@ export function ConversationDetailScreen({
   // pre-task picker) is what actually governs whether the model is locked
   // -- needed now that the model picker stays interactive for a follow-up
   // (see modelToUse in handleSend below), not just before the first send.
-  const activeProfileId = taskStarted ? conversation?.task_profile ?? null : selectedProfile;
+  // A profile belongs to the task's current engine, so it stops locking the
+  // model once another engine is picked.
+  const activeProfileId = taskStarted ? (switchingEngine ? null : conversation?.task_profile ?? null) : selectedProfile;
   const selectedProfileOption = availableProfiles.find((p) => p.id === activeProfileId) ?? null;
   const profileControlsModel = Boolean(selectedProfileOption?.model);
-  const effectiveModel = conversation?.task_model ?? selectedModel ?? availableModels[0] ?? null;
+  const effectiveModel = switchingEngine
+    ? selectedModel ?? availableModels[0] ?? null
+    : conversation?.task_model ?? selectedModel ?? availableModels[0] ?? null;
 
   const isWaitingApproval = conversation?.task_status === "waiting_result_approval";
   const isTaskFailed = conversation?.task_status === "failed";
@@ -246,10 +288,24 @@ export function ConversationDetailScreen({
   });
 
   const addMessageMutation = useMutation({
-    mutationFn: (payload: AddConversationMessageRequest) =>
-      api.addConversationMessage(conversationId, payload),
+    mutationFn: async (payload: AddConversationMessageRequest) => {
+      const attachmentIds: string[] = [];
+      for (const file of files) {
+        let attachment = uploadedFiles.current.get(file);
+        if (!attachment) {
+          attachment = await api.uploadConversationAttachment(conversationId, file);
+          uploadedFiles.current.set(file, attachment);
+        }
+        attachmentIds.push(attachment.id);
+      }
+      return api.addConversationMessage(conversationId, { ...payload, attachment_ids: attachmentIds });
+    },
     onSuccess: (updated) => {
       setInput("");
+      setFiles([]);
+      uploadedFiles.current.clear();
+      setAttachmentError(null);
+      setSelectedPipelineId(null);
       setSelectedSkill(null);
       // A model switch is only meant to apply once (this and every turn
       // after it, per the backend) -- not keep resending the same explicit
@@ -257,6 +313,7 @@ export function ConversationDetailScreen({
       // conversation.task_model (which `updated` just refreshed) over this,
       // so clearing it doesn't lose anything the picker still needs to show.
       setSelectedModel(null);
+      setSwitchEngine(null);
       queryClient.setQueryData<ConversationDetail>(["conversation", conversationId], (previous) =>
         previous ? { ...updated, messages: previous.messages, has_more_messages: previous.has_more_messages } : previous,
       );
@@ -300,7 +357,8 @@ export function ConversationDetailScreen({
   // before the first message.
   const canSendPipeline = Boolean(selectedPipelineId && !taskStarted);
   const selectedPipelineName = availablePipelines.find((p) => p.id === selectedPipelineId)?.name ?? null;
-  const isSendDisabled = (!input.trim() && !canSendPipeline) || addMessageMutation.isPending || isTaskActive;
+  const isSendDisabled = (!input.trim() && !canSendPipeline && files.length === 0)
+    || addMessageMutation.isPending || isTaskActive || isRemovingAttachment;
 
   const handleSend = () => {
     if (isSendDisabled) return;
@@ -312,11 +370,13 @@ export function ConversationDetailScreen({
     // the model actually in use and switch it out from under the user on
     // every follow-up. A fresh task has no "keep as-is" to fall back to, so
     // it still needs a concrete pick.
+    // Switching engines needs a concrete model from the new engine's list:
+    // the task's current model belongs to the old one.
     const modelToUse = profileControlsModel
       ? null
-      : selectedModel || (taskStarted ? null : availableModels[0] || null);
+      : selectedModel || (taskStarted && !switchingEngine ? null : availableModels[0] || null);
     const profileToUse = taskStarted ? null : selectedProfile;
-    const engineToUse = taskStarted ? null : selectedEngine;
+    const engineToUse = taskStarted ? (switchingEngine ? switchEngine : null) : selectedEngine;
     if (canSendPipeline) {
       // Typing is still optional here (a pipeline can start with nothing
       // typed, same as before), but anything typed is no longer thrown
@@ -339,12 +399,9 @@ export function ConversationDetailScreen({
         profile: profileToUse,
         pipeline_id: selectedPipelineId,
       });
-      setSelectedPipelineId(null);
-      setInput("");
       return;
     }
     const trimmed = input.trim();
-    if (!trimmed) return;
     addMessageMutation.mutate({ content: trimmed, selected_skill: selectedSkill, engine: engineToUse, model: modelToUse, profile: profileToUse });
   };
 
@@ -368,8 +425,10 @@ export function ConversationDetailScreen({
             ) : (
               <strong className="truncate" style={{ display: "block" }}>Conversation</strong>
             )}
-            {conversation?.project_name && (
-              <span style={{ fontSize: "0.75rem", color: "var(--text-soft)" }}>{conversation.project_name}</span>
+            {conversation && (
+              <span style={{ fontSize: "0.75rem", color: "var(--text-soft)" }}>
+                {conversation.project_id === null ? "일반 대화" : conversation.project_name}
+              </span>
             )}
           </div>
           <button
@@ -377,7 +436,7 @@ export function ConversationDetailScreen({
             className="secondary"
             style={{ fontSize: "0.8rem", padding: "4px 10px", flexShrink: 0 }}
             disabled={deleteConversationMutation.isPending}
-            onClick={() => deleteConversationMutation.mutate()}
+            onClick={() => setDeleteTargetId(conversationId)}
             title="대화 삭제"
           >
             삭제
@@ -385,6 +444,16 @@ export function ConversationDetailScreen({
         </div>
       </div>
 
+      {deleteTargetId === conversationId && (
+        <DeleteConversationDialog
+          title={conversation?.title ?? "이 대화"}
+          onCancel={() => setDeleteTargetId(null)}
+          onConfirm={() => {
+            deleteConversationMutation.mutate();
+            setDeleteTargetId(null);
+          }}
+        />
+      )}
       <ConversationTranscript
         conversationId={conversationId}
         conversation={conversation}
@@ -424,11 +493,38 @@ export function ConversationDetailScreen({
             </span>
           ) : null}
           {taskStarted ? (
-            conversation?.task_engine ? (
-              <span className="compose-meta">
-                🧠 {availableEngines.find((e) => e.id === conversation.task_engine)?.label ?? conversation.task_engine}
-              </span>
-            ) : null
+            isTaskActive || availableEngines.length < 2 ? (
+              // Mid-turn the engine cannot change; a switch applies to the
+              // next follow-up, which can only be sent once the turn ends.
+              conversation?.task_engine ? (
+                <span className="compose-meta">
+                  🧠 {availableEngines.find((e) => e.id === conversation.task_engine)?.label ?? conversation.task_engine}
+                </span>
+              ) : null
+            ) : (
+              <label className="compose-meta-picker">
+                <span>🧠</span>
+                <select
+                  aria-label="엔진"
+                  value={switchEngine ?? taskEngine ?? ""}
+                  onChange={(e) => {
+                    setSwitchEngine(e.target.value === taskEngine ? null : e.target.value);
+                    setSelectedModel(null);
+                  }}
+                  title={switchingEngine ? "다음 메시지부터 이 엔진으로 이어집니다" : "AI engine"}
+                  className="compose-meta-select"
+                >
+                  {availableEngines.map((eng) => (
+                    <option key={eng.id} value={eng.id}>{eng.label}</option>
+                  ))}
+                </select>
+                {switchingEngine && (
+                  <span className="compose-meta compose-meta-switch">
+                    다음 메시지부터 {availableEngines.find((e) => e.id === switchEngine)?.label ?? switchEngine}(으)로 전환
+                  </span>
+                )}
+              </label>
+            )
           ) : (
             availableEngines.length > 1 && (
               <label className="compose-meta-picker">
@@ -680,10 +776,72 @@ export function ConversationDetailScreen({
             🔗 "{selectedPipelineName}" 파이프라인이 선택됨 — 보내기를 누르면 전체 단계가 자동으로 순서대로 실행돼요. 아래에 이슈 번호 등을 적으면 1단계 프롬프트 앞에 함께 전달돼요.
           </p>
         )}
+        <div className="compose-attachments">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            hidden
+            aria-label="첨부파일 선택"
+            disabled={isTaskActive || addMessageMutation.isPending || isRemovingAttachment}
+            onChange={(event) => {
+              addFiles(Array.from(event.target.files ?? []));
+              event.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            className="compose-pill"
+            disabled={isTaskActive || addMessageMutation.isPending || isRemovingAttachment}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            📎 파일 첨부
+          </button>
+          <span className="item-secondary">최대 10개 · 파일당 10MB</span>
+          {files.length > 0 && (
+            <ul className="compose-file-list" aria-label="전송할 첨부파일">
+              {files.map((file, index) => (
+                <li key={index}>
+                  {attachmentImageType(file.name) && <PendingImagePreview file={file} />}
+                  <span>{file.name} ({attachmentSize(file.size)})</span>
+                  <button
+                    type="button"
+                    className="icon-button attachment-remove"
+                    aria-label={`${file.name} 첨부 취소`}
+                    disabled={addMessageMutation.isPending || isRemovingAttachment}
+                    onClick={async () => {
+                      setIsRemovingAttachment(true);
+                      const uploaded = uploadedFiles.current.get(file);
+                      try {
+                        if (uploaded) await api.deleteConversationAttachment(conversationId, uploaded.id);
+                        uploadedFiles.current.delete(file);
+                        setFiles((current) => current.filter((currentFile) => currentFile !== file));
+                        setAttachmentError(null);
+                      } catch {
+                        setAttachmentError("첨부파일 취소에 실패했습니다. 다시 시도하세요.");
+                      } finally {
+                        setIsRemovingAttachment(false);
+                      }
+                    }}
+                  >×</button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {attachmentError && <p className="compose-attachment-error" role="alert">{attachmentError}</p>}
+        </div>
         <div className="compose-input-row">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={(event) => {
+              const images = pastedImageFiles(Array.from(event.clipboardData.files), new Date());
+              if (images.length === 0 || isRemovingAttachment) return;
+              // Copying from a document can put text and an image on the
+              // clipboard together; the text still pastes as usual then.
+              if (!event.clipboardData.getData("text/plain")) event.preventDefault();
+              addFiles(images);
+            }}
             placeholder={
               isTaskActive
                 ? "Codex is working..."
@@ -691,7 +849,7 @@ export function ConversationDetailScreen({
                   ? "예: 이슈 #123 (1단계 프롬프트 앞에 함께 전달돼요, 비워둬도 돼요)"
                   : "메시지를 입력하세요..."
             }
-            disabled={isTaskActive}
+            disabled={isTaskActive || addMessageMutation.isPending}
             className="compose-textarea"
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !isMobile) {
@@ -711,7 +869,7 @@ export function ConversationDetailScreen({
             disabled={isSendDisabled}
             className="compose-send-button"
           >
-            {addMessageMutation.isPending ? "..." : "Send"}
+            {addMessageMutation.isPending ? "전송 중..." : "Send"}
           </button>
         </div>
       </div>

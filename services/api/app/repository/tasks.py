@@ -12,10 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from ..models import Task, TaskRun, TaskTurn
-from ..schemas import CreateTaskRequest
+from ..schemas import TaskCreate
 from .naming import build_workspace_ref
+from .scheduled_actions import record_scheduled_task_status
 
-def create_task(db: Session, payload: CreateTaskRequest, project_name: str | None = None) -> Task:
+def create_task(db: Session, payload: TaskCreate, project_name: str | None = None) -> Task:
     task = Task(
         project_id=payload.project_id,
         title=payload.title,
@@ -83,6 +84,7 @@ def get_task(db: Session, task_id: str) -> Task | None:
 def delete_task(db: Session, task_id: str) -> None:
     task = db.get(Task, task_id)
     if task:
+        record_scheduled_task_status(db, task.id, "stopped")
         db.delete(task)
         db.commit()
 
@@ -160,6 +162,7 @@ def set_task_status(
     effective_model: str | None = None,
 ) -> Task:
     task.status = status
+    record_scheduled_task_status(db, task.id, status)
     if runtime_session_id is not None:
         task.runtime_session_id = runtime_session_id
     if effective_model is not None:

@@ -26,6 +26,7 @@ from ..schemas import (
     ConversationDetail,
     ConversationMessageItem,
     ConversationSummary,
+    ScheduledActionItem,
     GlobalPromptItem,
     PendingInteractionType,
     ProjectPipelineItem,
@@ -136,7 +137,7 @@ def serialize_task_detail(task: Task) -> TaskDetail:
         session_id=session_id_for_task(task),
         turns=[serialize_turn(item) for item in sorted(task.turns, key=lambda turn: turn.created_at)],
         runs=[serialize_run(item) for item in sorted(task.runs, key=lambda run: run.created_at)],
-        project=serialize_project(task.project),
+        project=serialize_project(task.project) if task.project else None,
         approvals=[
             TaskApprovalResponse(action=item.action, actor=item.actor, created_at=item.created_at)
             for item in task.approvals
@@ -178,6 +179,9 @@ def serialize_conversation_message(msg: ConversationMessage, *, deferred: bool =
         content="" if deferred else msg.content,
         created_at=msg.created_at,
         is_deferred=deferred,
+        attachments=[] if deferred else [
+            {"id": item.id, "name": item.name, "size": item.size} for item in msg.attachments
+        ],
     )
 
 
@@ -195,6 +199,10 @@ def serialize_conversation_summary(conv: Conversation) -> ConversationSummary:
         and last_msg.role == "assistant"
         and (conv.last_read_at is None or last_msg.created_at > conv.last_read_at)
     )
+    scheduled_result = conv.last_scheduled_update_at
+    is_unread = is_unread or (scheduled_result is not None and (
+        conv.last_read_at is None or scheduled_result > conv.last_read_at
+    ))
     return ConversationSummary(
         id=conv.id,
         title=conv.title,
@@ -206,6 +214,7 @@ def serialize_conversation_summary(conv: Conversation) -> ConversationSummary:
         updated_at=conv.updated_at,
         last_response_at=last_response.created_at if last_response else None,
         is_unread=is_unread,
+        last_scheduled_update_at=scheduled_result,
     )
 
 
@@ -225,7 +234,7 @@ def serialize_conversation_detail(
         project_name=conv.project.name if conv.project else None,
         task_id=conv.task_id,
         task_status=task.status if task else None,  # type: ignore[arg-type]
-        task_workspace_ref=task.workspace_ref if task else None,
+        task_workspace_ref=task.workspace_ref if task and task.workspace_type != "directory" else None,
         task_base_branch=task.project.default_branch if task and task.project else None,
         task_model=task.effective_model or task.model if task else None,
         task_profile=task.profile if task else None,
@@ -247,6 +256,10 @@ def serialize_conversation_detail(
             for index, msg in enumerate(rows)
         ],
         has_more_messages=has_more_messages,
+        scheduled_actions=[
+            ScheduledActionItem(id=action.id, content=action.content, run_at=action.run_at, status=action.status)
+            for action in conv.scheduled_actions
+        ],
         created_at=conv.created_at,
         updated_at=conv.updated_at,
     )

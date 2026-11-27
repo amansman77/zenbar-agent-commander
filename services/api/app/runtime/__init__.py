@@ -16,10 +16,10 @@ Import from the package, not its submodules: `from .runtime import
 RuntimeAdapter`.
 """
 
-from .base import RuntimeAdapter, is_default_model_alias
+from .base import RuntimeAdapter, RuntimeSessionReattachError, is_default_model_alias
 from .app_server import AppServerWebSocketAdapter, PendingRequest, SessionState
 from .mock import MockRuntimeAdapter
-from .factory import ENGINE_LABELS, create_engine_adapters, create_runtime_adapter
+from .factory import ENGINE_LABELS, create_codex_provider_adapters, create_engine_adapters, create_runtime_adapter
 
 __all__ = [
     "ENGINE_LABELS",
@@ -27,7 +27,9 @@ __all__ = [
     "MockRuntimeAdapter",
     "PendingRequest",
     "RuntimeAdapter",
+    "RuntimeSessionReattachError",
     "SessionState",
+    "create_codex_provider_adapters",
     "create_engine_adapters",
     "create_runtime_adapter",
     "is_default_model_alias",

@@ -29,7 +29,158 @@ Base.metadata.create_all(bind=engine)
 
 client = TestClient(app)
 
+
+@pytest.fixture
+def attachment_conversation(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZENBAR_ATTACHMENT_ROOT", str(tmp_path / "attachments"))
+    monkeypatch.setenv("ZENBAR_WORKSPACE_ROOT", str(tmp_path / "workspaces"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    repo = init_repo(str(tmp_path))
+    project = client.post("/projects", json={"name": "Attachments", "repo_path": str(repo), "default_branch": "main"}).json()
+    conversation = client.post("/conversations", json={"project_id": project["id"]}).json()
+    yield conversation["id"]
+    client.delete(f"/conversations/{conversation['id']}", headers={"X-Zenbar-Token": os.getenv("ZENBAR_API_TOKEN", "")})
+
 ACTIVE_STATUSES_FOR_TEST = {"queued", "starting", "running", "waiting_user_input", "waiting_result_approval"}
+
+
+def upload_attachment(base: str, name: str, content: bytes):
+    return client.post(base, params={"name": name}, content=content, headers={"Content-Type": "application/octet-stream"})
+
+
+def test_attachment_upload_download_and_delete(attachment_conversation, tmp_path):
+    base = f"/conversations/{attachment_conversation}/attachments"
+    uploaded = upload_attachment(base, "요구사항.html", b"<script>alert(1)</script>")
+    assert uploaded.status_code == 201
+    attachment = uploaded.json()
+    assert attachment == {"id": attachment["id"], "name": "요구사항.html", "size": 25}
+    downloaded = client.get(f"{base}/{attachment['id']}")
+    assert downloaded.content == b"<script>alert(1)</script>"
+    assert downloaded.headers["content-type"] == "application/octet-stream"
+    assert downloaded.headers["x-content-type-options"] == "nosniff"
+    assert downloaded.headers["content-disposition"].startswith("attachment;")
+    other = client.post("/conversations", json={}).json()
+    assert client.get(f"/conversations/{other['id']}/attachments/{attachment['id']}").status_code == 404
+    assert client.delete(f"{base}/{attachment['id']}").status_code == 204
+    assert client.get(f"{base}/{attachment['id']}").status_code == 404
+    assert not list((tmp_path / "attachments").rglob("*.html"))
+    assert not (tmp_path / "attachments" / attachment_conversation).exists()
+
+
+@pytest.mark.parametrize("name", ["../secret.txt", "folder/file.txt", "folder\\file.txt", ".", "..", " ", "bad\nname.txt"])
+def test_attachment_rejects_unsafe_names(attachment_conversation, name):
+    response = upload_attachment(f"/conversations/{attachment_conversation}/attachments", name, b"data")
+    assert response.status_code == 400
+
+
+def test_attachment_limits_and_empty_file_cleanup(attachment_conversation, monkeypatch, tmp_path):
+    from app.routers import conversations as router
+
+    monkeypatch.setattr(router, "MAX_ATTACHMENT_BYTES", 4)
+    monkeypatch.setattr(router, "MAX_CONVERSATION_ATTACHMENT_BYTES", 6)
+    base = f"/conversations/{attachment_conversation}/attachments"
+    assert upload_attachment(base, "empty.txt", b"").status_code == 400
+    assert upload_attachment(base, "large.txt", b"12345").status_code == 413
+    assert upload_attachment(base, "first.txt", b"1234").status_code == 201
+    assert upload_attachment(base, "second.txt", b"123").status_code == 413
+    monkeypatch.setattr(router, "conversation_attachment_bytes", lambda *args: 0)
+    assert upload_attachment(base, "stale-quota.txt", b"123").status_code == 413
+    assert [path.name for path in (tmp_path / "attachments").rglob("*.txt")] == ["first.txt"]
+
+
+def test_attachment_authorization(attachment_conversation, monkeypatch):
+    base = f"/conversations/{attachment_conversation}/attachments"
+    attachment = upload_attachment(base, "private.txt", b"private").json()
+    monkeypatch.setenv("ZENBAR_API_TOKEN", "attachment-test-only")
+    assert client.get(f"{base}/{attachment['id']}").status_code == 401
+    assert upload_attachment(base, "new.txt", b"private").status_code == 401
+    assert client.delete(f"{base}/{attachment['id']}").status_code == 401
+    assert client.get(f"{base}/{attachment['id']}", params={"token": "attachment-test-only"}).status_code == 200
+
+
+def test_attachment_message_validation(attachment_conversation):
+    base = f"/conversations/{attachment_conversation}"
+    attachment = upload_attachment(f"{base}/attachments", "notes.txt", b"notes").json()
+    other = client.post("/conversations", json={}).json()
+    foreign = upload_attachment(f"/conversations/{other['id']}/attachments", "other.txt", b"other").json()
+    for ids, role, expected in [
+        ([attachment["id"], attachment["id"]], "user", 400),
+        ([foreign["id"]], "user", 404),
+        (["unknown"], "user", 404),
+        ([attachment["id"]], "assistant", 400),
+        ([attachment["id"]] * 11, "user", 422),
+    ]:
+        response = client.post(f"{base}/messages", json={"content": "check", "role": role, "attachment_ids": ids})
+        assert response.status_code == expected
+    assert client.get(base).json()["messages"] == []
+
+
+def test_attachment_only_message_followup_and_restart(attachment_conversation, monkeypatch, tmp_path):
+    from app.main import orchestrator
+    from app.repository import latest_user_message_for_task
+
+    base = f"/conversations/{attachment_conversation}"
+    first = upload_attachment(f"{base}/attachments", "first.txt", b"first").json()
+    started = client.post(f"{base}/messages", json={"attachment_ids": [first["id"]]})
+    assert started.status_code == 201
+    body = started.json()
+    task_id = body["task_id"]
+    user = next(message for message in body["messages"] if message["role"] == "user")
+    assert user["content"] == ""
+    assert user["attachments"] == [first]
+    assert body["title"] == "first.txt"
+    assert client.delete(f"{base}/attachments/{first['id']}").status_code == 409
+    path = next((tmp_path / "attachments").rglob("first.txt"))
+    with SessionLocal() as db:
+        assert str(path) in get_task(db, task_id).prompt
+
+    second = upload_attachment(f"{base}/attachments", "second.txt", b"second").json()
+    assert client.post(f"{base}/messages", json={"attachment_ids": [second["id"]]}).status_code == 409
+    assert client.post(f"/tasks/{task_id}/approve", json={"actor": "pytest"}).status_code == 200
+    followed = client.post(f"{base}/messages", json={"content": "두 번째 파일을 확인해줘", "attachment_ids": [second["id"]]})
+    assert followed.status_code == 201
+    users = [message for message in followed.json()["messages"] if message["role"] == "user"]
+    assert users[0]["attachments"] == [first]
+    assert users[1]["attachments"] == [second]
+    latest_path = next((tmp_path / "attachments").rglob("second.txt"))
+    with SessionLocal() as db:
+        assert str(latest_path) in latest_user_message_for_task(db, task_id)
+        task = get_task(db, task_id)
+        task.status = "failed"
+        task.runtime_session_id = None
+        db.commit()
+    captured = []
+    original_start = orchestrator.adapter.start_task
+
+    async def capture_start(request):
+        captured.append(request.prompt)
+        return await original_start(request)
+
+    monkeypatch.setattr(orchestrator.adapter, "start_task", capture_start)
+    assert client.post(f"/tasks/{task_id}/retry", json={"actor": "pytest"}).status_code == 200
+    current_request = captured[-1].split("[현재 요청]", 1)[1]
+    assert "두 번째 파일을 확인해줘" in current_request
+    assert str(latest_path) in current_request
+    assert client.delete(base).status_code == 204
+    assert not list((tmp_path / "attachments").rglob("*.txt"))
+
+
+def test_attachment_can_be_referenced_again_without_losing_history(attachment_conversation):
+    base = f"/conversations/{attachment_conversation}"
+    attachment = upload_attachment(f"{base}/attachments", "notes.txt", b"notes").json()
+    first = client.post(f"{base}/messages", json={"content": "first", "attachment_ids": [attachment["id"]]}).json()
+    assert client.post(f"/tasks/{first['task_id']}/approve", json={"actor": "pytest"}).status_code == 200
+    second = client.post(f"{base}/messages", json={"content": "again", "attachment_ids": [attachment["id"]]})
+    assert second.status_code == 201
+    users = [message for message in second.json()["messages"] if message["role"] == "user"]
+    assert [message["attachments"] for message in users] == [[attachment], [attachment]]
+
+
+def test_attachment_rejects_simple_form_uploads(attachment_conversation, tmp_path):
+    base = f"/conversations/{attachment_conversation}/attachments"
+    response = client.post(base, params={"name": "file.txt"}, content=b"data", headers={"Content-Type": "text/plain"})
+    assert response.status_code == 415
+    assert not (tmp_path / "attachments").exists()
 
 
 def init_repo(tmpdir: str) -> Path:
@@ -384,7 +535,7 @@ def test_workspace_file_rejects_path_escaping_the_workspace():
         assert response.status_code == 400
 
 
-def test_workspace_file_rejects_non_image_extensions():
+def test_workspace_file_serves_text_only_inside_the_workspace():
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
         project = client.post(
@@ -397,7 +548,15 @@ def test_workspace_file_rejects_non_image_extensions():
         ).json()
 
         response = client.get(f"/tasks/{task['id']}/workspace-file", params={"path": "README.md"})
-        assert response.status_code == 400
+        assert response.status_code == 200
+        assert response.text == "hello\n"
+        assert response.headers["content-type"].startswith("text/plain")
+        assert response.headers["x-content-type-options"] == "nosniff"
+
+        outside = Path(tmpdir) / "outside.md"
+        outside.write_text("outside the workspace")
+        rejected = client.get(f"/tasks/{task['id']}/workspace-file", params={"path": str(outside)})
+        assert rejected.status_code == 400
 
 
 def test_workspace_file_serves_html_preview_with_sandbox_headers():
@@ -1297,6 +1456,76 @@ def test_reconcile_active_tasks_marks_stale_sessions_failed():
         assert detail.json()["runtime_session_id"] is None
 
 
+def test_startup_reattaches_active_codex_turn_and_consumes_its_events(monkeypatch, tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app import service
+    from app.repository import create_project, create_task, set_task_status, set_task_workspace
+    from app.runtime import AppServerWebSocketAdapter
+    from app.schemas import CreateProjectRequest, CreateTaskRequest
+
+    test_engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=test_engine)
+    session_factory = sessionmaker(bind=test_engine)
+    monkeypatch.setattr(service, "SessionLocal", session_factory)
+
+    session_id = "thread-1"
+    with session_factory() as db:
+        project = create_project(db, CreateProjectRequest(name="Codex Reattach", repo_path=str(tmp_path)))
+        task = create_task(db, CreateTaskRequest(project_id=project.id, title="Resume", prompt="Start", model="default"))
+        task_id = task.id
+        set_task_workspace(db, task, str(tmp_path))
+        set_task_status(db, task, "running", runtime_session_id=session_id)
+
+    adapter = AppServerWebSocketAdapter("ws://127.0.0.1:0")
+    orchestrator = service.TaskOrchestrator({"codex": adapter})
+    app_server_ready = False
+
+    async def rpc(method, params):
+        assert method == "thread/resume"
+        assert params["threadId"] == session_id
+        if not app_server_ready:
+            raise ConnectionRefusedError("App Server offline")
+        await adapter._handle_server_request({
+            "id": 99,
+            "method": "item/tool/requestUserInput",
+            "params": {"threadId": session_id, "turnId": "turn-1", "questions": []},
+        })
+        return {"thread": {
+            "id": session_id,
+            "status": {"type": "active"},
+            "turns": [{"id": "turn-1", "status": "inProgress"}],
+        }}
+
+    monkeypatch.setattr(adapter, "_rpc", rpc)
+
+    async def scenario():
+        nonlocal app_server_ready
+        await orchestrator.reconcile_active_tasks()
+        with session_factory() as db:
+            current = get_task(db, task_id)
+            assert current.status == "running"
+            assert current.runtime_session_id == session_id
+
+        app_server_ready = True
+        await orchestrator.reconcile_active_tasks()
+        async with asyncio.timeout(2):
+            while True:
+                with session_factory() as db:
+                    current = get_task(db, task_id)
+                    if current.status == "waiting_user_input":
+                        assert current.runtime_session_id == session_id
+                        assert current.pending_request_id == "99"
+                        break
+                await asyncio.sleep(0.01)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        test_engine.dispose()
+
+
 def _fake_claude_cli(tmp: Path) -> tuple[Path, Path]:
     """A stand-in `claude` that records its argv and prints one result line."""
     log = tmp / "claude-argv.log"
@@ -1706,7 +1935,8 @@ def test_stale_runtime_session_after_completion_keeps_completed_status(monkeypat
         assert body["status"] == "completed"
 
 
-def test_consume_events_stops_after_a_failed_event_instead_of_reconnecting(monkeypatch):
+@pytest.mark.parametrize("initial_status", ["running", "completed"])
+def test_consume_events_stops_after_a_failed_event_instead_of_reconnecting(monkeypatch, initial_status):
     # Regression: a "failed" event delivered as a normal item on the stream
     # (exactly what the notLoaded handler in runtime/app_server.py does --
     # not an exception) already moved task.status to "failed" via
@@ -1718,7 +1948,11 @@ def test_consume_events_stops_after_a_failed_event_instead_of_reconnecting(monke
     from app.main import orchestrator
 
     async def one_failed_event_then_clean_end(_session_id: str):
-        yield RuntimeEvent(type="failed", message="Codex App Server reports this session as 'notLoaded'")
+        yield RuntimeEvent(
+            type="failed",
+            message="Codex App Server reports this session as 'notLoaded'",
+            payload={"reason": "thread_status_notLoaded"},
+        )
 
     with TemporaryDirectory() as tmpdir:
         repo = init_repo(tmpdir)
@@ -1739,7 +1973,7 @@ def test_consume_events_stops_after_a_failed_event_instead_of_reconnecting(monke
         with SessionLocal() as db:
             current = get_task(db, task["id"])
             assert current is not None
-            current.status = "running"
+            current.status = initial_status
             current.runtime_session_id = "some-session"
             db.add(current)
             db.commit()
@@ -1755,7 +1989,7 @@ def test_consume_events_stops_after_a_failed_event_instead_of_reconnecting(monke
 
         detail = client.get(f"/tasks/{task['id']}")
         assert detail.status_code == 200
-        assert detail.json()["status"] == "failed"
+        assert detail.json()["status"] == ("failed" if initial_status == "running" else initial_status)
 
 
 def test_consume_events_auto_recovers_from_stuck_heartbeat_only_session(monkeypatch):
@@ -1904,6 +2138,106 @@ def test_ensure_schema_migrates_waiting_approval_to_waiting_result_approval():
         task = get_task(db, "task-migrate")
         assert task is not None
         assert task.status == "waiting_result_approval"
+
+
+def test_general_conversation_uses_shared_directory_and_leaves_it_intact(tmp_path, monkeypatch):
+    from app.runtime_registry import orchestrator
+    from app.schemas import RuntimeStartRequest
+
+    workspace = tmp_path / "Workspace"
+    workspace.mkdir()
+    existing_file = workspace / "notes.txt"
+    existing_file.write_text("keep me")
+    monkeypatch.setenv("ZENBAR_GENERAL_WORKSPACE", str(workspace))
+    monkeypatch.setenv("ZENBAR_ATTACHMENT_ROOT", str(tmp_path / "attachments"))
+    requests: list[RuntimeStartRequest] = []
+    original_start = orchestrator.adapter.start_task
+
+    async def capture_start(request):
+        requests.append(request)
+        return await original_start(request)
+
+    monkeypatch.setattr(orchestrator.adapter, "start_task", capture_start)
+    created = client.post("/conversations", json={"project_id": None})
+    assert created.status_code == 201
+    conversation = created.json()
+    assert conversation["project_id"] is None
+    conversation_url = f"/conversations/{conversation['id']}"
+    upload = upload_attachment(f"{conversation_url}/attachments", "question.txt", b"What is in this folder?")
+    assert upload.status_code == 201, upload.text
+    started = client.post(f"{conversation_url}/messages", json={"attachment_ids": [upload.json()["id"]]})
+    assert started.status_code == 201, started.text
+    assert started.json()["task_workspace_ref"] is None
+    task_id = started.json()["task_id"]
+    task_url = f"/tasks/{task_id}"
+    task = client.get(task_url).json()
+    assert task["project"] is None
+    assert task["workspace_type"] == "directory"
+    assert task["workspace_path"] == str(workspace.resolve())
+    assert requests[0].working_directory == task["workspace_path"]
+    assert "question.txt" in requests[0].prompt
+    assert started.json()["messages"][0]["attachments"] == [upload.json()]
+    assert list(workspace.iterdir()) == [existing_file]
+    assert client.post(f"{task_url}/commit", json={"message": "test"}).status_code == 409
+    assert client.post(f"{task_url}/approve", json={}).status_code == 200
+    followed_up = client.post(f"{conversation_url}/messages", json={"content": "Tell me more"})
+    assert followed_up.status_code == 201, followed_up.text
+    assert followed_up.json()["task_id"] == task_id
+    assert len(requests) == 1
+
+    with SessionLocal() as db:
+        stored_task = get_task(db, task_id)
+        stored_task.status = "failed"
+        stored_task.runtime_session_id = None
+        db.commit()
+    monkeypatch.setenv("ZENBAR_GENERAL_WORKSPACE", str(tmp_path))
+    retried = client.post(f"{task_url}/retry", json={})
+    assert retried.status_code == 200, retried.text
+    assert requests[-1].working_directory == requests[0].working_directory
+    assert "[현재 요청]\nTell me more" in requests[-1].prompt
+
+    assert client.delete(conversation_url).status_code == 204
+    assert client.get(task_url).status_code == 404
+    assert existing_file.read_text() == "keep me"
+    assert not list((tmp_path / "attachments").rglob("*.txt"))
+
+
+def test_schema_migration_keeps_existing_tasks_and_conversation_links(tmp_path, monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app import db as app_db
+    from app.models import Conversation, Project, Task
+
+    database_url = f"sqlite:///{tmp_path / 'legacy.db'}"
+    legacy_engine = create_engine(database_url)
+    monkeypatch.setattr(app_db, "engine", legacy_engine)
+    monkeypatch.setattr(app_db, "DATABASE_URL", database_url)
+    Base.metadata.create_all(legacy_engine)
+    with legacy_engine.begin() as connection:
+        ddl = connection.exec_driver_sql("SELECT sql FROM sqlite_master WHERE name = 'tasks'").scalar_one()
+        connection.exec_driver_sql("DROP TABLE tasks")
+        connection.exec_driver_sql(ddl.replace("project_id VARCHAR", "project_id VARCHAR NOT NULL", 1))
+        connection.exec_driver_sql("CREATE INDEX legacy_tasks_project ON tasks(project_id)")
+    with Session(legacy_engine) as db:
+        project = Project(name="Legacy", repo_path="/tmp/repo", default_branch="main")
+        task = Task(project=project, title="Legacy", prompt="Original", workspace_ref="task/legacy")
+        db.add(Conversation(id="legacy-conversation", project=project, task=task))
+        db.commit()
+
+    ensure_schema()
+    ensure_schema()
+
+    with Session(legacy_engine) as db:
+        conversation = db.get(Conversation, "legacy-conversation")
+        assert conversation.task.prompt == "Original"
+        assert conversation.task.project.name == "Legacy"
+        db.add(Task(title="General", prompt="New", workspace_ref="general", workspace_type="directory"))
+        db.commit()
+    with legacy_engine.connect() as connection:
+        assert not connection.exec_driver_sql("PRAGMA foreign_key_check").all()
+        assert "legacy_tasks_project" in [row[1] for row in connection.exec_driver_sql("PRAGMA index_list(tasks)")]
+    legacy_engine.dispose()
 
 
 def test_get_runtime_profiles_reads_codex_home_config_profiles(tmp_path, monkeypatch):
@@ -3956,3 +4290,205 @@ def test_session_restart_is_mirrored_into_the_conversation():
             message["role"] == "assistant" and "새 Codex 세션으로 다시 시작했습니다" in message["content"]
             for message in detail["messages"]
         )
+
+
+def test_a_conversation_can_continue_on_another_engine():
+    # A Codex conversation switched to Claude keeps its worktree and hands the
+    # transcript over, with the new message as the only instruction.
+    from app.main import orchestrator
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Engine Switch", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        conversation = client.post("/conversations", json={"project_id": project["id"]}).json()
+        started = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "로그인 버그를 고쳐줘", "model": "default", "profile": "some-codex-profile"},
+        )
+        task_id = started.json()["task_id"]
+        with SessionLocal() as db:
+            before = get_task(db, task_id)
+            workspace, branch = before.workspace_path, before.workspace_ref
+            before.status = "completed"
+            db.add(before)
+            db.commit()
+
+        switched = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "테스트도 추가해줘", "engine": "claude", "model": "opus"},
+        )
+        assert switched.status_code == 201
+
+        with SessionLocal() as db:
+            after = get_task(db, task_id)
+            assert (after.engine, after.model, after.profile) == ("claude", "opus", None)
+            assert (after.workspace_path, after.workspace_ref) == (workspace, branch)
+            session_id = after.runtime_session_id
+        prompt = orchestrator.adapters["claude"]._requests[session_id].prompt
+        assert "지금까지 Codex(으)로 진행됐고, 이번 요청부터 Claude(으)로 이어집니다" in prompt
+        assert "로그인 버그를 고쳐줘" in prompt  # history
+        assert prompt.rstrip().endswith("테스트도 추가해줘")  # the only instruction
+
+        events = client.get(f"/tasks/{task_id}/events").json()
+        switch = [e for e in events if (e.get("payload_json") or {}).get("reason") == "engine_switched"]
+        assert switch and switch[0]["payload_json"]["from_engine"] == "codex"
+        detail = client.get(f"/conversations/{conversation['id']}").json()
+        assert any("엔진을 Codex에서 Claude(으)로 전환합니다" in m["content"] for m in detail["messages"])
+
+
+def test_switching_engine_is_refused_mid_turn_and_for_unknown_engines():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects", json={"name": "Engine Guard", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        conversation = client.post("/conversations", json={"project_id": project["id"]}).json()
+        task_id = client.post(
+            f"/conversations/{conversation['id']}/messages", json={"content": "시작", "model": "default"},
+        ).json()["task_id"]
+        with SessionLocal() as db:
+            current = get_task(db, task_id)
+            current.status = "completed"
+            db.add(current)
+            db.commit()
+        unknown = client.post(f"/conversations/{conversation['id']}/messages",
+                              json={"content": "이어서", "engine": "nonexistent"})
+        assert unknown.status_code == 409
+        with SessionLocal() as db:
+            assert (get_task(db, task_id).engine or "codex") == "codex"
+
+
+def test_handoff_keeps_the_most_recent_messages_within_the_budget():
+    from app.resume_context import ResumeMessage, fit_to_budget
+
+    messages = [ResumeMessage("user", "x" * 1500) for _ in range(10)] + [ResumeMessage("user", "마지막")]
+    kept = fit_to_budget(messages, 4000)
+    assert kept[-1].content == "마지막"
+    assert len(kept) == 3
+def test_scheduled_conversation_followup_runs_once_and_reports_its_status(tmp_path, monkeypatch):
+    from datetime import timedelta, timezone
+
+    from app import scheduled_actions
+    from app.main import orchestrator
+    from app.repository import scheduled_actions as schedule_repo
+
+    repo = init_repo(str(tmp_path))
+    project = client.post("/projects", json={"name": "Scheduled QA", "repo_path": str(repo)}).json()
+    conversation_id = client.post("/conversations", json={"project_id": project["id"]}).json()["id"]
+    conversation_url = f"/conversations/{conversation_id}"
+    task = client.post(f"{conversation_url}/messages", json={"content": "Initial request"}).json()
+    task_id = task["task_id"]
+    assert task["task_status"] == "waiting_result_approval"
+
+    now = datetime.now(timezone.utc)
+    url = f"{conversation_url}/scheduled-actions"
+    assert client.post(url, json={"content": "Past", "run_at": now.isoformat()}).status_code == 422
+    assert client.post(url, json={"content": "Naive", "run_at": "2030-01-01T09:00:00"}).status_code == 422
+    run_at = (now + timedelta(hours=1)).isoformat()
+    scheduled = client.post(url, json={"content": "Inspect published listing", "run_at": run_at})
+    assert scheduled.status_code == 201
+    assert len(scheduled.json()["messages"]) == len(task["messages"])
+    assert scheduled.json()["scheduled_actions"][0]["status"] == "pending"
+
+    duplicate = client.post(url, json={"content": "Inspect published listing", "run_at": run_at})
+    assert duplicate.status_code == 201
+    assert len(duplicate.json()["scheduled_actions"]) == 1
+
+    cancellable = client.post(url, json={"content": "Cancelled instruction", "run_at": run_at})
+    cancel_id = next(a["id"] for a in cancellable.json()["scheduled_actions"] if a["content"].startswith("Cancelled"))
+    assert client.delete(f"{url}/{cancel_id}").status_code == 204
+    asyncio.run(scheduled_actions.run_due_scheduled_actions(orchestrator))
+    assert client.get(conversation_url).json()["scheduled_actions"][0]["status"] == "pending"
+
+    monkeypatch.setattr(schedule_repo, "utcnow", lambda: now + timedelta(hours=2))
+    asyncio.run(scheduled_actions.run_due_scheduled_actions(orchestrator))
+    assert client.get(conversation_url).json()["scheduled_actions"][0]["status"] == "pending"
+
+    assert client.post(f"/tasks/{task_id}/approve", json={"actor": "user"}).status_code == 200
+    asyncio.run(scheduled_actions.run_due_scheduled_actions(orchestrator))
+    running = client.get(conversation_url).json()
+    assert running["task_status"] == "waiting_result_approval"
+    assert running["scheduled_actions"][0]["status"] == "running"
+    assert client.delete(f"{url}/{running['scheduled_actions'][0]['id']}").status_code == 409
+    assert client.post(f"/tasks/{task_id}/approve", json={"actor": "user"}).status_code == 200
+
+    asyncio.run(scheduled_actions.run_due_scheduled_actions(orchestrator))
+    detail = client.get(conversation_url).json()
+    assert detail["task_id"] == task_id
+    assert [a["status"] for a in detail["scheduled_actions"]] == ["completed"]
+    actions = client.get("/conversations/scheduled-actions")
+    assert actions.status_code == 200
+    assert [a for a in actions.json() if a["conversation_id"] == conversation_id] == [{
+        **detail["scheduled_actions"][0],
+        "conversation_id": conversation_id,
+        "conversation_title": detail["title"],
+        "project_name": "Scheduled QA",
+    }]
+    contents = [message["content"] for message in detail["messages"]]
+    assert sum("Inspect published listing" in content for content in contents) == 1
+    assert all("Cancelled instruction" not in content for content in contents)
+    summary = next(c for c in client.get("/conversations?preview_count=1").json() if c["id"] == conversation_id)
+    assert summary["last_scheduled_update_at"] is not None
+    assert summary["is_unread"]
+
+
+def test_codex_tool_registers_a_followup_in_its_conversation(tmp_path, monkeypatch):
+    from datetime import timedelta, timezone
+    from unittest.mock import AsyncMock
+
+    from app.runtime import AppServerWebSocketAdapter
+    from app.schemas import RuntimeStartRequest
+    from app.service import TaskOrchestrator
+
+    repo = init_repo(str(tmp_path))
+    project = client.post("/projects", json={"name": "Codex scheduling", "repo_path": str(repo)}).json()
+    conversation_id = client.post("/conversations", json={"project_id": project["id"]}).json()["id"]
+    other_id = client.post("/conversations", json={"project_id": project["id"]}).json()["id"]
+    url = f"/conversations/{conversation_id}"
+    task_id = client.post(f"{url}/messages", json={"content": "Check the release tomorrow at 9 AM KST"}).json()["task_id"]
+    adapter = AppServerWebSocketAdapter("ws://127.0.0.1:0")
+    TaskOrchestrator({"codex": adapter})
+    rpc = AsyncMock(side_effect=[{"thread": {"id": "thread-1"}}, {"turn": {"id": "turn-1"}}])
+    send = AsyncMock()
+    monkeypatch.setattr(adapter, "_ensure_connection", AsyncMock())
+    monkeypatch.setattr(adapter, "_rpc", rpc)
+    monkeypatch.setattr(adapter, "_send_json", send)
+    asyncio.run(adapter.start_task(RuntimeStartRequest(
+        task_id=task_id, title="Check release", prompt="Check the release tomorrow at 9 AM KST",
+        model="default", repo_path=str(repo), working_directory=str(repo), default_branch="main",
+        workspace_type="worktree", workspace_ref="task/release",
+    )))
+    tool = rpc.await_args_list[0].args[1]["dynamicTools"][0]
+    assert tool["name"] == "schedule_conversation_followup"
+
+    def call_tool(run_at: str, *, thread: str = "thread-1", turn: str = "turn-1") -> dict:
+        asyncio.run(adapter._handle_server_request({
+            "id": 9, "method": "item/tool/call", "params": {
+                "threadId": thread, "turnId": turn, "tool": tool["name"],
+                "arguments": {"content": "Check the release", "run_at": run_at},
+            },
+        }))
+        response = send.await_args.args[0]
+        assert response["id"] == 9
+        return response["result"]
+
+    now = datetime.now(timezone(timedelta(hours=9)))
+    run_at = (now + timedelta(days=1)).isoformat()
+    assert not call_tool(now.isoformat())["success"]
+    assert not call_tool((now + timedelta(days=1)).replace(tzinfo=None).isoformat())["success"]
+    assert not call_tool(run_at, thread="missing")["success"]
+    assert not call_tool(run_at, turn="old-turn")["success"]
+    assert client.get(url).json()["scheduled_actions"] == []
+
+    result = call_tool(run_at)
+    assert result["success"] and run_at in result["contentItems"][0]["text"]
+    assert call_tool(run_at)["success"]
+    saved = client.get(url).json()["scheduled_actions"]
+    assert len(saved) == 1
+    assert saved[0]["content"] == "Check the release"
+    assert saved[0]["status"] == "pending"
+    assert datetime.fromisoformat(saved[0]["run_at"]) == datetime.fromisoformat(run_at)
+    assert client.get(f"/conversations/{other_id}").json()["scheduled_actions"] == []

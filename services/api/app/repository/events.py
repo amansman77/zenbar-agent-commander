@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Conversation, ConversationMessage, Task, TaskApproval, TaskEvent
 from ..schemas import RuntimeEvent, TaskDiff
+from .scheduled_actions import record_scheduled_task_status
 from .tasks import get_task, update_latest_run_status
 
 def normalize_event_type(event_type: str) -> str:
@@ -146,6 +147,8 @@ def append_event(db: Session, task: Task, event: RuntimeEvent) -> TaskEvent:
                 .where(Conversation.id == conv.id)
                 .values(updated_at=func.current_timestamp())
             )
+    if status is not None:
+        record_scheduled_task_status(db, task.id, status)
     update_latest_run_status(db, task, task.status)
     db.add(task)
     db.commit()

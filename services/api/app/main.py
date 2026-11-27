@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .db import Base, ensure_schema, engine
 from .routers import conversations, fs, global_prompts, project_prompts, projects, runtime_info, tasks
 from .runtime_registry import managed_app_server, orchestrator
+from .scheduled_actions import scheduled_action_worker
 from .security import allow_credentials_for, cors_origins, verify_api_access
 
 # Re-exported so `from app.main import orchestrator, model_catalog` keeps
@@ -36,10 +37,11 @@ from .runtime_registry import model_catalog, model_catalogs  # noqa: F401  isort
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     ensure_schema()
-    await orchestrator.reconcile_active_tasks()
-    await managed_app_server.start()
     try:
-        yield
+        await managed_app_server.start()
+        await orchestrator.reconcile_active_tasks()
+        async with scheduled_action_worker(orchestrator):
+            yield
     finally:
         await managed_app_server.stop()
 

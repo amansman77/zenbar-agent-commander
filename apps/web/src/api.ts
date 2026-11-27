@@ -3,6 +3,7 @@ import type {
   ApproveTaskRequest,
   CommitTaskRequest,
   ConversationDetail,
+  ConversationAttachmentItem,
   ConversationMessageItem,
   ConversationSummary,
   CreateConversationRequest,
@@ -30,6 +31,7 @@ import type {
   ReorderGlobalPromptsRequest,
   ReorderProjectPromptsRequest,
   RespondTaskRequest,
+  ScheduledActionListItem,
   SetPrReviewedRequest,
   TaskDetail,
   TaskDiff,
@@ -69,12 +71,12 @@ function authHeaders(): Record<string, string> {
 
 async function requestWithHeaders<T>(path: string, init?: RequestInit): Promise<{ data: T; headers: Headers }> {
   const response = await fetch(`${API_BASE}${path}`, {
+    ...init,
     headers: {
       "Content-Type": "application/json",
       ...authHeaders(),
       ...(init?.headers ?? {})
-    },
-    ...init
+    }
   });
 
   if (!response.ok) {
@@ -101,6 +103,26 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const TECHNICAL_EVENT_TYPES = ["command_executed", "agent_status"];
 
 export const api = {
+  getConversationAttachment: async (id: string, attachmentId: string, signal: AbortSignal) => {
+    const response = await fetch(`${API_BASE}/conversations/${id}/attachments/${attachmentId}`, {
+      headers: authHeaders(), signal,
+    });
+    if (!response.ok) throw new Error("첨부 이미지를 불러오지 못했습니다.");
+    return response.blob();
+  },
+  uploadConversationAttachment: (id: string, file: File) =>
+    request<ConversationAttachmentItem>(`/conversations/${id}/attachments?name=${encodeURIComponent(file.name)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: file,
+    }),
+  deleteConversationAttachment: (id: string, attachmentId: string) =>
+    request<void>(`/conversations/${id}/attachments/${attachmentId}`, { method: "DELETE" }),
+  conversationAttachmentUrl: (id: string, attachmentId: string) => {
+    const url = apiUrl(`/conversations/${id}/attachments/${attachmentId}`);
+    if (API_TOKEN) url.searchParams.set("token", API_TOKEN);
+    return url.toString();
+  },
   listConversations: (previewCount?: number) =>
     request<ConversationSummary[]>(
       previewCount != null ? `/conversations?preview_count=${previewCount}` : "/conversations"
@@ -146,6 +168,9 @@ export const api = {
     request<ConversationDetail>(`/conversations/${id}?metadata_only=true`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteConversation: (id: string) =>
     request<void>(`/conversations/${id}`, { method: "DELETE" }),
+  listScheduledActions: () => request<ScheduledActionListItem[]>("/conversations/scheduled-actions"),
+  cancelScheduledAction: (id: string, actionId: string) =>
+    request<void>(`/conversations/${id}/scheduled-actions/${actionId}`, { method: "DELETE" }),
   addConversationMessage: (id: string, payload: AddConversationMessageRequest) =>
     request<ConversationDetail>(`/conversations/${id}/messages?metadata_only=true`, {
       method: "POST",

@@ -22,6 +22,10 @@ from ..schemas import (
     TaskDiff,
 )
 
+class RuntimeSessionReattachError(RuntimeError):
+    """The runtime could not confirm whether an existing session can be resumed."""
+
+
 class RuntimeAdapter(ABC):
     stream_in_background = True
 
@@ -106,12 +110,19 @@ class RuntimeAdapter(ABC):
 
 
 def _prompt_with_workspace(request: RuntimeStartRequest) -> str:
+    skill_line = f"\nRequested skill: {request.selected_skill}" if request.selected_skill else ""
+    if request.workspace_type == "directory":
+        return (
+            f"Task title: {request.title}\n"
+            f"Task working directory: {request.working_directory}\n"
+            "This is a shared directory, not an isolated Git worktree.\n\n"
+            f"{request.prompt}{skill_line}"
+        )
     operation = (
         "Produce an implementation plan without modifying files or accepting final code changes."
         if request.execution_mode == "plan"
         else "Operate inside the current repository working directory."
     )
-    skill_line = f"\nRequested skill: {request.selected_skill}" if request.selected_skill else ""
     # This used to unconditionally instruct execute-mode tasks to "commit,
     # push, and open a GitHub pull request" once done, regardless of what the
     # user's own prompt actually asked for. Removed at the user's explicit

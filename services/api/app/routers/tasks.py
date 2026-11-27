@@ -256,7 +256,7 @@ async def post_session_turn(session_id: str, payload: FollowupTurnRequest, db: S
     if not content:
         raise HTTPException(status_code=400, detail="Follow-up content cannot be empty")
     try:
-        await orchestrator.followup_task(db, task, content, model=payload.model)
+        await orchestrator.launch_followup_task(db, task, content, model=payload.model)
     except Exception as exc:
         detail = safe_runtime_error_detail("Follow-up failed", exc)
         raise HTTPException(status_code=409, detail=detail) from exc
@@ -278,8 +278,8 @@ async def stream_task(task_id: str, db: Session = Depends(get_db)):
 # not as a URL or markdown image -- there's nothing else to fetch that path
 # from, since it only ever existed on this machine's disk (in the task's
 # worktree, or occasionally a scratch /tmp path the agent chose itself).
-# Deliberately narrow: only these extensions are servable -- this is a
-# preview endpoint for what an agent produced, not a general file read.
+# Images retain support for scratch paths outside the workspace. Other files
+# must belong to the task workspace; they may contain sensitive local data.
 _WORKSPACE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 # HTML previews (agents emit self-contained design prototypes) are served too,
 # but under two extra rules the images don't need, because HTML *executes*:
@@ -340,10 +340,6 @@ def get_task_workspace_file(task_id: str, path: str, db: Session = Depends(get_d
     task = require_task(get_task(db, task_id))
     suffix = Path(path).suffix.lower()
     is_html = suffix in _WORKSPACE_HTML_EXTENSIONS
-    if suffix not in _WORKSPACE_IMAGE_EXTENSIONS and not is_html:
-        raise HTTPException(
-            status_code=400, detail="Only image and HTML files can be served from this endpoint"
-        )
 
     workspace_root = Path(task.workspace_path).resolve() if task.workspace_path else None
 
@@ -362,16 +358,15 @@ def get_task_workspace_file(task_id: str, path: str, db: Session = Depends(get_d
         if not (resolved == workspace_root or workspace_root in resolved.parents):
             raise HTTPException(status_code=400, detail="Path escapes the task workspace")
 
-    # An absolute path is fine for an image (it is inert), but HTML is code:
-    # "render any .html on this disk" is a much larger blast radius than "view
-    # any .png", so previews are confined to the workspace the task produced
-    # them in, whichever form the path arrived as.
-    if is_html:
+    # General file links must not become an arbitrary host-file read. Resolve
+    # symlinks before checking scope, and recognize the host/container aliases
+    # in the same way as HTML previews.
+    if suffix not in _WORKSPACE_IMAGE_EXTENSIONS:
         if workspace_root is None:
             raise HTTPException(status_code=404, detail="Task has no workspace")
         if not _is_inside(resolved, workspace_root):
             raise HTTPException(
-                status_code=400, detail="HTML previews must live inside the task workspace"
+                status_code=400, detail="Files must live inside the task workspace"
             )
 
     if not resolved.is_file():
@@ -380,4 +375,25 @@ def get_task_workspace_file(task_id: str, path: str, db: Session = Depends(get_d
     media_type = guess_type(str(resolved))[0] or "application/octet-stream"
     if is_html:
         return FileResponse(resolved, media_type="text/html", headers=_HTML_PREVIEW_HEADERS)
-    return FileResponse(resolved, media_type=media_type)
+    if suffix in _WORKSPACE_IMAGE_EXTENSIONS:
+        return FileResponse(resolved, media_type=media_type)
+
+    # Unknown types download instead of executing on the dashboard origin.
+    # Reports and source files open as plain text; HTML keeps its sandboxed
+    # preview above. Never trust a guessed MIME type for arbitrary file types.
+    headers = {
+        "Content-Security-Policy": "sandbox; default-src 'none'",
+        "X-Content-Type-Options": "nosniff",
+    }
+    text_extensions = {
+        ".md", ".txt", ".log", ".csv", ".tsv", ".json", ".yaml", ".yml",
+        ".toml", ".xml", ".py", ".js", ".ts", ".tsx", ".jsx", ".css",
+        ".sh", ".sql", ".ini", ".cfg",
+    }
+    if suffix in text_extensions:
+        return FileResponse(resolved, media_type="text/plain", headers=headers)
+    if suffix == ".pdf":
+        return FileResponse(resolved, media_type="application/pdf", headers=headers)
+    return FileResponse(
+        resolved, media_type="application/octet-stream", filename=resolved.name, headers=headers
+    )

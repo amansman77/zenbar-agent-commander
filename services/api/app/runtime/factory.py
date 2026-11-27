@@ -59,3 +59,24 @@ def create_engine_adapters() -> tuple[dict[str, RuntimeAdapter], str]:
     }
     default_engine = {"antigravity_cli": "antigravity", "grok_cli": "grok", "claude_cli": "claude"}.get(mode, "codex")
     return adapters, default_engine
+
+
+def create_codex_provider_adapters() -> dict[str, RuntimeAdapter]:
+    """One Codex adapter per App Server pinned to a provider, keyed by provider.
+
+    Codex 0.166 (openai/codex#57840) accepts input on a thread only when the
+    thread's provider matches the App Server's own: config.toml plus launch
+    overrides, never a per-request override. The default App Server takes
+    config.toml's provider, so a profile on another provider (azure) needs a
+    server started with `-c model_provider=...`. ZENBAR_APP_SERVER_PROVIDER_URLS
+    lists them as "azure=ws://127.0.0.1:18766,other=ws://...". The orchestrator
+    routes a Codex task whose profile names one of these providers to it.
+    """
+    if os.getenv("ZENBAR_RUNTIME_MODE", "app_server_ws") == "mock":
+        return {}
+    adapters: dict[str, RuntimeAdapter] = {}
+    for entry in os.getenv("ZENBAR_APP_SERVER_PROVIDER_URLS", "").split(","):
+        provider, _, url = entry.strip().partition("=")
+        if provider.strip() and url.strip():
+            adapters[provider.strip()] = AppServerWebSocketAdapter(url.strip())
+    return adapters

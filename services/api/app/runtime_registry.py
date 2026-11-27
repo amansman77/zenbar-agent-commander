@@ -13,11 +13,11 @@ from fastapi import HTTPException
 from .app_server_manager import ManagedAppServer
 from .codex_profiles import get_profile as get_codex_profile
 from .model_catalog import RuntimeModelCatalog
-from .runtime import RuntimeAdapter, create_engine_adapters
+from .runtime import RuntimeAdapter, create_codex_provider_adapters, create_engine_adapters
 from .service import TaskOrchestrator
 
 engine_adapters, default_engine = create_engine_adapters()
-orchestrator = TaskOrchestrator(engine_adapters, default_engine)
+orchestrator = TaskOrchestrator(engine_adapters, default_engine, codex_provider_adapters=create_codex_provider_adapters())
 model_catalogs: dict[str, RuntimeModelCatalog] = {
     engine: RuntimeModelCatalog(adapter, ttl_seconds=60) for engine, adapter in engine_adapters.items()
 }

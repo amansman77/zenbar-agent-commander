@@ -16,6 +16,7 @@ import get_task`), not from these submodules.
 """
 
 from .naming import build_workspace_ref, slugify
+from .attachments import conversation_attachment_bytes, create_attachment, delete_attachment, get_attachment
 from .projects import create_project, get_project, get_project_any, list_projects, soft_delete_project
 from .prompts import (
     create_global_prompt,
@@ -36,6 +37,17 @@ from .prompts import (
     update_global_prompt,
     update_project_pipeline,
     update_project_prompt,
+)
+from .scheduled_actions import (
+    cancel_scheduled_action,
+    claim_scheduled_action,
+    create_scheduled_action,
+    fail_scheduled_action,
+    has_running_scheduled_action,
+    list_due_scheduled_actions,
+    list_running_scheduled_sessions,
+    list_scheduled_actions,
+    recover_interrupted_scheduled_actions,
 )
 from .tasks import (
     attach_pipeline,
@@ -105,6 +117,15 @@ from .serializers import (
 )
 
 __all__ = [
+    "cancel_scheduled_action",
+    "claim_scheduled_action",
+    "create_scheduled_action",
+    "fail_scheduled_action",
+    "has_running_scheduled_action",
+    "list_due_scheduled_actions",
+    "list_running_scheduled_sessions",
+    "list_scheduled_actions",
+    "recover_interrupted_scheduled_actions",
     "build_workspace_ref",
     "slugify",
     "create_project",

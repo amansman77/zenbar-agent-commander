@@ -21,8 +21,45 @@ async function loadApi(base: string) {
 }
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.resetModules();
+});
+
+describe("conversation attachments", () => {
+  it("fetches previews with header authentication and cancellation", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_API_BASE_URL", "/api");
+    vi.stubEnv("VITE_API_TOKEN", "test-only-token");
+    const fetchMock = vi.fn().mockResolvedValue(new Response("image"));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = (await import("./api")).api;
+    const controller = new AbortController();
+    const blob = await api.getConversationAttachment("conv-1", "file-1", controller.signal);
+    expect(blob.size).toBe(5);
+    expect(fetchMock).toHaveBeenCalledWith("/api/conversations/conv-1/attachments/file-1", {
+      headers: { "X-Zenbar-Token": "test-only-token" }, signal: controller.signal,
+    });
+    fetchMock.mockResolvedValue(new Response("missing", { status: 404 }));
+    await expect(api.getConversationAttachment("conv-1", "file-1", controller.signal)).rejects.toThrow("첨부 이미지를");
+  });
+  it("keeps authentication when sending raw file bytes", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_API_BASE_URL", "/api");
+    vi.stubEnv("VITE_API_TOKEN", "test-only-token");
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "file-1", name: "한글.txt", size: 4 })));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = (await import("./api")).api;
+    const file = new File(["test"], "한글.txt");
+    await api.uploadConversationAttachment("conv-1", file);
+    expect(fetchMock).toHaveBeenCalledWith("/api/conversations/conv-1/attachments?name=%ED%95%9C%EA%B8%80.txt", {
+      method: "POST", body: file,
+      headers: { "Content-Type": "application/octet-stream", "X-Zenbar-Token": "test-only-token" },
+    });
+    expect(api.conversationAttachmentUrl("conv-1", "file-1")).toBe(
+      `${window.location.origin}/api/conversations/conv-1/attachments/file-1?token=test-only-token`
+    );
+  });
 });
 
 describe("url builders with a relative API base (the deployed dashboard build)", () => {

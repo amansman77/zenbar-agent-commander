@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import delete, func, select, tuple_, update
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, with_expression
 
-from ..models import Conversation, ConversationMessage, ConversationPrReview, Task, utcnow
+from ..attachments import message_runtime_content
+from ..models import Conversation, ConversationAttachment, ConversationMessage, ConversationPrReview, ScheduledAction, Task, utcnow
 from ..schemas import AddConversationMessageRequest, CreateConversationRequest
 
 
@@ -29,6 +30,13 @@ def list_conversations(db: Session, preview_count: int | None = None) -> list[Co
             selectinload(Conversation.project),
             selectinload(Conversation.messages),
             selectinload(Conversation.task),
+            with_expression(
+                Conversation.last_scheduled_update_at,
+                select(func.max(ScheduledAction.notified_at))
+                .where(ScheduledAction.conversation_id == Conversation.id)
+                .correlate(Conversation)
+                .scalar_subquery(),
+            ),
         )
         .order_by(Conversation.updated_at.desc())
     )
@@ -50,7 +58,11 @@ def list_conversations(db: Session, preview_count: int | None = None) -> list[Co
         key = conv.project_id
         seen = seen_per_project.get(key, 0)
         is_active = conv.task is not None and conv.task.status in _ACTIVE_TASK_STATUSES
-        if seen < preview_count or is_active:
+        scheduled_result = conv.last_scheduled_update_at
+        has_unread_scheduled_result = scheduled_result is not None and (
+            conv.last_read_at is None or scheduled_result > conv.last_read_at
+        )
+        if seen < preview_count or is_active or has_unread_scheduled_result:
             preview.append(conv)
         seen_per_project[key] = seen + 1
     return preview
@@ -66,6 +78,7 @@ def get_conversation(db: Session, conversation_id: str, *, include_messages: boo
         select(Conversation)
         .where(Conversation.id == conversation_id)
         .options(
+            selectinload(Conversation.scheduled_actions),
             selectinload(Conversation.project),
             selectinload(Conversation.task).selectinload(Task.project),
         )
@@ -78,7 +91,7 @@ def get_conversation(db: Session, conversation_id: str, *, include_messages: boo
         .execution_options(populate_existing=True)
     )
     if include_messages:
-        stmt = stmt.options(selectinload(Conversation.messages))
+        stmt = stmt.options(selectinload(Conversation.messages).selectinload(ConversationMessage.attachments))
     return db.scalars(stmt).first()
 
 
@@ -106,6 +119,7 @@ def list_conversation_assistant_messages(
         select(message)
         .where(message.conversation_id == conversation_id, message.role == "assistant", position >= first, position <= last)
         .order_by(message.created_at, message.id)
+        .options(selectinload(message.attachments))
     ))
 
 
@@ -131,7 +145,9 @@ def list_conversation_message_page(
         ).subquery()
         start_of_page = select(turns.c.created_at, turns.c.id).order_by(turns.c.created_at, turns.c.id).limit(1)
         rows = list(db.scalars(
-            stmt.where(position >= start_of_page.scalar_subquery()).order_by(message.created_at, message.id)
+            stmt.where(position >= start_of_page.scalar_subquery())
+            .order_by(message.created_at, message.id)
+            .options(selectinload(message.attachments))
         ))
         if rows:
             start = (rows[0].created_at, rows[0].id)
@@ -145,7 +161,7 @@ def list_conversation_message_page(
         stmt = stmt.order_by(message.created_at, message.id)
     else:
         stmt = stmt.order_by(message.created_at.desc(), message.id.desc())
-    rows = list(db.scalars(stmt.limit(limit + 1)))
+    rows = list(db.scalars(stmt.limit(limit + 1).options(selectinload(message.attachments))))
     has_more = len(rows) > limit
     rows = rows[:limit]
     if after is None:
@@ -230,12 +246,17 @@ def set_conversation_task_id(db: Session, conversation_id: str, task_id: str) ->
 
 
 def add_conversation_message(
-    db: Session, conversation_id: str, payload: AddConversationMessageRequest
+    db: Session,
+    conversation_id: str,
+    payload: AddConversationMessageRequest,
+    *,
+    attachments: list[ConversationAttachment] | None = None,
 ) -> ConversationMessage:
     msg = ConversationMessage(
         conversation_id=conversation_id,
         role=payload.role,
         content=payload.content,
+        attachments=attachments or [],
     )
     db.add(msg)
     conv = db.get(Conversation, conversation_id)
@@ -247,7 +268,7 @@ def add_conversation_message(
                 .limit(1)
             )
             if existing_message_id is None:
-                conv.title = payload.content[:50].strip() or "New Conversation"
+                conv.title = payload.content[:50].strip() or (attachments[0].name if attachments else "New Conversation")
         db.execute(
             update(Conversation)
             .where(Conversation.id == conversation_id)
@@ -297,7 +318,7 @@ def latest_user_message_for_task(db: Session, task_id: str) -> str | None:
         .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
         .limit(1)
     ).first()
-    return row.content if row is not None else None
+    return message_runtime_content(row) if row is not None else None
 
 
 def add_conversation_message_for_task(db: Session, task_id: str, role: str, content: str) -> ConversationMessage | None:

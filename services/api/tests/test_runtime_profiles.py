@@ -78,3 +78,59 @@ def test_profile_sandbox_workspace_write_reaches_the_turn_sandbox_policy(tmp_pat
     plain = adapter._build_turn_start_params("thread-1", _request(profile=None))["sandboxPolicy"]
     assert plain["networkAccess"] is False
     assert plain["writableRoots"] == ["/srv/repos/demo"]
+
+
+def test_codex_task_on_a_provider_with_its_own_app_server_is_routed_there(tmp_path: Path, monkeypatch):
+    # Codex 0.166 only accepts input on a thread whose provider matches its
+    # App Server's, so an azure profile has to reach the azure-pinned server.
+    from app.models import Task
+    from app.runtime import MockRuntimeAdapter
+    from app.service import TaskOrchestrator
+
+    (tmp_path / "azure-6.config.toml").write_text('model = "dep-6"\nmodel_provider = "azure"\n')
+    (tmp_path / "other.config.toml").write_text('model = "x"\nmodel_provider = "somewhere"\n')
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    default_codex, azure_codex, claude = MockRuntimeAdapter(), MockRuntimeAdapter(), MockRuntimeAdapter()
+    orchestrator = TaskOrchestrator(
+        {"codex": default_codex, "claude": claude}, "codex", codex_provider_adapters={"azure": azure_codex}
+    )
+
+    def task(engine, profile):
+        return Task(engine=engine, profile=profile)
+
+    assert orchestrator._adapter_for(task("codex", "azure-6")) is azure_codex
+    assert orchestrator._adapter_for(task("", "azure-6")) is azure_codex  # "" means the default engine
+    assert orchestrator._adapter_for(task("codex", None)) is default_codex
+    assert orchestrator._adapter_for(task("codex", "other")) is default_codex  # no server for that provider
+    assert orchestrator._adapter_for(task("codex", "missing-profile")) is default_codex
+    assert orchestrator._adapter_for(task("claude", "azure-6")) is claude
+
+
+def test_provider_app_servers_are_read_from_the_environment(monkeypatch):
+    from app.runtime import AppServerWebSocketAdapter, create_codex_provider_adapters
+
+    monkeypatch.setenv("ZENBAR_RUNTIME_MODE", "app_server_ws")
+    monkeypatch.setenv("ZENBAR_APP_SERVER_PROVIDER_URLS", " azure=ws://127.0.0.1:18766 , broken, =ws://x ")
+    adapters = create_codex_provider_adapters()
+    assert list(adapters) == ["azure"]
+    assert isinstance(adapters["azure"], AppServerWebSocketAdapter)
+    assert adapters["azure"]._url == "ws://127.0.0.1:18766"
+
+    monkeypatch.delenv("ZENBAR_APP_SERVER_PROVIDER_URLS")
+    assert create_codex_provider_adapters() == {}
+
+
+def test_approval_requests_go_to_codex_auto_review_unless_a_profile_says_otherwise(tmp_path: Path, monkeypatch):
+    # config.toml's approvals_reviewer never reached Zenbar's threads, so every
+    # sandbox escape waited for a person. Zenbar now sends it on each turn.
+    (tmp_path / "ask-me.config.toml").write_text('approvals_reviewer = "user"\n')
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.delenv("ZENBAR_CODEX_APPROVALS_REVIEWER", raising=False)
+
+    adapter = AppServerWebSocketAdapter("ws://127.0.0.1:0")
+    assert adapter._build_turn_start_params("thread-1", _request(profile=None))["approvalsReviewer"] == "auto_review"
+    assert adapter._build_turn_start_params("thread-1", _request(profile="ask-me"))["approvalsReviewer"] == "user"
+
+    monkeypatch.setenv("ZENBAR_CODEX_APPROVALS_REVIEWER", "user")
+    assert adapter._build_turn_start_params("thread-1", _request(profile=None))["approvalsReviewer"] == "user"

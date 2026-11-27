@@ -13,23 +13,29 @@ import json
 import logging
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .github_pr import MergeResult, merge_pull_request_for_branch
 from .db import SessionLocal
-from .models import Project, Task
+from .models import Project, Task, utcnow
 from .repository import (
     add_conversation_message_for_task,
     append_event,
     clear_runtime_session,
     create_run,
+    create_scheduled_action,
     create_turn,
     delete_task as db_delete_task,
     get_latest_run,
+    get_conversation_for_task,
+    get_project,
     get_task,
+    has_running_scheduled_action,
     replace_diff,
     list_events,
     latest_user_message_for_task,
@@ -41,10 +47,21 @@ from .repository import (
     set_task_workspace,
     set_task_status,
 )
-from .resume_context import RECENT_MESSAGE_LIMIT, ResumeMessage, build_resume_prompt
+from .resume_context import (
+    ENGINE_SWITCH_CHAR_BUDGET,
+    ENGINE_SWITCH_MESSAGE_LIMIT,
+    RECENT_MESSAGE_LIMIT,
+    ResumeMessage,
+    build_resume_prompt,
+    engine_switch_notice,
+    fit_to_budget,
+)
+from .attachments import message_runtime_content
 from . import workspace_git
-from .runtime import RuntimeAdapter
+from .codex_profiles import get_profile
+from .runtime import ENGINE_LABELS, AppServerWebSocketAdapter, RuntimeAdapter, RuntimeSessionReattachError
 from .schemas import (
+    CreateScheduledActionRequest,
     RespondTaskRequest,
     RuntimeEvent,
     RuntimeStartRequest,
@@ -54,7 +71,7 @@ from .schemas import (
     TaskPushRequest,
 )
 from .streaming import broker
-from .workspace import cleanup_workspace, prepare_workspace
+from .workspace import PreparedWorkspace, cleanup_workspace, prepare_directory_workspace, prepare_workspace
 
 from .pipeline_runner import advance_pipeline_if_needed
 from .stale_session import is_stale_session_error
@@ -68,14 +85,23 @@ _is_stale_session_error = is_stale_session_error
 class TaskOrchestrator:
     ACTIVE_TASK_STATUSES = {"starting", "running", "waiting_user_input", "waiting_result_approval"}
 
-    def __init__(self, adapters: dict[str, RuntimeAdapter], default_engine: str = "codex") -> None:
+    def __init__(
+        self,
+        adapters: dict[str, RuntimeAdapter],
+        default_engine: str = "codex",
+        codex_provider_adapters: dict[str, RuntimeAdapter] | None = None,
+    ) -> None:
         self.adapters = adapters
         self.default_engine = default_engine
+        # Codex adapters for App Servers pinned to one provider (see
+        # create_codex_provider_adapters), keyed by provider id.
+        self.codex_provider_adapters = codex_provider_adapters or {}
         # Back-compat alias: main.py's model_catalog and several tests reach
         # into `orchestrator.adapter` directly, expecting "the" adapter. Keep
         # it pointed at the default engine's (same object as adapters[...],
         # not a second instance — see create_engine_adapters' docstring).
         self.adapter = adapters[default_engine]
+        self._launching_followups: set[str] = set()
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._stream_tasks: dict[str, asyncio.Task[None]] = {}
         # codex-rs has no watchdog of its own for a backgrounded shell/PTY
@@ -90,9 +116,33 @@ class TaskOrchestrator:
         self._stuck_session_idle_seconds = float(
             os.getenv("ZENBAR_STUCK_SESSION_IDLE_SECONDS", str(15 * 60))
         )
+        for adapter in (*adapters.values(), *self.codex_provider_adapters.values()):
+            if isinstance(adapter, AppServerWebSocketAdapter):
+                adapter.schedule_followup = self.schedule_followup
+
+    def schedule_followup(self, task_id: str, request: CreateScheduledActionRequest) -> None:
+        """Save a Codex tool's follow-up in the conversation that owns its task."""
+        if request.run_at <= utcnow():
+            raise ValueError("The scheduled time must be in the future.")
+        with SessionLocal() as db:
+            conversation = get_conversation_for_task(db, task_id)
+            if conversation is None or conversation.project_id is None or get_project(db, conversation.project_id) is None:
+                raise ValueError("This turn does not have an active Zenbar project conversation.")
+            create_scheduled_action(db, conversation.id, request)
 
     def _adapter_for(self, task: Task | None) -> RuntimeAdapter:
         engine = (task.engine if task is not None else None) or self.default_engine
+        if engine == "codex" and task is not None and task.profile and self.codex_provider_adapters:
+            # Since Codex 0.166 one App Server serves one provider, and every
+            # task on a profile whose provider differed from config.toml's
+            # failed at turn/start with "This chat uses azure, but your
+            # current provider is openai" (2026-10-30). Such a task goes to
+            # the App Server pinned to its provider. The profile is read on
+            # each call, so a retry that changes the profile changes servers.
+            profile = get_profile(task.profile)
+            provider = profile.model_provider if profile else None
+            if provider and provider in self.codex_provider_adapters:
+                return self.codex_provider_adapters[provider]
         return self.adapters.get(engine, self.adapter)
 
     def _adapter_for_task_id(self, task_id: str) -> RuntimeAdapter:
@@ -122,18 +172,20 @@ class TaskOrchestrator:
         adapter = self._adapter_for(task)
         if adapter.knows_session(session_id):
             return True
-        if not task.workspace_path or task.project is None:
+        project = task.project
+        if not task.workspace_path or (project is None and task.workspace_type != "directory"):
             return False
         request = RuntimeStartRequest(
             task_id=task.id,
             title=task.title,
             prompt="",
             engine=task.engine,
-            model=task.model or "default",
+            model=task.effective_model or task.model or "default",
             profile=task.profile,
-            repo_path=task.project.repo_path,
+            reasoning_effort=task.reasoning_effort if task.reasoning_effort in {"low", "medium", "high"} else "medium",
+            repo_path=project.repo_path if project else task.workspace_path,
             working_directory=task.workspace_path,
-            default_branch=task.project.default_branch,
+            default_branch=project.default_branch if project else "",
             execution_mode=task.execution_mode,  # type: ignore[arg-type]
             workspace_type=task.workspace_type,  # type: ignore[arg-type]
             workspace_ref=task.workspace_ref,
@@ -141,9 +193,10 @@ class TaskOrchestrator:
         return await adapter.reattach_session(session_id, request)
 
     def ensure_runtime_stream(self, task_id: str, session_id: str | None) -> None:
-        if not self._adapter_for_task_id(task_id).stream_in_background:
-            return
         if not session_id:
+            return
+        adapter = self._adapter_for_task_id(task_id)
+        if not adapter.stream_in_background or not adapter.knows_session(session_id):
             return
         try:
             loop = asyncio.get_running_loop()
@@ -182,7 +235,7 @@ class TaskOrchestrator:
         self,
         db: Session,
         task: Task,
-        project: Project,
+        project: Project | None,
         selected_skill: str | None = None,
         prompt_override: str | None = None,
     ) -> Task:
@@ -219,10 +272,11 @@ class TaskOrchestrator:
                 raise RuntimeError("Plan mode is not supported by this Codex App Server")
             else:
                 append_event(db, task, RuntimeEvent(type="agent_status", message="Codex runtime supports plan mode"))
-        from pathlib import Path
-        existing_workspace = task.workspace_path and Path(task.workspace_path).exists()
-        if existing_workspace:
-            from .workspace import PreparedWorkspace
+        if task.workspace_type == "directory":
+            prepared = prepare_directory_workspace(task.workspace_path, task.workspace_ref)
+        elif project is None:
+            raise RuntimeError("Task project is missing")
+        elif task.workspace_path and Path(task.workspace_path).exists():
             prepared = PreparedWorkspace(task.workspace_path, task.workspace_ref, task.workspace_type)
         else:
             prepared = await asyncio.to_thread(
@@ -246,9 +300,9 @@ class TaskOrchestrator:
             model=resolved_model,
             profile=refreshed.profile,
             reasoning_effort=resolved_reasoning_effort,  # type: ignore[arg-type]
-            repo_path=project.repo_path,
+            repo_path=project.repo_path if project else prepared.workspace_path,
             working_directory=prepared.workspace_path,
-            default_branch=project.default_branch,
+            default_branch=project.default_branch if project else "",
             execution_mode=refreshed.execution_mode,  # type: ignore[arg-type]
             workspace_type=refreshed.workspace_type,  # type: ignore[arg-type]
             workspace_ref=refreshed.workspace_ref,
@@ -274,6 +328,7 @@ class TaskOrchestrator:
             raise RuntimeError("Task has no runtime session")
         adapter = self._adapter_for(task)
         try:
+            await self._reattach_session_if_lost(db, task)
             await adapter.approve_task(task.runtime_session_id)
         except RuntimeError as exc:
             # See _is_stale_session_error's own comment for the two shapes
@@ -313,7 +368,7 @@ class TaskOrchestrator:
         (no PR, conflicts, plan-mode task, missing credential) must not
         retroactively fail it -- the event log is where the user sees why.
         """
-        if task.execution_mode == "plan" or not task.workspace_path:
+        if task.execution_mode == "plan" or task.workspace_type == "directory" or not task.workspace_path:
             return
         try:
             result = await merge_pull_request_for_branch(task.workspace_path, task.workspace_ref)
@@ -351,6 +406,7 @@ class TaskOrchestrator:
             raise RuntimeError("Task is not waiting for user input")
         adapter = self._adapter_for(task)
         try:
+            await self._reattach_session_if_lost(db, task)
             await adapter.respond_task(task.runtime_session_id, task.pending_request_id, payload.answers)
         except RuntimeError as exc:
             # See _is_stale_session_error's own comment for the two shapes
@@ -398,8 +454,8 @@ class TaskOrchestrator:
             refreshed = self._require_task(db, task.id, "stopping a task with no session")
             return set_task_status(db, refreshed, "stopped")
         adapter = self._adapter_for(task)
-        await self._reattach_session_if_lost(db, task)
         try:
+            await self._reattach_session_if_lost(db, task)
             # turn/interrupt usually answers promptly even on a wedged turn,
             # but not always: a turn blocked on a server request nobody
             # answered left this call hanging with no timeout, so the one
@@ -499,6 +555,27 @@ class TaskOrchestrator:
             await self._consume_events(task.id, session.session_id)
         return refreshed
 
+    def is_launching_followup(self, task_id: str) -> bool:
+        return task_id in self._launching_followups
+
+    @contextmanager
+    def _launch_followup(self, task_id: str) -> Iterator[None]:
+        # The adapter can await session reattachment before it sets the task
+        # running. A scheduled launch and a human follow-up can land in that gap.
+        if self.is_launching_followup(task_id):
+            raise RuntimeError("A follow-up is already starting")
+        self._launching_followups.add(task_id)
+        try:
+            yield
+        finally:
+            self._launching_followups.remove(task_id)
+
+    async def launch_followup_task(
+        self, db: Session, task: Task, content: str, model: str | None = None
+    ) -> Task:
+        with self._launch_followup(task.id):
+            return await self.followup_task(db, task, content, model=model)
+
     async def followup_task(
         self, db: Session, task: Task, content: str, selected_skill: str | None = None, model: str | None = None
     ) -> Task:
@@ -555,10 +632,29 @@ class TaskOrchestrator:
         self,
         db: Session,
         task: Task,
-        project: Project,
+        project: Project | None,
         content: str,
         selected_skill: str | None = None,
         model: str | None = None,
+        engine: str | None = None,
+        profile: str | None = None,
+    ) -> Task:
+        with self._launch_followup(task.id):
+            return await self._followup_or_restart_task(
+                db, task, project, content, selected_skill, model, engine=engine, profile=profile
+            )
+
+    async def _followup_or_restart_task(
+        self,
+        db: Session,
+        task: Task,
+        project: Project | None,
+        content: str,
+        selected_skill: str | None = None,
+        model: str | None = None,
+        *,
+        engine: str | None = None,
+        profile: str | None = None,
     ) -> Task:
         """Follows up on a completed/stopped/failed task, restarting the session if expired.
 
@@ -578,6 +674,9 @@ class TaskOrchestrator:
         ``resume_context``: the new message as the only instruction, with the
         original request and the last few turns included as labelled history.
         """
+        if engine and engine != (task.engine or self.default_engine):
+            return await self.switch_engine(db, task, project, content, engine, model=model, profile=profile,
+                                            selected_skill=selected_skill)
         try:
             return await self.followup_task(
                 db, task, content, selected_skill=selected_skill, model=model
@@ -589,7 +688,7 @@ class TaskOrchestrator:
             db.expire_all()
             refreshed = self._require_task(db, task.id, "restarting expired session for follow-up")
             recent = [
-                ResumeMessage(role=message.role, content=message.content)
+                ResumeMessage(role=message.role, content=message_runtime_content(message))
                 for message in list_recent_conversation_messages(
                     db, refreshed.id, RECENT_MESSAGE_LIMIT
                 )
@@ -621,12 +720,87 @@ class TaskOrchestrator:
                 ),
             )
 
+    async def switch_engine(
+        self,
+        db: Session,
+        task: Task,
+        project: Project | None,
+        content: str,
+        engine: str,
+        *,
+        model: str | None = None,
+        profile: str | None = None,
+        selected_skill: str | None = None,
+    ) -> Task:
+        """Continues a conversation on another engine (Codex <-> Claude, ...).
+
+        Engines share nothing at runtime: a Codex thread cannot be resumed by
+        Claude. What carries over is everything Zenbar owns -- the worktree
+        (branch and uncommitted changes stay as they are) and the conversation
+        transcript, handed to the new engine as history the same way a dead
+        session is replaced (resume_context), only with much more of it.
+        The new message is the only instruction; the original request is
+        background, for the same reason as on a restart.
+        """
+        if task.status in self.ACTIVE_TASK_STATUSES:
+            raise RuntimeError(f"Task cannot switch engine from status '{task.status}'")
+        if engine not in self.adapters:
+            raise RuntimeError(f"Unknown engine '{engine}'")
+        previous_engine = task.engine or self.default_engine
+        task.engine = engine
+        task.model = model or "default"
+        # Profiles are Codex configuration (~/.codex/*.config.toml); one
+        # chosen for a Codex session means nothing to another engine.
+        task.profile = profile if engine == "codex" else None
+        db.add(task)
+        db.commit()
+        refreshed = self._require_task(db, task.id, "switching engine")
+        if refreshed.runtime_session_id:
+            refreshed = clear_runtime_session(db, refreshed, status=refreshed.status)
+        recent = fit_to_budget(
+            [ResumeMessage(role=m.role, content=message_runtime_content(m))
+             for m in list_recent_conversation_messages(db, refreshed.id, ENGINE_SWITCH_MESSAGE_LIMIT)],
+            ENGINE_SWITCH_CHAR_BUDGET,
+        )
+        from_label = ENGINE_LABELS.get(previous_engine, previous_engine)
+        to_label = ENGINE_LABELS.get(engine, engine)
+        append_event(
+            db,
+            refreshed,
+            RuntimeEvent(
+                type="session_restarted",
+                message=(
+                    f"엔진을 {from_label}에서 {to_label}(으)로 전환합니다. "
+                    f"같은 작업 폴더에서, 직전 대화 {len(recent)}건과 최초 요청을 넘겨 이어갑니다."
+                ),
+                payload={"reason": "engine_switched", "from_engine": previous_engine, "to_engine": engine,
+                         "recent_messages": len(recent)},
+            ),
+        )
+        return await self.start_task(
+            db,
+            refreshed,
+            project,
+            selected_skill=selected_skill,
+            prompt_override=build_resume_prompt(
+                original_prompt=refreshed.prompt,
+                recent_messages=recent,
+                new_message=content,
+                notice=engine_switch_notice(from_label, to_label),
+            ),
+        )
+
     async def refresh_diff(self, db: Session, task: Task) -> Task:
+        if task.workspace_type == "directory":
+            return task
         runtime_diff: TaskDiff | None = None
         if task.runtime_session_id:
-            await self._reattach_session_if_lost(db, task)
             try:
+                await self._reattach_session_if_lost(db, task)
                 runtime_diff = await self._adapter_for(task).get_diff(task.runtime_session_id)
+            except RuntimeSessionReattachError:
+                # The workspace diff is still available when the runtime is down.
+                pass
             except RuntimeError as exc:
                 # See _is_stale_session_error's own comment for the two
                 # shapes this recognizes.
@@ -647,43 +821,44 @@ class TaskOrchestrator:
     async def reconcile_task_runtime_session(self, db: Session, task: Task) -> Task:
         if task.status not in self.ACTIVE_TASK_STATUSES:
             return task
-        if not task.runtime_session_id:
+        session_id = task.runtime_session_id
+        if not session_id:
             return task
         adapter = self._adapter_for(task)
-        was_known = adapter.knows_session(task.runtime_session_id)
-        reattached = not was_known and await self._reattach_session_if_lost(db, task)
-        if reattached and not adapter.has_running_turn(task.runtime_session_id):
-            # The session is back, but the turn that was running is not: a
-            # CLI engine's turn is a child process of the API, and it died in
-            # the restart. Say so, and keep the session id, so a retry or the
-            # next message resumes the same conversation instead of starting
-            # one from a summary.
+        reattached = False
+        if not adapter.knows_session(session_id):
+            try:
+                reattached = await self._reattach_session_if_lost(db, task)
+            except RuntimeSessionReattachError:
+                # An unavailable App Server must not fail every active task
+                # or block API startup. The next task read can try again.
+                logger.warning("Could not check runtime session for task %s", task.id, exc_info=True)
+                return task
+            db.expire_all()
+            task = self._require_task(db, task.id, "reattaching runtime session")
+            if task.runtime_session_id != session_id or task.status not in self.ACTIVE_TASK_STATUSES:
+                return task
+        if reattached and not adapter.has_running_turn(session_id):
+            # Keep the thread id so the next message or retry has the full
+            # conversation even when the previous turn can no longer be watched.
             append_event(
                 db,
                 task,
                 RuntimeEvent(
                     type="failed",
-                    message="The running turn was interrupted by an API restart. Retry or send a message to continue the same session.",
+                    message="No running turn could be recovered after the API restart. Retry or send a message to continue the same session.",
                     payload={"reason": "turn_interrupted_by_restart"},
                 ),
             )
             db.expire_all()
             return self._require_task(db, task.id, "marking an interrupted turn")
         try:
-            await adapter.get_diff(task.runtime_session_id)
+            await adapter.get_diff(session_id)
             return task
         except RuntimeError as exc:
-            # See _is_stale_session_error's own comment for the two shapes
-            # this recognizes (Codex App Server, Claude, Grok, Antigravity).
-            # Claude/Grok/Antigravity keep session state only in-process
-            # (unlike Codex, which reconnects to the still-running App
-            # Server), so any active task using one of them hits this on
-            # every restart -- and this function runs at startup
-            # (reconcile_active_tasks, in the FastAPI lifespan), so before
-            # this the app couldn't even start with such a task in the
-            # database: the unhandled RuntimeError propagated out of
-            # lifespan and crashed the whole process on boot, not just that
-            # one task's reconciliation.
+            # Some adapters cannot recover their in-process session, and a
+            # Codex thread can lose its transcript. Fail that task during
+            # reconciliation so it can be retried and the API can start.
             if not _is_stale_session_error(exc):
                 raise
         refreshed = self._require_task(db, task.id, "reconciling stale runtime session")
@@ -719,6 +894,8 @@ class TaskOrchestrator:
                 task = await self.reconcile_task_runtime_session(db, task)
                 if status_before != task.status and task.status == "failed":
                     reconciled += 1
+                elif task.status in self.ACTIVE_TASK_STATUSES:
+                    self.ensure_runtime_stream(task.id, task.runtime_session_id)
 
             # Tasks in an active status with NO runtime session at all can't
             # be running: an active status is only ever set alongside opening
@@ -755,6 +932,8 @@ class TaskOrchestrator:
             return reconciled
 
     async def commit_workspace(self, db: Session, task: Task, payload: TaskCommitRequest) -> TaskGitActionResponse:
+        if task.workspace_type == "directory":
+            raise RuntimeError("General conversations do not have a task Git workspace")
         if not task.workspace_path:
             raise RuntimeError("Task workspace is not ready")
         result = await asyncio.to_thread(workspace_git.commit_workspace, task.workspace_path, payload.message, payload.actor)
@@ -770,6 +949,8 @@ class TaskOrchestrator:
         return result
 
     async def push_workspace(self, db: Session, task: Task, payload: TaskPushRequest) -> TaskGitActionResponse:
+        if task.workspace_type == "directory":
+            raise RuntimeError("General conversations do not have a task Git workspace")
         if not task.workspace_path:
             raise RuntimeError("Task workspace is not ready")
         result = await asyncio.to_thread(
@@ -802,10 +983,10 @@ class TaskOrchestrator:
         had been wired to it.
         """
         project = task.project
-        if project is None:
+        if project is None and task.workspace_type != "directory":
             raise RuntimeError("Task project is missing")
         recent = [
-            ResumeMessage(role=message.role, content=message.content)
+            ResumeMessage(role=message.role, content=message_runtime_content(message))
             for message in list_recent_conversation_messages(db, task.id, RECENT_MESSAGE_LIMIT)
         ]
         latest_request = latest_user_message_for_task(db, task.id)
@@ -1004,6 +1185,10 @@ class TaskOrchestrator:
                 # the status rather than pending_request_id, which a task can
                 # still carry from an already-answered earlier turn.
                 return False
+            # A scheduled follow-up can affect an external system. Stopping
+            # is safe to attempt, but starting the same request again can
+            # duplicate an action that had already reached that system.
+            retry = not has_running_scheduled_action(db, task_id)
             append_event(
                 db,
                 task,
@@ -1013,7 +1198,7 @@ class TaskOrchestrator:
                         f"No real output for over {int(idle_seconds // 60)} minute(s) -- "
                         "assuming the runtime session is stuck (likely a backgrounded process "
                         "the App Server spawned that nobody is polling anymore). "
-                        "Stopping and retrying automatically."
+                        + ("Stopping and retrying automatically." if retry else "Stopping the scheduled turn.")
                     ),
                     payload={"reason": "auto_recovered_stuck_session", "idle_seconds": int(idle_seconds)},
                 ),
@@ -1041,6 +1226,16 @@ class TaskOrchestrator:
                     pass
                 task = get_task(db, task_id)
                 if task is None:
+                    return
+                if not retry:
+                    if task.status in self.ACTIVE_TASK_STATUSES:
+                        append_event(
+                            db, task, RuntimeEvent(
+                                type="failed",
+                                message="Scheduled turn stalled. Verify external effects before running it again.",
+                                payload={"reason": "scheduled_turn_stalled"},
+                            ),
+                        )
                     return
                 # stop_task doesn't clear runtime_session_id itself (that
                 # normally only happens once the App Server pushes its own
@@ -1105,6 +1300,12 @@ class TaskOrchestrator:
         with SessionLocal() as db:
             task = get_task(db, task_id)
             if task is None:
+                return
+            if (
+                (event.payload or {}).get("reason") == "thread_status_notLoaded"
+                and task.status not in self.ACTIVE_TASK_STATUSES
+            ):
+                # App Server can unload a thread after the turn has finished.
                 return
             append_event(db, task, event)
             task = get_task(db, task_id)

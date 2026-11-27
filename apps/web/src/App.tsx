@@ -34,6 +34,7 @@ import type { DesktopView } from "./lib/viewState";
 import { ConversationDetailScreen } from "./screens/ConversationDetailScreen";
 import { ConversationListScreen } from "./screens/ConversationListScreen";
 import { ProjectPromptsModal, ProjectPromptsScreen } from "./screens/ProjectPromptsScreen";
+import { ScheduledActionsScreen } from "./screens/ScheduledActionsScreen";
 
 export function App() {
   const [lastView] = useState(loadLastView); // read once on mount, never re-read
@@ -59,6 +60,7 @@ export function App() {
   const [gitActionMessage, setGitActionMessage] = useState<string | null>(null);
   const [followupDraft, setFollowupDraft] = useState("");
   const isMobile = useIsMobileBreakpoint();
+  const [taskNotificationsEnabled, setTaskNotificationsEnabled] = useState(loadTaskNotificationsEnabled);
 
   const { mobileScreen, setMobileScreen } = useMobileNavigation({
     isMobile,
@@ -90,9 +92,8 @@ export function App() {
     conversations,
     conversationsLoading,
     conversationCounts
-  } = useCommanderData(selectedProjectId, selectedTaskId);
+  } = useCommanderData(selectedProjectId, selectedTaskId, taskNotificationsEnabled);
 
-  const [taskNotificationsEnabled, setTaskNotificationsEnabled] = useState(loadTaskNotificationsEnabled);
   useTaskCompletionNotifications(conversations, taskNotificationsEnabled);
 
   // The stored flag only ever gets set true right after the browser grants
@@ -369,6 +370,13 @@ export function App() {
               >
                 프로젝트
               </button>
+              <button
+                type="button"
+                className={desktopView === "scheduled-actions" ? undefined : "secondary"}
+                onClick={() => setDesktopView("scheduled-actions")}
+              >
+                예약 작업
+              </button>
             </div>
           ) : null}
           <button type="button" onClick={() => setProjectModalOpen(true)}>
@@ -406,6 +414,17 @@ export function App() {
               onCreate={(projectId) => createConversationMutation.mutate(projectId)}
               onDelete={(id) => deleteConversationMutation.mutate(id)}
               onManageProjects={() => setMobileScreen("projects")}
+              onOpenScheduledActions={() => setMobileScreen("scheduled-actions")}
+            />
+          ) : null}
+
+          {mobileScreen === "scheduled-actions" ? (
+            <ScheduledActionsScreen
+              onBack={() => setMobileScreen("conversations")}
+              onOpenConversation={(id) => {
+                handleSelectConversation(id);
+                setMobileScreen("conversation-detail");
+              }}
             />
           ) : null}
 
@@ -522,6 +541,13 @@ export function App() {
               <TaskDetailPanel mobile {...taskDetailPanelProps} />
             </section>
           ) : null}
+        </main>
+      ) : desktopView === "scheduled-actions" ? (
+        <main>
+          <ScheduledActionsScreen onOpenConversation={(id) => {
+            handleSelectConversation(id);
+            setDesktopView("chat");
+          }} />
         </main>
       ) : desktopView === "chat" ? (
         // Same ConversationListScreen/ConversationDetailScreen the mobile
