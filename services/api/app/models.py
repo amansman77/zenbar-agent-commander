@@ -276,12 +276,8 @@ class ConversationMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
-    # selectin: messages are now loaded page by page by several queries
-    # (conversation history pagination), and every serialized message reads
-    # its attachments -- a lazy load per message would be one query each.
     attachments: Mapped[list["ConversationAttachment"]] = relationship(
-        secondary=message_attachment_links, back_populates="messages", order_by="ConversationAttachment.created_at",
-        lazy="selectin",
+        secondary=message_attachment_links, back_populates="messages", order_by="ConversationAttachment.created_at"
     )
 
 

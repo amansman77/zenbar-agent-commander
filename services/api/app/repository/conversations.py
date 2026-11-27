@@ -8,15 +8,7 @@ from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.orm import Session, selectinload, with_expression
 
 from ..attachments import message_runtime_content
-from ..models import (
-    Conversation,
-    ConversationAttachment,
-    ConversationMessage,
-    ConversationPrReview,
-    ScheduledAction,
-    Task,
-    utcnow,
-)
+from ..models import Conversation, ConversationAttachment, ConversationMessage, ConversationPrReview, ScheduledAction, Task, utcnow
 from ..schemas import AddConversationMessageRequest, CreateConversationRequest
 
 
@@ -99,7 +91,7 @@ def get_conversation(db: Session, conversation_id: str, *, include_messages: boo
         .execution_options(populate_existing=True)
     )
     if include_messages:
-        stmt = stmt.options(selectinload(Conversation.messages))
+        stmt = stmt.options(selectinload(Conversation.messages).selectinload(ConversationMessage.attachments))
     return db.scalars(stmt).first()
 
 
@@ -127,6 +119,7 @@ def list_conversation_assistant_messages(
         select(message)
         .where(message.conversation_id == conversation_id, message.role == "assistant", position >= first, position <= last)
         .order_by(message.created_at, message.id)
+        .options(selectinload(message.attachments))
     ))
 
 
@@ -152,7 +145,9 @@ def list_conversation_message_page(
         ).subquery()
         start_of_page = select(turns.c.created_at, turns.c.id).order_by(turns.c.created_at, turns.c.id).limit(1)
         rows = list(db.scalars(
-            stmt.where(position >= start_of_page.scalar_subquery()).order_by(message.created_at, message.id)
+            stmt.where(position >= start_of_page.scalar_subquery())
+            .order_by(message.created_at, message.id)
+            .options(selectinload(message.attachments))
         ))
         if rows:
             start = (rows[0].created_at, rows[0].id)
@@ -166,7 +161,7 @@ def list_conversation_message_page(
         stmt = stmt.order_by(message.created_at, message.id)
     else:
         stmt = stmt.order_by(message.created_at.desc(), message.id.desc())
-    rows = list(db.scalars(stmt.limit(limit + 1)))
+    rows = list(db.scalars(stmt.limit(limit + 1).options(selectinload(message.attachments))))
     has_more = len(rows) > limit
     rows = rows[:limit]
     if after is None:
@@ -273,11 +268,7 @@ def add_conversation_message(
                 .limit(1)
             )
             if existing_message_id is None:
-                # A message can be attachments only; its first file name is
-                # the next best title.
-                conv.title = payload.content[:50].strip() or (
-                    attachments[0].name if attachments else "New Conversation"
-                )
+                conv.title = payload.content[:50].strip() or (attachments[0].name if attachments else "New Conversation")
         db.execute(
             update(Conversation)
             .where(Conversation.id == conversation_id)

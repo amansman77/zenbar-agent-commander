@@ -178,8 +178,10 @@ def serialize_conversation_message(msg: ConversationMessage, *, deferred: bool =
         role=msg.role,
         content="" if deferred else msg.content,
         created_at=msg.created_at,
-        attachments=[{"id": item.id, "name": item.name, "size": item.size} for item in msg.attachments],
         is_deferred=deferred,
+        attachments=[] if deferred else [
+            {"id": item.id, "name": item.name, "size": item.size} for item in msg.attachments
+        ],
     )
 
 
