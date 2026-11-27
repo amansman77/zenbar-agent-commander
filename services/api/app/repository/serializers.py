@@ -170,14 +170,15 @@ def serialize_run(run: TaskRun) -> SessionRun:
     )
 
 
-def serialize_conversation_message(msg: ConversationMessage) -> ConversationMessageItem:
+def serialize_conversation_message(msg: ConversationMessage, *, deferred: bool = False) -> ConversationMessageItem:
     return ConversationMessageItem(
         id=msg.id,
         conversation_id=msg.conversation_id,
         role=msg.role,
-        content=msg.content,
+        content="" if deferred else msg.content,
         created_at=msg.created_at,
         attachments=[{"id": item.id, "name": item.name, "size": item.size} for item in msg.attachments],
+        is_deferred=deferred,
     )
 
 
@@ -209,8 +210,15 @@ def serialize_conversation_summary(conv: Conversation) -> ConversationSummary:
     )
 
 
-def serialize_conversation_detail(conv: Conversation) -> ConversationDetail:
+def serialize_conversation_detail(
+    conv: Conversation,
+    *,
+    messages: list[ConversationMessage] | None = None,
+    has_more_messages: bool = False,
+    defer_intermediates: bool = False,
+) -> ConversationDetail:
     task = conv.task
+    rows = conv.messages if messages is None else messages
     return ConversationDetail(
         id=conv.id,
         title=conv.title,
@@ -227,7 +235,19 @@ def serialize_conversation_detail(conv: Conversation) -> ConversationDetail:
         task_pipeline_name=task.pipeline_name if task else None,
         task_pipeline_step_index=task.pipeline_step_index if task else None,
         task_pipeline_total_steps=task.pipeline_total_steps if task else None,
-        messages=[serialize_conversation_message(msg) for msg in conv.messages],
+        messages=[
+            serialize_conversation_message(
+                msg,
+                deferred=(
+                    defer_intermediates
+                    and msg.role == "assistant"
+                    and index + 1 < len(rows)
+                    and rows[index + 1].role == "assistant"
+                ),
+            )
+            for index, msg in enumerate(rows)
+        ],
+        has_more_messages=has_more_messages,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
     )

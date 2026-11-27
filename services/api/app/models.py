@@ -12,7 +12,7 @@ import json
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Table, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -247,6 +247,7 @@ message_attachment_links = Table(
 
 class ConversationMessage(Base):
     __tablename__ = "conversation_messages"
+    __table_args__ = (Index("idx_conversation_messages_position", "conversation_id", "created_at", "id"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"))
@@ -255,8 +256,12 @@ class ConversationMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
+    # selectin: messages are now loaded page by page by several queries
+    # (conversation history pagination), and every serialized message reads
+    # its attachments -- a lazy load per message would be one query each.
     attachments: Mapped[list["ConversationAttachment"]] = relationship(
-        secondary=message_attachment_links, back_populates="messages", order_by="ConversationAttachment.created_at"
+        secondary=message_attachment_links, back_populates="messages", order_by="ConversationAttachment.created_at",
+        lazy="selectin",
     )
 
 

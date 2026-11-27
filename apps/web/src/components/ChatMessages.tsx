@@ -1,6 +1,7 @@
 // Conversation message bubbles and assistant message grouping.
 
 import { Children, useEffect, useRef, useState, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
@@ -217,7 +218,7 @@ function MessageCopyButton({ content }: { content: string }) {
 export function ChatBubble({ message, taskId = null, muted = false }: { message: ConversationMessageItem; taskId?: string | null; muted?: boolean }) {
   const isUser = message.role === "user";
   return (
-    <div className={`chat-message${isUser ? " chat-message-user" : ""}`}>
+    <div data-message-id={message.id} className={`chat-message${isUser ? " chat-message-user" : ""}`}>
       <div
         style={{
           maxWidth: "100%",
@@ -265,9 +266,26 @@ export function AssistantMessageGroup({
   taskId?: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const deferred = intermediates.filter((message) => message.is_deferred);
+  const firstId = deferred[0]?.id;
+  const lastId = deferred[deferred.length - 1]?.id;
+  const { data, isFetching, isError, refetch } = useQuery({
+    queryKey: ["conversation-intermediate-messages", final.conversation_id, firstId, lastId],
+    enabled: expanded && Boolean(firstId),
+    queryFn: ({ signal }) => api.getIntermediateMessages(final.conversation_id, firstId!, lastId!, signal),
+    staleTime: Infinity,
+  });
+  const loaded = new Map(data?.map((message) => [message.id, message]));
+  // A deferred intermediate arrives without its content until expanded.
+  const full = (message: ConversationMessageItem) => (message.is_deferred ? loaded.get(message.id) : message);
+  // Intermediates that show an image stay visible even when collapsed. A
+  // deferred one can only be recognised once its content has been loaded.
   const imageMessageIds = new Set(
     intermediates
-      .filter((message) => extractMessageSegments(message.content).some((segment) => segment.type === "image"))
+      .filter((message) => {
+        const content = full(message)?.content;
+        return content ? extractMessageSegments(content).some((segment) => segment.type === "image") : false;
+      })
       .map((message) => message.id)
   );
   const collapsedCount = intermediates.length - imageMessageIds.size;
@@ -296,11 +314,17 @@ export function AssistantMessageGroup({
               <span>중간 응답 {collapsedCount}개 {expanded ? "접기" : "보기"}</span>
             </button>
           )}
-          {intermediates.map((message) =>
-            imageMessageIds.has(message.id) || expanded ? (
-              <ChatBubble key={message.id} message={message} taskId={taskId} muted={!imageMessageIds.has(message.id)} />
-            ) : null
+          {expanded && isFetching && <span role="status">중간 응답을 불러오는 중…</span>}
+          {expanded && isError && (
+            <button type="button" className="secondary" onClick={() => void refetch()}>중간 응답 다시 불러오기</button>
           )}
+          {intermediates.map((message) => {
+            if (!imageMessageIds.has(message.id) && !expanded) return null;
+            const fullMessage = full(message);
+            return fullMessage && (
+              <ChatBubble key={message.id} message={fullMessage} taskId={taskId} muted={!imageMessageIds.has(message.id)} />
+            );
+          })}
         </div>
       )}
       <ChatBubble message={final} taskId={taskId} />

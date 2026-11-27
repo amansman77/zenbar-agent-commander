@@ -47,6 +47,12 @@ def ensure_schema() -> None:
             connection.exec_driver_sql("ALTER TABLE tasks_rebuilt RENAME TO tasks")
             for ddl in dependent_ddl:
                 connection.exec_driver_sql(ddl)
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_conversation_messages_position "
+                "ON conversation_messages(conversation_id, created_at, id)"
+            )
+        )
         conv_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(conversations)"))}
         if "project_id" not in conv_columns and conv_columns:
             connection.execute(text("ALTER TABLE conversations ADD COLUMN project_id VARCHAR NULL REFERENCES projects(id)"))

@@ -4,6 +4,7 @@ import type {
   CommitTaskRequest,
   ConversationDetail,
   ConversationAttachmentItem,
+  ConversationMessageItem,
   ConversationSummary,
   CreateConversationRequest,
   UpdateConversationRequest,
@@ -135,7 +136,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
-  getConversation: (id: string) => request<ConversationDetail>(`/conversations/${id}`),
+  getConversation: (
+    id: string,
+    page: { limit: number; before?: string; after?: string; userTurns?: boolean },
+    signal?: AbortSignal,
+  ) => {
+    const params = new URLSearchParams({ limit: String(page.limit) });
+    if (page.before !== undefined) params.set("before", page.before);
+    if (page.after !== undefined) params.set("after", page.after);
+    if (page.userTurns) params.set("user_turns", "true");
+    params.set("defer_intermediates", "true");
+    return request<ConversationDetail>(`/conversations/${id}?${params}`, { signal });
+  },
+  getIntermediateMessages: (id: string, firstId: string, lastId: string, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ first_id: firstId, last_id: lastId });
+    return request<ConversationMessageItem[]>(`/conversations/${id}/intermediate-messages?${params}`, { signal });
+  },
   markConversationRead: (id: string) =>
     request<void>(`/conversations/${id}/read`, { method: "POST" }),
   getConversationPrInfo: (id: string) => request<PrInfo[]>(`/conversations/${id}/pr-info`),
@@ -148,11 +164,11 @@ export const api = {
   setPrReviewed: (id: string, payload: SetPrReviewedRequest) =>
     request<void>(`/conversations/${id}/pr-reviews`, { method: "PUT", body: JSON.stringify(payload) }),
   updateConversation: (id: string, payload: UpdateConversationRequest) =>
-    request<ConversationDetail>(`/conversations/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+    request<ConversationDetail>(`/conversations/${id}?metadata_only=true`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteConversation: (id: string) =>
     request<void>(`/conversations/${id}`, { method: "DELETE" }),
   addConversationMessage: (id: string, payload: AddConversationMessageRequest) =>
-    request<ConversationDetail>(`/conversations/${id}/messages`, {
+    request<ConversationDetail>(`/conversations/${id}/messages?metadata_only=true`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),

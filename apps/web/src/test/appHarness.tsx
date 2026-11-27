@@ -227,7 +227,8 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
     fixtures.conversationAttachments = fixtures.conversationAttachments.filter((item) => !url.endsWith(`/${item.id}`));
     return new Response(null, { status: 204 });
   }
-  if (/\/conversations\/[^/]+\/messages$/.test(url) && init?.method === "POST" && fixtures.conversationDetail) {
+  // The app posts to /messages?metadata_only=true, so match the path alone.
+  if (/\/conversations\/[^/]+\/messages$/.test(new URL(url).pathname) && init?.method === "POST" && fixtures.conversationDetail) {
     const payload = JSON.parse(String(init.body));
     const message = {
       id: "message-uploaded", conversation_id: fixtures.conversationDetail.id,
@@ -239,12 +240,46 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
     };
     return new Response(JSON.stringify(fixtures.conversationDetail), { status: 201 });
   }
-  const conversationMatch = url.match(/\/conversations\/([^/?]+)$/);
-  if (conversationMatch && fixtures.conversationDetail?.id === conversationMatch[1]) {
-    if (init?.method === "PATCH") {
-      fixtures.conversationDetail = { ...fixtures.conversationDetail, ...JSON.parse(String(init.body)) };
+  const intermediateMatch = new URL(url).pathname.match(/\/conversations\/([^/]+)\/intermediate-messages$/);
+  if (intermediateMatch && fixtures.conversationDetail?.id === intermediateMatch[1]) {
+    const params = new URL(url).searchParams;
+    const messages = fixtures.conversationDetail.messages as Row[];
+    const first = messages.findIndex((message) => message.id === params.get("first_id"));
+    const last = messages.findIndex((message) => message.id === params.get("last_id"));
+    return new Response(JSON.stringify(messages.slice(first, last + 1).filter((message) => message.role === "assistant")));
+  }
+  const conversationMatch = new URL(url).pathname.match(/\/conversations\/([^/]+)$/);
+  const currentConversation = fixtures.conversationDetail;
+  if (conversationMatch && currentConversation?.id === conversationMatch[1]) {
+    const params = new URL(url).searchParams;
+    const detail = init?.method === "PATCH"
+      ? (fixtures.conversationDetail = { ...currentConversation, ...JSON.parse(String(init.body)) })
+      : currentConversation;
+    const history = detail.messages as Row[];
+    const limit = Number(params.get("limit"));
+    const after = params.get("after");
+    const before = params.get("before");
+    const index = history.findIndex((message) => message.id === (after ?? before));
+    const candidates = after !== null ? history.slice(index + 1) : before ? history.slice(0, index) : history;
+    let messages = candidates;
+    if (params.has("metadata_only")) {
+      messages = [];
+    } else if (params.has("user_turns")) {
+      const users = candidates.filter((message) => message.role === "user");
+      const firstUser = users[Math.max(0, users.length - limit)];
+      messages = firstUser ? candidates.slice(candidates.indexOf(firstUser)) : candidates.slice(-limit);
+    } else if (limit) {
+      messages = after !== null ? candidates.slice(0, limit) : candidates.slice(-limit);
     }
-    return new Response(JSON.stringify(fixtures.conversationDetail), { status: 200 });
+    if (params.has("defer_intermediates")) {
+      messages = messages.map((message, i) =>
+        message.role === "assistant" && messages[i + 1]?.role === "assistant"
+          ? { ...message, content: "", is_deferred: true }
+          : message);
+    }
+    return new Response(JSON.stringify({
+      ...detail, messages, has_more_messages: limit > 0 && candidates.length > messages.length,
+    }), { status: 200 });
   }
   if (url.endsWith("/tasks/task-1/diff")) {
     return new Response(JSON.stringify(fixtures.taskDiff), { status: 200 });

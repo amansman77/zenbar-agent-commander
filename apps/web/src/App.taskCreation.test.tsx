@@ -85,7 +85,7 @@ describe("App", () => {
     const link = await screen.findByRole("link", { name: /요구사항.txt/ });
     expect(link).toHaveAttribute("download", "요구사항.txt");
     expect(link).toHaveAttribute("href", expect.stringContaining("/conversations/conv-attachments/attachments/attachment-1"));
-    const messageCall = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/messages") && init?.method === "POST");
+    const messageCall = fetchMock.mock.calls.find(([url, init]) => new URL(String(url)).pathname.endsWith("/messages") && init?.method === "POST");
     expect(JSON.parse(String(messageCall?.[1]?.body))).toMatchObject({ content: "", attachment_ids: ["attachment-1"] });
     expect(screen.queryByRole("list", { name: "전송할 첨부파일" })).not.toBeInTheDocument();
   });

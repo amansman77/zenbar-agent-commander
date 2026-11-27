@@ -1,7 +1,7 @@
 // The main working surface: one conversation's messages, its task's timeline,
 // plan, diff and PR cards, and the compose bar that starts or follows up a task.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AddConversationMessageRequest,
@@ -18,8 +18,8 @@ import { api } from "../api";
 import { UsageBadge } from "../components/Badges";
 import { ConversationTitleEditor } from "../components/ConversationTitleEditor";
 import { ConversationTranscript } from "../components/ConversationTranscript";
-import type { MessageGroup } from "../components/ConversationTranscript";
 import { useCloseOnOutsideClick } from "../hooks/useCloseOnOutsideClick";
+import { useConversationHistory } from "../hooks/useConversationHistory";
 import { useIsMobileBreakpoint } from "../hooks/useIsMobileBreakpoint";
 import { useRuntimeEngines, useRuntimeModels, useRuntimeProfiles } from "../hooks/useRuntimeOptions";
 import { useSavedPrompts } from "../hooks/useSavedPrompts";
@@ -61,7 +61,8 @@ export function ConversationDetailScreen({
   const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(null);
   const [pipelineMenuOpen, setPipelineMenuOpen] = useState(false);
   const pipelineMenuRef = useCloseOnOutsideClick(pipelineMenuOpen, setPipelineMenuOpen);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const history = useConversationHistory(conversationId);
+  const { conversation, isLoading } = history;
 
   const deleteConversationMutation = useMutation({
     mutationFn: () => api.deleteConversation(conversationId),
@@ -82,31 +83,27 @@ export function ConversationDetailScreen({
       if (previous) {
         queryClient.setQueryData<ConversationDetail>(["conversation", conversationId], { ...previous, title });
       }
-      return { previous };
+      return { previousTitle: previous?.title };
     },
     onError: (err: Error, _title, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(["conversation", conversationId], context.previous);
+      if (context?.previousTitle !== undefined) {
+        const title = context.previousTitle;
+        queryClient.setQueryData<ConversationDetail>(["conversation", conversationId], (previous) =>
+          previous ? { ...previous, title } : previous,
+        );
       }
       alert(`제목 변경 실패: ${err.message}`);
     },
     onSuccess: (updated) => {
-      queryClient.setQueryData(["conversation", conversationId], updated);
+      queryClient.setQueryData<ConversationDetail>(["conversation", conversationId], (previous) =>
+        previous ? { ...previous, title: updated.title } : previous,
+      );
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
   });
 
-  const { data: conversation, isLoading } = useQuery<ConversationDetail>({
-    queryKey: ["conversation", conversationId],
-    queryFn: () => api.getConversation(conversationId),
-    refetchInterval: (query) => {
-      const data = query.state.data as ConversationDetail | undefined;
-      const taskStatus = data?.task_status ?? null;
-      return taskStatus && ACTIVE_TASK_STATUSES.includes(taskStatus) ? 1500 : 3000;
-    },
-  });
   const taskStarted = conversation?.task_id != null;
   const isTaskActive = conversation?.task_status != null && ACTIVE_TASK_STATUSES.includes(conversation.task_status);
 
@@ -282,23 +279,16 @@ export function ConversationDetailScreen({
       // conversation.task_model (which `updated` just refreshed) over this,
       // so clearing it doesn't lose anything the picker still needs to show.
       setSelectedModel(null);
-      queryClient.setQueryData(["conversation", conversationId], updated);
+      queryClient.setQueryData<ConversationDetail>(["conversation", conversationId], (previous) =>
+        previous ? { ...updated, messages: previous.messages, has_more_messages: previous.has_more_messages } : previous,
+      );
+      queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
     onError: (err: Error) => {
       alert(`메시지 전송 실패: ${err.message}`);
     },
   });
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [conversation?.messages.length]);
-
-  useEffect(() => {
-    if (activeTab === "chat") {
-      messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
-    }
-  }, [activeTab]);
 
   // Model/profile catalogs are engine-specific; a pick from the previous
   // engine is meaningless (or invalid) after switching. But effectiveEngine
@@ -325,34 +315,6 @@ export function ConversationDetailScreen({
     s.name.toLowerCase().includes(skillSearch.toLowerCase()) ||
     s.id.toLowerCase().includes(skillSearch.toLowerCase())
   );
-
-  // Codex can emit several assistant messages while working a single turn
-  // (status updates, intermediate notes) before the actual final answer.
-  // These all land as separate ConversationMessage rows with no marker
-  // distinguishing them, so group each run of consecutive assistant
-  // messages and treat only the last one as the prominent "final answer" —
-  // the earlier ones in the run render collapsed, similar to the Codex
-  // app's own "thinking" section.
-  const messageGroups = useMemo(() => {
-    const groups: MessageGroup[] = [];
-    let run: ConversationMessageItem[] = [];
-    const flushRun = () => {
-      if (run.length > 0) {
-        groups.push({ kind: "assistant", intermediates: run.slice(0, -1), final: run[run.length - 1] });
-        run = [];
-      }
-    };
-    for (const message of conversation?.messages ?? []) {
-      if (message.role === "assistant") {
-        run.push(message);
-      } else {
-        flushRun();
-        groups.push({ kind: "user", message });
-      }
-    }
-    flushRun();
-    return groups;
-  }, [conversation?.messages]);
 
   // Pipelines only make sense as the way a task *starts* -- the auto-advance
   // machinery (TaskOrchestrator._advance_pipeline_if_needed) drives a
@@ -449,8 +411,11 @@ export function ConversationDetailScreen({
         conversationId={conversationId}
         conversation={conversation}
         isLoading={isLoading}
-        messageGroups={messageGroups}
-        messagesEndRef={messagesEndRef}
+        messages={history.messages}
+        hasOlder={history.hasOlder}
+        isLoadingOlder={history.isLoadingOlder}
+        olderLoadFailed={history.olderLoadFailed}
+        loadOlder={history.loadOlder}
         activeTab={activeTab}
         diffData={diffData}
         diffExpanded={diffExpanded}
