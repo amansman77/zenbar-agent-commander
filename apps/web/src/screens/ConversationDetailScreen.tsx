@@ -176,7 +176,14 @@ export function ConversationDetailScreen({
   // Shared by usage, the model picker, and the profiles gate below, all of
   // which need the task's *real* engine once one exists, not just
   // whatever's left over in the (by then hidden) pre-task engine picker.
-  const activeEngine = taskStarted ? conversation?.task_engine || defaultEngine : effectiveEngine;
+  const taskEngine = conversation?.task_engine || defaultEngine;
+  // An engine picked for the next follow-up of an existing task. The backend
+  // continues the conversation on that engine in the same worktree, handing
+  // it the transcript (TaskOrchestrator.switch_engine); null keeps the
+  // task's own engine.
+  const [switchEngine, setSwitchEngine] = useState<string | null>(null);
+  const switchingEngine = taskStarted && switchEngine != null && switchEngine !== taskEngine;
+  const activeEngine = taskStarted ? (switchingEngine ? switchEngine : taskEngine) : effectiveEngine;
   // Profiles read ~/.codex/*.config.toml — a Codex-only concept, meaningless for other engines.
   const engineSupportsProfiles = activeEngine == null || activeEngine === "codex";
 
@@ -206,10 +213,14 @@ export function ConversationDetailScreen({
   // pre-task picker) is what actually governs whether the model is locked
   // -- needed now that the model picker stays interactive for a follow-up
   // (see modelToUse in handleSend below), not just before the first send.
-  const activeProfileId = taskStarted ? conversation?.task_profile ?? null : selectedProfile;
+  // A profile belongs to the task's current engine, so it stops locking the
+  // model once another engine is picked.
+  const activeProfileId = taskStarted ? (switchingEngine ? null : conversation?.task_profile ?? null) : selectedProfile;
   const selectedProfileOption = availableProfiles.find((p) => p.id === activeProfileId) ?? null;
   const profileControlsModel = Boolean(selectedProfileOption?.model);
-  const effectiveModel = conversation?.task_model ?? selectedModel ?? availableModels[0] ?? null;
+  const effectiveModel = switchingEngine
+    ? selectedModel ?? availableModels[0] ?? null
+    : conversation?.task_model ?? selectedModel ?? availableModels[0] ?? null;
 
   const isWaitingApproval = conversation?.task_status === "waiting_result_approval";
   const isTaskFailed = conversation?.task_status === "failed";
@@ -279,6 +290,7 @@ export function ConversationDetailScreen({
       // conversation.task_model (which `updated` just refreshed) over this,
       // so clearing it doesn't lose anything the picker still needs to show.
       setSelectedModel(null);
+      setSwitchEngine(null);
       queryClient.setQueryData<ConversationDetail>(["conversation", conversationId], (previous) =>
         previous ? { ...updated, messages: previous.messages, has_more_messages: previous.has_more_messages } : previous,
       );
@@ -335,11 +347,13 @@ export function ConversationDetailScreen({
     // the model actually in use and switch it out from under the user on
     // every follow-up. A fresh task has no "keep as-is" to fall back to, so
     // it still needs a concrete pick.
+    // Switching engines needs a concrete model from the new engine's list:
+    // the task's current model belongs to the old one.
     const modelToUse = profileControlsModel
       ? null
-      : selectedModel || (taskStarted ? null : availableModels[0] || null);
+      : selectedModel || (taskStarted && !switchingEngine ? null : availableModels[0] || null);
     const profileToUse = taskStarted ? null : selectedProfile;
-    const engineToUse = taskStarted ? null : selectedEngine;
+    const engineToUse = taskStarted ? (switchingEngine ? switchEngine : null) : selectedEngine;
     if (canSendPipeline) {
       // Typing is still optional here (a pipeline can start with nothing
       // typed, same as before), but anything typed is no longer thrown
@@ -446,11 +460,38 @@ export function ConversationDetailScreen({
             </span>
           ) : null}
           {taskStarted ? (
-            conversation?.task_engine ? (
-              <span className="compose-meta">
-                🧠 {availableEngines.find((e) => e.id === conversation.task_engine)?.label ?? conversation.task_engine}
-              </span>
-            ) : null
+            isTaskActive || availableEngines.length < 2 ? (
+              // Mid-turn the engine cannot change; a switch applies to the
+              // next follow-up, which can only be sent once the turn ends.
+              conversation?.task_engine ? (
+                <span className="compose-meta">
+                  🧠 {availableEngines.find((e) => e.id === conversation.task_engine)?.label ?? conversation.task_engine}
+                </span>
+              ) : null
+            ) : (
+              <label className="compose-meta-picker">
+                <span>🧠</span>
+                <select
+                  aria-label="엔진"
+                  value={switchEngine ?? taskEngine ?? ""}
+                  onChange={(e) => {
+                    setSwitchEngine(e.target.value === taskEngine ? null : e.target.value);
+                    setSelectedModel(null);
+                  }}
+                  title={switchingEngine ? "다음 메시지부터 이 엔진으로 이어집니다" : "AI engine"}
+                  className="compose-meta-select"
+                >
+                  {availableEngines.map((eng) => (
+                    <option key={eng.id} value={eng.id}>{eng.label}</option>
+                  ))}
+                </select>
+                {switchingEngine && (
+                  <span className="compose-meta compose-meta-switch">
+                    다음 메시지부터 {availableEngines.find((e) => e.id === switchEngine)?.label ?? switchEngine}(으)로 전환
+                  </span>
+                )}
+              </label>
+            )
           ) : (
             availableEngines.length > 1 && (
               <label className="compose-meta-picker">

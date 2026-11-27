@@ -32,6 +32,8 @@ export const fixtures: {
   globalPrompts: Row[];
   conversationDetail: Row | null;
   runtimeModels: Row;
+  runtimeEngines: Row | null;
+  runtimeModelsByEngine: Record<string, Row>;
   conversationAttachments: Row[];
   attachmentUploadError: boolean;
   attachmentFailureName: string | null;
@@ -48,6 +50,8 @@ export const fixtures: {
   globalPrompts: [],
   conversationDetail: null,
   runtimeModels: DEFAULT_RUNTIME_MODELS,
+  runtimeEngines: null,
+  runtimeModelsByEngine: {},
   conversationAttachments: [],
   attachmentUploadError: false,
   attachmentFailureName: null,
@@ -58,6 +62,13 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
   const url = input.toString();
   if (/\/conversations\/[^/]+\/attachments\/[^/?]+(?:\?.*)?$/.test(url) && !init?.method) {
     return new Response("image-bytes", { status: fixtures.attachmentDownloadError ? 404 : 200 });
+  }
+  if (url.endsWith("/runtime/engines") && fixtures.runtimeEngines) {
+    return new Response(JSON.stringify(fixtures.runtimeEngines), { status: 200 });
+  }
+  const engineModels = url.match(/\/runtime\/models\?engine=([^&]+)$/);
+  if (engineModels && fixtures.runtimeModelsByEngine[engineModels[1]]) {
+    return new Response(JSON.stringify(fixtures.runtimeModelsByEngine[engineModels[1]]), { status: 200 });
   }
   if (url.endsWith("/runtime/models?engine=antigravity")) {
     return new Response(
@@ -362,6 +373,8 @@ export function resetAppTest() {
   fixtures.attachmentFailureName = null;
   fixtures.attachmentDownloadError = false;
   fixtures.runtimeModels = DEFAULT_RUNTIME_MODELS;
+  fixtures.runtimeEngines = null;
+  fixtures.runtimeModelsByEngine = {};
   window.localStorage.clear();
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,

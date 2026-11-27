@@ -205,7 +205,47 @@ describe("App", () => {
     expect(screen.getAllByText(/^마지막 응답/)).toHaveLength(1);
   });
   describe("conversation model picker", () => {
-    function openConversationWithoutTask(messages: Record<string, unknown>[] = []) {
+    it("continues a finished Codex conversation on Claude from the compose bar", async () => {
+      fixtures.runtimeEngines = {
+        engines: [{ id: "codex", label: "Codex" }, { id: "claude", label: "Claude" }],
+        default_engine: "codex"
+      };
+      fixtures.runtimeModelsByEngine = {
+        codex: { source: "runtime", models: [{ id: "default" }, { id: "gpt-6.2-sol" }] },
+        claude: { source: "runtime", models: [{ id: "default" }, { id: "opus" }, { id: "sonnet" }] }
+      };
+      openConversationWithoutTask([], {
+        task_id: "task-1", task_status: "completed", task_engine: "codex", task_model: "gpt-6.2-sol"
+      });
+
+      const picker = await screen.findByRole("combobox", { name: "엔진" });
+      expect(picker).toHaveValue("codex");
+      fireEvent.change(picker, { target: { value: "claude" } });
+      expect(await screen.findByText(/다음 메시지부터 Claude\(으\)로 전환/)).toBeInTheDocument();
+      expect(await screen.findByRole("option", { name: "opus" })).toBeInTheDocument();
+
+      fireEvent.change(screen.getByPlaceholderText("메시지를 입력하세요..."), { target: { value: "테스트도 추가해줘" } });
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+      await waitFor(() => {
+        const call = fetchMock.mock.calls.find(([url, init]) =>
+          new URL(String(url)).pathname.endsWith("/conversations/conv-1/messages") && init?.method === "POST");
+        expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
+          content: "테스트도 추가해줘", engine: "claude", model: "opus"
+        });
+      });
+    });
+
+    it("keeps the engine fixed while a turn is running", async () => {
+      fixtures.runtimeEngines = {
+        engines: [{ id: "codex", label: "Codex" }, { id: "claude", label: "Claude" }],
+        default_engine: "codex"
+      };
+      openConversationWithoutTask([], { task_id: "task-1", task_status: "running", task_engine: "codex" });
+      expect(await screen.findByText(/🧠 Codex/)).toBeInTheDocument();
+      expect(screen.queryByRole("combobox", { name: "엔진" })).not.toBeInTheDocument();
+    });
+
+    function openConversationWithoutTask(messages: Record<string, unknown>[] = [], overrides: Record<string, unknown> = {}) {
       window.localStorage.setItem(
         "zenbar:lastView",
         JSON.stringify({
@@ -231,7 +271,8 @@ describe("App", () => {
         task_engine: null,
         messages,
         created_at: now,
-        updated_at: now
+        updated_at: now,
+        ...overrides
       };
       renderApp();
     }

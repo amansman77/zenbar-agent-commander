@@ -4215,3 +4215,81 @@ def test_session_restart_is_mirrored_into_the_conversation():
             message["role"] == "assistant" and "새 Codex 세션으로 다시 시작했습니다" in message["content"]
             for message in detail["messages"]
         )
+
+
+def test_a_conversation_can_continue_on_another_engine():
+    # A Codex conversation switched to Claude keeps its worktree and hands the
+    # transcript over, with the new message as the only instruction.
+    from app.main import orchestrator
+
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects",
+            json={"name": "Engine Switch", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        conversation = client.post("/conversations", json={"project_id": project["id"]}).json()
+        started = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "로그인 버그를 고쳐줘", "model": "default", "profile": "some-codex-profile"},
+        )
+        task_id = started.json()["task_id"]
+        with SessionLocal() as db:
+            before = get_task(db, task_id)
+            workspace, branch = before.workspace_path, before.workspace_ref
+            before.status = "completed"
+            db.add(before)
+            db.commit()
+
+        switched = client.post(
+            f"/conversations/{conversation['id']}/messages",
+            json={"content": "테스트도 추가해줘", "engine": "claude", "model": "opus"},
+        )
+        assert switched.status_code == 201
+
+        with SessionLocal() as db:
+            after = get_task(db, task_id)
+            assert (after.engine, after.model, after.profile) == ("claude", "opus", None)
+            assert (after.workspace_path, after.workspace_ref) == (workspace, branch)
+            session_id = after.runtime_session_id
+        prompt = orchestrator.adapters["claude"]._requests[session_id].prompt
+        assert "지금까지 Codex(으)로 진행됐고, 이번 요청부터 Claude(으)로 이어집니다" in prompt
+        assert "로그인 버그를 고쳐줘" in prompt  # history
+        assert prompt.rstrip().endswith("테스트도 추가해줘")  # the only instruction
+
+        events = client.get(f"/tasks/{task_id}/events").json()
+        switch = [e for e in events if (e.get("payload_json") or {}).get("reason") == "engine_switched"]
+        assert switch and switch[0]["payload_json"]["from_engine"] == "codex"
+        detail = client.get(f"/conversations/{conversation['id']}").json()
+        assert any("엔진을 Codex에서 Claude(으)로 전환합니다" in m["content"] for m in detail["messages"])
+
+
+def test_switching_engine_is_refused_mid_turn_and_for_unknown_engines():
+    with TemporaryDirectory() as tmpdir:
+        repo = init_repo(tmpdir)
+        project = client.post(
+            "/projects", json={"name": "Engine Guard", "repo_path": str(repo), "default_branch": "main"},
+        ).json()
+        conversation = client.post("/conversations", json={"project_id": project["id"]}).json()
+        task_id = client.post(
+            f"/conversations/{conversation['id']}/messages", json={"content": "시작", "model": "default"},
+        ).json()["task_id"]
+        with SessionLocal() as db:
+            current = get_task(db, task_id)
+            current.status = "completed"
+            db.add(current)
+            db.commit()
+        unknown = client.post(f"/conversations/{conversation['id']}/messages",
+                              json={"content": "이어서", "engine": "nonexistent"})
+        assert unknown.status_code == 409
+        with SessionLocal() as db:
+            assert (get_task(db, task_id).engine or "codex") == "codex"
+
+
+def test_handoff_keeps_the_most_recent_messages_within_the_budget():
+    from app.resume_context import ResumeMessage, fit_to_budget
+
+    messages = [ResumeMessage("user", "x" * 1500) for _ in range(10)] + [ResumeMessage("user", "마지막")]
+    kept = fit_to_budget(messages, 4000)
+    assert kept[-1].content == "마지막"
+    assert len(kept) == 3

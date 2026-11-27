@@ -403,7 +403,8 @@ async def post_conversation_message(
             if task is not None and task.status in {"completed", "stopped", "failed"}:
                 try:
                     await orchestrator.followup_or_restart_task(
-                        db, task, project, runtime_content, selected_skill=selected_skill, model=payload.model
+                        db, task, project, runtime_content, selected_skill=selected_skill, model=payload.model,
+                        engine=payload.engine, profile=payload.profile,
                     )
                 except Exception as exc:
                     # followup_or_restart_task falls back to start_task when

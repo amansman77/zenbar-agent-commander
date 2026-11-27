@@ -42,11 +42,19 @@ from .repository import (
     set_task_workspace,
     set_task_status,
 )
-from .resume_context import RECENT_MESSAGE_LIMIT, ResumeMessage, build_resume_prompt
+from .resume_context import (
+    ENGINE_SWITCH_CHAR_BUDGET,
+    ENGINE_SWITCH_MESSAGE_LIMIT,
+    RECENT_MESSAGE_LIMIT,
+    ResumeMessage,
+    build_resume_prompt,
+    engine_switch_notice,
+    fit_to_budget,
+)
 from .attachments import message_runtime_content
 from . import workspace_git
 from .codex_profiles import get_profile
-from .runtime import RuntimeAdapter
+from .runtime import ENGINE_LABELS, RuntimeAdapter
 from .schemas import (
     RespondTaskRequest,
     RuntimeEvent,
@@ -583,6 +591,8 @@ class TaskOrchestrator:
         content: str,
         selected_skill: str | None = None,
         model: str | None = None,
+        engine: str | None = None,
+        profile: str | None = None,
     ) -> Task:
         """Follows up on a completed/stopped/failed task, restarting the session if expired.
 
@@ -602,6 +612,9 @@ class TaskOrchestrator:
         ``resume_context``: the new message as the only instruction, with the
         original request and the last few turns included as labelled history.
         """
+        if engine and engine != (task.engine or self.default_engine):
+            return await self.switch_engine(db, task, project, content, engine, model=model, profile=profile,
+                                            selected_skill=selected_skill)
         try:
             return await self.followup_task(
                 db, task, content, selected_skill=selected_skill, model=model
@@ -644,6 +657,76 @@ class TaskOrchestrator:
                     new_message=content,
                 ),
             )
+
+    async def switch_engine(
+        self,
+        db: Session,
+        task: Task,
+        project: Project | None,
+        content: str,
+        engine: str,
+        *,
+        model: str | None = None,
+        profile: str | None = None,
+        selected_skill: str | None = None,
+    ) -> Task:
+        """Continues a conversation on another engine (Codex <-> Claude, ...).
+
+        Engines share nothing at runtime: a Codex thread cannot be resumed by
+        Claude. What carries over is everything Zenbar owns -- the worktree
+        (branch and uncommitted changes stay as they are) and the conversation
+        transcript, handed to the new engine as history the same way a dead
+        session is replaced (resume_context), only with much more of it.
+        The new message is the only instruction; the original request is
+        background, for the same reason as on a restart.
+        """
+        if task.status in self.ACTIVE_TASK_STATUSES:
+            raise RuntimeError(f"Task cannot switch engine from status '{task.status}'")
+        if engine not in self.adapters:
+            raise RuntimeError(f"Unknown engine '{engine}'")
+        previous_engine = task.engine or self.default_engine
+        task.engine = engine
+        task.model = model or "default"
+        # Profiles are Codex configuration (~/.codex/*.config.toml); one
+        # chosen for a Codex session means nothing to another engine.
+        task.profile = profile if engine == "codex" else None
+        db.add(task)
+        db.commit()
+        refreshed = self._require_task(db, task.id, "switching engine")
+        if refreshed.runtime_session_id:
+            refreshed = clear_runtime_session(db, refreshed, status=refreshed.status)
+        recent = fit_to_budget(
+            [ResumeMessage(role=m.role, content=message_runtime_content(m))
+             for m in list_recent_conversation_messages(db, refreshed.id, ENGINE_SWITCH_MESSAGE_LIMIT)],
+            ENGINE_SWITCH_CHAR_BUDGET,
+        )
+        from_label = ENGINE_LABELS.get(previous_engine, previous_engine)
+        to_label = ENGINE_LABELS.get(engine, engine)
+        append_event(
+            db,
+            refreshed,
+            RuntimeEvent(
+                type="session_restarted",
+                message=(
+                    f"엔진을 {from_label}에서 {to_label}(으)로 전환합니다. "
+                    f"같은 작업 폴더에서, 직전 대화 {len(recent)}건과 최초 요청을 넘겨 이어갑니다."
+                ),
+                payload={"reason": "engine_switched", "from_engine": previous_engine, "to_engine": engine,
+                         "recent_messages": len(recent)},
+            ),
+        )
+        return await self.start_task(
+            db,
+            refreshed,
+            project,
+            selected_skill=selected_skill,
+            prompt_override=build_resume_prompt(
+                original_prompt=refreshed.prompt,
+                recent_messages=recent,
+                new_message=content,
+                notice=engine_switch_notice(from_label, to_label),
+            ),
+        )
 
     async def refresh_diff(self, db: Session, task: Task) -> Task:
         if task.workspace_type == "directory":
