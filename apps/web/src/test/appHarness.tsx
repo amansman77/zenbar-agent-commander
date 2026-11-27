@@ -237,6 +237,11 @@ export const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestIn
     );
     return new Response(null, { status: 204 });
   }
+  const deletedConversation = new URL(url).pathname.match(/\/conversations\/([^/]+)$/);
+  if (deletedConversation && init?.method === "DELETE") {
+    fixtures.conversations = fixtures.conversations.filter((conv) => conv.id !== deletedConversation[1]);
+    return new Response(null, { status: 204 });
+  }
   if (/\/conversations\/[^/]+\/attachments\?name=/.test(url) && init?.method === "POST") {
     const file = init.body as File;
     if (fixtures.attachmentUploadError || file.name === fixtures.attachmentFailureName) {

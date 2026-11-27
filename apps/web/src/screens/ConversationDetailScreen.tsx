@@ -15,6 +15,7 @@ import type {
   RuntimeSkill
 } from "@zenbar/shared";
 import { api } from "../api";
+import { DeleteConversationDialog } from "../components/DeleteConversationDialog";
 import { UsageBadge } from "../components/Badges";
 import { ConversationTitleEditor } from "../components/ConversationTitleEditor";
 import { ConversationTranscript } from "../components/ConversationTranscript";
@@ -43,6 +44,7 @@ export function ConversationDetailScreen({
   showBackButton?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const isMobile = useIsMobileBreakpoint();
   const [activeTab, setActiveTab] = useState<"chat" | "diff">("chat");
   const [diffExpanded, setDiffExpanded] = useState<Record<string, boolean>>({});
@@ -413,7 +415,7 @@ export function ConversationDetailScreen({
             className="secondary"
             style={{ fontSize: "0.8rem", padding: "4px 10px", flexShrink: 0 }}
             disabled={deleteConversationMutation.isPending}
-            onClick={() => deleteConversationMutation.mutate()}
+            onClick={() => setDeleteTargetId(conversationId)}
             title="대화 삭제"
           >
             삭제
@@ -421,6 +423,16 @@ export function ConversationDetailScreen({
         </div>
       </div>
 
+      {deleteTargetId === conversationId && (
+        <DeleteConversationDialog
+          title={conversation?.title ?? "이 대화"}
+          onCancel={() => setDeleteTargetId(null)}
+          onConfirm={() => {
+            deleteConversationMutation.mutate();
+            setDeleteTargetId(null);
+          }}
+        />
+      )}
       <ConversationTranscript
         conversationId={conversationId}
         conversation={conversation}
